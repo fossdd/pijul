@@ -1,0 +1,24 @@
+name: Update Repository
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  push:
+    branches: [ "*" ]
+  workflow_dispatch:
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: fossdd/action-setup-pijul@v1
+      - name: Clone Pijul
+        run: pijul clone https://nest.pijul.com/pijul/pijul tmp
+      - name: Clean up
+        run: mv tmp/* .  || true && rm -r tmp
+      - name: Commit & Push
+        run: |-
+          git config --global user.email "${{ secrets.GIT_EMAIL }}"
+          git config --global user.name  "${{ secrets.GIT_NAME  }}"
+          git add .
+          git commit -m 'Update pijul'
+          git push origin main || true
