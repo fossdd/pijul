@@ -1,0 +1,164 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use anyhow::bail;
+use canonical_path::CanonicalPathBuf;
+use clap::Clap;
+use libpijul::vertex_buffer::VertexBuffer;
+use libpijul::*;
+use log::debug;
+
+use crate::repository::Repository;
+
+#[derive(Clap, Debug)]
+pub struct Credit {
+    /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
+    #[clap(long = "repository")]
+    repo_path: Option<PathBuf>,
+    /// Use this channel instead of the current channel
+    #[clap(long = "channel")]
+    channel: Option<String>,
+    /// The file to annotate
+    file: PathBuf,
+}
+
+impl Credit {
+    pub async fn run(self) -> Result<(), anyhow::Error> {
+        let has_repo_path = self.repo_path.is_some();
+        let mut repo = Repository::find_root(self.repo_path).await?;
+        let txn = repo.pristine.txn_begin()?;
+        let (channel_name, _) = repo.config.get_current_channel(self.channel.as_deref());
+        let channel = if let Some(channel) = txn.load_channel(&channel_name)? {
+            channel
+        } else {
+            bail!("No such channel: {:?}", channel_name)
+        };
+        if self.channel.is_some() {
+            repo.config.current_channel = self.channel;
+            repo.save_config()?;
+        }
+        let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
+        let (pos, _ambiguous) = if has_repo_path {
+            let root = std::fs::canonicalize(repo.path.join(&self.file))?;
+            let path = root.strip_prefix(&repo_path.as_path())?.to_str().unwrap();
+            txn.follow_oldest_path(&repo.changes, &channel, &path)?
+        } else {
+            let mut root = crate::current_dir()?;
+            root.push(&self.file);
+            let root = std::fs::canonicalize(&root)?;
+            let path = root.strip_prefix(&repo_path.as_path())?.to_str().unwrap();
+            txn.follow_oldest_path(&repo.changes, &channel, &path)?
+        };
+        super::pager();
+        let channel = channel.read().unwrap();
+        match libpijul::output::output_file(
+            &repo.changes,
+            &txn,
+            &channel,
+            pos,
+            &mut Creditor::new(std::io::stdout(), &txn, &channel),
+        ) {
+            Ok(_) => {}
+            Err(libpijul::output::FileError::Io(io)) => {
+                if let std::io::ErrorKind::BrokenPipe = io.kind() {
+                } else {
+                    return Err(io.into());
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+}
+
+pub struct Creditor<'a, W: std::io::Write, T: ChannelTxnT> {
+    w: W,
+    buf: Vec<u8>,
+    new_line: bool,
+    changes: HashSet<ChangeId>,
+    txn: &'a T,
+    channel: &'a T::Channel,
+}
+
+impl<'a, W: std::io::Write, T: ChannelTxnT> Creditor<'a, W, T> {
+    pub fn new(w: W, txn: &'a T, channel: &'a T::Channel) -> Self {
+        Creditor {
+            w,
+            new_line: true,
+            buf: Vec::new(),
+            txn,
+            channel,
+            changes: HashSet::new(),
+        }
+    }
+}
+
+impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
+    fn output_line<E, C: FnOnce(&mut Vec<u8>) -> Result<(), E>>(
+        &mut self,
+        v: Vertex<ChangeId>,
+        c: C,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>,
+    {
+        debug!("outputting vertex {:?}", v);
+        self.buf.clear();
+        c(&mut self.buf)?;
+
+        if !v.change.is_root() {
+            self.changes.clear();
+            for e in self
+                .txn
+                .iter_adjacent(self.channel, v, EdgeFlags::PARENT, EdgeFlags::all())
+                .unwrap()
+            {
+                let e = e.unwrap();
+                if e.introduced_by().is_root() {
+                    continue;
+                }
+                self.changes.insert(e.introduced_by());
+            }
+            if !self.new_line {
+                writeln!(self.w)?;
+            }
+            writeln!(self.w)?;
+            let mut is_first = true;
+            for c in self.changes.drain() {
+                write!(
+                    self.w,
+                    "{}{}",
+                    if is_first { "" } else { ", " },
+                    c.to_base32()
+                )?;
+                is_first = false;
+            }
+            writeln!(self.w, "\n")?;
+        }
+        let ends_with_newline = self.buf.ends_with(b"\n");
+        if let Ok(s) = std::str::from_utf8(&self.buf[..]) {
+            let st: u64 = v.start.into();
+            write!(self.w, "{}.{} > ", v.change.to_base32(), st)?;
+            for l in s.lines() {
+                self.w.write_all(b"> ")?;
+                self.w.write_all(l.as_bytes())?;
+                self.w.write_all(b"\n")?;
+            }
+        }
+        if !self.buf.is_empty() {
+            // empty "lines" (such as in the beginning of a file)
+            // don't change the status of self.new_line.
+            self.new_line = ends_with_newline;
+        }
+        Ok(())
+    }
+
+    fn output_conflict_marker(&mut self, s: &str) -> Result<(), std::io::Error> {
+        if !self.new_line {
+            self.w.write_all(s.as_bytes())?;
+        } else {
+            self.w.write_all(&s.as_bytes()[1..])?;
+        }
+        Ok(())
+    }
+}

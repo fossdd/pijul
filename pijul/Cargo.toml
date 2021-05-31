@@ -1,0 +1,91 @@
+[package]
+name = "pijul"
+description = "The sound distributed version control system."
+version = "1.0.0-alpha.48"
+authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
+edition = "2018"
+repository = "https://nest.pijul.com/pijul/pijul"
+license = "GPL-2.0-or-later"
+include = [
+"README.md",
+"Cargo.toml",
+"src",
+"src/commands",
+"src/commands/log.rs",
+"src/commands/protocol.rs",
+"src/commands/apply.rs",
+"src/commands/debug.rs",
+"src/commands/checkout.rs",
+"src/commands/file_operations.rs",
+"src/commands/clone.rs",
+"src/commands/git.rs",
+"src/commands/record.rs",
+"src/commands/change.rs",
+"src/commands/diff.rs",
+"src/commands/unrecord.rs",
+"src/commands/channel.rs",
+"src/commands/init.rs",
+"src/commands/mod.rs",
+"src/commands/archive.rs",
+"src/commands/reset.rs",
+"src/commands/fork.rs",
+"src/commands/pushpull.rs",
+"src/commands/lock.rs",
+"src/commands/tag.rs",
+"src/config.rs",
+"src/repository.rs",
+"src/main.rs",
+"src/remote",
+"src/remote/local.rs",
+"src/remote/ssh.rs",
+"src/remote/mod.rs",
+]
+
+[features]
+git = [ "git2" ]
+keep-changes = []
+default = [ "keep-changes" ]
+
+[dependencies]
+human-panic = "1.0"
+clap = "3.0.0-beta.2"
+anyhow = "1.0"
+libpijul = { path = "../libpijul", version = "1.0.0-alpha.39", features = [ "tarball" ] }
+chrono = { version = "0.4" }
+ignore = "0.4"
+env_logger = "0.8"
+log = "0.4"
+serde = "1.0"
+serde_json = "1.0"
+serde_derive = "1.0"
+toml = "0.5"
+tokio = { version = "1.0", features = [ "rt-multi-thread", "macros", "sync" ] }
+thrussh = "0.32.7"
+thrussh-keys = "0.20.3"
+thrussh-config = "0.5"
+reqwest = { version = "0.11", features = [ "stream" ] }
+byteorder = "1.3"
+sanakirja = { version="1.2", features = [ "crc32" ] }
+futures = "0.3"
+dirs-next = "2.0"
+lazy_static = "1.4"
+regex = "1.4"
+whoami = "0.9"
+rpassword = "5.0"
+git2 = { version = "0.13", optional = true }
+rand = "0.8"
+edit = "0.1.3"
+data-encoding = "2.3"
+futures-util = "0.3"
+terminal_size = "0.1"
+termcolor = "1.1"
+atty = "0.2"
+num_cpus = "1.13"
+canonical-path = "2.0"
+ctrlc = "3.1"
+url = "2.2"
+fs2 = "0.4"
+path-slash = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+pager = "0.16.0"

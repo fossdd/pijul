@@ -1,0 +1,18 @@
+[package]
+name = "pijul-macros"
+description = "Macros used to write libpijul."
+version = "0.4.0"
+authors = ["Pierre-Étienne Meunier <pmeunier@mailbox.org>"]
+edition = "2018"
+repository = "https://nest.pijul.com/pijul/pijul"
+license = "GPL-2.0"
+include = [ "Cargo.toml", "src/lib.rs" ]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "1.0"
+quote = "1.0"
+proc-macro2 = "1.0"
+regex = "1.4"

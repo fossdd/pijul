@@ -1,0 +1,2 @@
+[workspace]
+members = [ "pijul-macros", "pijul", "libpijul" ]
