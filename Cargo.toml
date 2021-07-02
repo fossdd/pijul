@@ -1,2 +1,3 @@
 [workspace]
-members = [ "pijul-macros", "pijul", "libpijul" ]
+members = [ "pijul-macros", "pijul", "libpijul", "chardetng" ]
+
