@@ -39,6 +39,16 @@ rec {
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
+    "chardetng" = rec {
+      packageId = "chardetng";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "chardetng";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "libpijul" = rec {
       packageId = "libpijul";
       build = internal.buildRustCrateWithFeatures {
@@ -97,9 +107,9 @@ rec {
     crates = {
       "addr2line" = rec {
         crateName = "addr2line";
-        version = "0.14.1";
+        version = "0.15.2";
         edition = "2015";
-        sha256 = "1xs5bsi40zpyxbbylyaysya5h36ykcbg91i82415sxw5wk7q4px5";
+        sha256 = "0fkz8sgwp9lbhzfch89wimn4qx16a8l62vfx07hrw85y3xxf98p7";
         authors = [
           "Nick Fitzgerald <fitzgen@gmail.com>"
           "Philip Craig <philipjcraig@gmail.com>"
@@ -134,11 +144,68 @@ rec {
           "rustc-dep-of-std" = [ "core" "compiler_builtins" ];
         };
       };
+      "adler32" = rec {
+        crateName = "adler32";
+        version = "1.2.0";
+        edition = "2018";
+        sha256 = "0d7jq7jsjyhsgbhnfq5fvrlh9j0i9g1fqrl2735ibv5f75yjgqda";
+        authors = [
+          "Remi Rampin <remirampin@gmail.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
+          "rustc-dep-of-std" = [ "core" "compiler_builtins" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "aes" = rec {
+        crateName = "aes";
+        version = "0.7.4";
+        edition = "2018";
+        sha256 = "1m7jhnqm3qxxjgxrg7spk66qqvcfsz9z906frblfkyrv85lycpj9";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if 1.0.0";
+          }
+          {
+            name = "cipher";
+            packageId = "cipher";
+          }
+          {
+            name = "cpufeatures";
+            packageId = "cpufeatures";
+            target = { target, features }: ((target."arch" == "aarch64") || (target."arch" == "x86_64") || (target."arch" == "x86"));
+          }
+          {
+            name = "ctr";
+            packageId = "ctr";
+            optional = true;
+          }
+          {
+            name = "opaque-debug";
+            packageId = "opaque-debug";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "cipher";
+            packageId = "cipher";
+            features = [ "dev" ];
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "ctr" ];
+      };
       "aho-corasick" = rec {
         crateName = "aho-corasick";
-        version = "0.7.15";
-        edition = "2015";
-        sha256 = "1rb8gzhljl8r87dpf2n5pnqnkl694casgns4ma0sqzd4zazzw13l";
+        version = "0.7.18";
+        edition = "2018";
+        sha256 = "0vv50b3nvkhyy7x7ip19qnsq11bqlnffkmj2yx2xlyk5wzawydqy";
         libName = "aho_corasick";
         authors = [
           "Andrew Gallant <jamslam@gmail.com>"
@@ -152,15 +219,15 @@ rec {
         ];
         features = {
           "default" = [ "std" ];
-          "std" = [ "memchr/use_std" ];
+          "std" = [ "memchr/std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
       "anyhow" = rec {
         crateName = "anyhow";
-        version = "1.0.40";
+        version = "1.0.41";
         edition = "2018";
-        sha256 = "0fq6qxlzp3bwrjbs3wp4i470k8vsvlkpx3q2wpl79gawvf9cvci8";
+        sha256 = "0qaa0vgsa7ybq7wqk57508l52l1lr3sbx49vk9hf43w9yql2dbqm";
         authors = [
           "David Tolnay <dtolnay@gmail.com>"
         ];
@@ -190,7 +257,7 @@ rec {
         features = {
           "default" = [ "std" ];
         };
-        resolvedDefaultFeatures = [ "array-sizes-33-128" ];
+        resolvedDefaultFeatures = [ "array-sizes-33-128" "default" "std" ];
       };
       "atty" = rec {
         crateName = "atty";
@@ -233,9 +300,9 @@ rec {
       };
       "backtrace" = rec {
         crateName = "backtrace";
-        version = "0.3.57";
+        version = "0.3.60";
         edition = "2018";
-        sha256 = "13fb5pdgzd68izzb7vg1kf14kpc9yn079yxkc8n292x6kcxj1vbq";
+        sha256 = "10kjrb4b3kjx6g4mkmcwjg4dimmzpsn7iq3225wix0jd9sjmx0dp";
         authors = [
           "The Rust Project Developers"
         ];
@@ -243,7 +310,6 @@ rec {
           {
             name = "addr2line";
             packageId = "addr2line";
-            optional = true;
             usesDefaultFeatures = false;
           }
           {
@@ -258,13 +324,11 @@ rec {
           {
             name = "miniz_oxide";
             packageId = "miniz_oxide";
-            optional = true;
             usesDefaultFeatures = false;
           }
           {
             name = "object";
             packageId = "object";
-            optional = true;
             usesDefaultFeatures = false;
             features = [ "read_core" "elf" "macho" "pe" "unaligned" "archive" ];
           }
@@ -273,15 +337,19 @@ rec {
             packageId = "rustc-demangle";
           }
         ];
+        buildDependencies = [
+          {
+            name = "cc";
+            packageId = "cc";
+          }
+        ];
         features = {
-          "default" = [ "std" "gimli-symbolize" ];
-          "gimli-symbolize" = [ "addr2line" "miniz_oxide" "object" ];
-          "libbacktrace" = [ "backtrace-sys/backtrace-sys" ];
+          "default" = [ "std" ];
           "serialize-rustc" = [ "rustc-serialize" ];
           "serialize-serde" = [ "serde" ];
           "verify-winapi" = [ "winapi/dbghelp" "winapi/handleapi" "winapi/libloaderapi" "winapi/memoryapi" "winapi/minwindef" "winapi/processthreadsapi" "winapi/synchapi" "winapi/tlhelp32" "winapi/winbase" "winapi/winnt" ];
         };
-        resolvedDefaultFeatures = [ "addr2line" "default" "gimli-symbolize" "miniz_oxide" "object" "std" ];
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "base64" = rec {
         crateName = "base64";
@@ -291,6 +359,57 @@ rec {
         authors = [
           "Alice Maz <alice@alicemaz.com>"
           "Marshall Pierce <marshall@mpierce.org>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "base64ct" = rec {
+        crateName = "base64ct";
+        version = "1.0.0";
+        edition = "2018";
+        sha256 = "1dbk04hir0vr17hxb80sg2x1751j96fz92hlmx3k3r7insv7zlnh";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        features = {
+          "std" = [ "alloc" ];
+        };
+      };
+      "bcrypt-pbkdf" = rec {
+        crateName = "bcrypt-pbkdf";
+        version = "0.6.1";
+        edition = "2018";
+        sha256 = "1fa1xw5c06rdmvh7wycq8ff25ci6j3j1bcyvwnk87cgyhy71nqhj";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "blowfish";
+            packageId = "blowfish";
+            features = [ "bcrypt" ];
+          }
+          {
+            name = "crypto-mac";
+            packageId = "crypto-mac 0.11.0";
+          }
+          {
+            name = "pbkdf2";
+            packageId = "pbkdf2";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            usesDefaultFeatures = false;
+          }
         ];
         features = {
           "default" = [ "std" ];
@@ -344,39 +463,11 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" ];
       };
-      "blake2b_simd" = rec {
-        crateName = "blake2b_simd";
-        version = "0.5.11";
-        edition = "2018";
-        sha256 = "11y5nm06lpypz65dbxgncs12ckx24i5i4a777ckfhfxd93ili9xg";
-        authors = [
-          "Jack O'Connor"
-        ];
-        dependencies = [
-          {
-            name = "arrayref";
-            packageId = "arrayref";
-          }
-          {
-            name = "arrayvec";
-            packageId = "arrayvec";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "constant_time_eq";
-            packageId = "constant_time_eq";
-          }
-        ];
-        features = {
-          "default" = [ "std" ];
-        };
-        resolvedDefaultFeatures = [ "default" "std" ];
-      };
       "blake3" = rec {
         crateName = "blake3";
-        version = "0.3.7";
+        version = "0.3.8";
         edition = "2018";
-        sha256 = "0gwxy0vbjf8nwjc32n5jb0lfyrn74bc6hcxdizdlp4gk06vkbzz9";
+        sha256 = "1cr5l5szgxm632px41kavl6cgils8h6yhdfkm6jsc5jgiivqai5n";
         authors = [
           "Jack O'Connor <oconnor663@gmail.com>"
         ];
@@ -401,7 +492,7 @@ rec {
           }
           {
             name = "crypto-mac";
-            packageId = "crypto-mac";
+            packageId = "crypto-mac 0.8.0";
           }
           {
             name = "digest";
@@ -420,11 +511,110 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
+      "block-buffer" = rec {
+        crateName = "block-buffer";
+        version = "0.9.0";
+        edition = "2018";
+        sha256 = "1r4pf90s7d7lj1wdjhlnqa26vvbm6pnc33z138lxpnp9srpi2lj1";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "generic-array";
+            packageId = "generic-array";
+          }
+        ];
+
+      };
+      "block-modes" = rec {
+        crateName = "block-modes";
+        version = "0.8.1";
+        edition = "2018";
+        sha256 = "13id7rw1lhi83i701za8w5is3a8qkf4vfigqw3f8jp8mxldkvc1c";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "block-padding";
+            packageId = "block-padding";
+          }
+          {
+            name = "cipher";
+            packageId = "cipher";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "default" "std" ];
+      };
+      "block-padding" = rec {
+        crateName = "block-padding";
+        version = "0.2.1";
+        edition = "2018";
+        sha256 = "1bickjlmfw9iv63dp781n589rfybw879mik1va59833m1hvnqscd";
+        authors = [
+          "RustCrypto Developers"
+        ];
+
+      };
+      "blowfish" = rec {
+        crateName = "blowfish";
+        version = "0.8.0";
+        edition = "2018";
+        sha256 = "1ax736islxcbghc2lqq4vy7zn6qdigrls71lwg11m3743pyg6gzy";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "cipher";
+            packageId = "cipher";
+          }
+          {
+            name = "opaque-debug";
+            packageId = "opaque-debug";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "cipher";
+            packageId = "cipher";
+            features = [ "dev" ];
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "bcrypt" ];
+      };
+      "bs58" = rec {
+        crateName = "bs58";
+        version = "0.4.0";
+        edition = "2018";
+        sha256 = "1lr3vwzhhyica4y7rbkf26vr1h7vpjb1m6rml8zcqgw81c2y07vp";
+        authors = [
+          "Wim Looman <wim@nemo157.com>"
+        ];
+        features = {
+          "check" = [ "sha2" ];
+          "default" = [ "std" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "default" "std" ];
+      };
       "bstr" = rec {
         crateName = "bstr";
-        version = "0.2.15";
-        edition = "2015";
-        sha256 = "0gca4v6448clsssll3y787jgw542c9mw9phqdi7419g1jfnlf2x4";
+        version = "0.2.16";
+        edition = "2018";
+        sha256 = "0y8jy9kcqn1myzxjx7c73rbv4amfw08n936ycqz3glrsc66jqs4h";
         authors = [
           "Andrew Gallant <jamslam@gmail.com>"
         ];
@@ -439,16 +629,16 @@ rec {
           "default" = [ "std" "unicode" ];
           "serde1" = [ "std" "serde1-nostd" "serde/std" ];
           "serde1-nostd" = [ "serde" ];
-          "std" = [ "memchr/use_std" ];
+          "std" = [ "memchr/std" ];
           "unicode" = [ "lazy_static" "regex-automata" ];
         };
         resolvedDefaultFeatures = [ "std" ];
       };
       "bumpalo" = rec {
         crateName = "bumpalo";
-        version = "3.6.1";
+        version = "3.7.0";
         edition = "2018";
-        sha256 = "1gndni6ng6z1v14lq5zgm1k2y9320w4bc2ijzgyz9qwx9f56nfb3";
+        sha256 = "0ccn025n0x1gc0ijjlabin2xs7dkx5yfagkskr93yw9c06pyfncw";
         authors = [
           "Nick Fitzgerald <fitzgen@gmail.com>"
         ];
@@ -495,10 +685,10 @@ rec {
       };
       "cc" = rec {
         crateName = "cc";
-        version = "1.0.67";
+        version = "1.0.68";
         edition = "2018";
         crateBin = [];
-        sha256 = "1z9p27ys80shv09zhknmlal8jjra78agdwg97i6jjd6lg83rpip3";
+        sha256 = "11ypa8b7iwhjf5fg5j3hvbn2116h9g8v67vyd9s7ljgzq52c4wja";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -537,6 +727,49 @@ rec {
         features = {
           "rustc-dep-of-std" = [ "core" "compiler_builtins" ];
         };
+      };
+      "chardetng" = rec {
+        crateName = "chardetng";
+        version = "0.1.13";
+        edition = "2018";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./chardetng; };
+        authors = [
+          "Henri Sivonen <hsivonen@hsivonen.fi>"
+        ];
+        dependencies = [
+          {
+            name = "arrayvec";
+            packageId = "arrayvec";
+            optional = true;
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if 0.1.10";
+          }
+          {
+            name = "encoding_rs";
+            packageId = "encoding_rs";
+          }
+          {
+            name = "memchr";
+            packageId = "memchr";
+          }
+          {
+            name = "rayon";
+            packageId = "rayon";
+            optional = true;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "detone";
+            packageId = "detone";
+          }
+        ];
+        features = {
+          "multithreading" = [ "rayon" "arrayvec" ];
+        };
+        resolvedDefaultFeatures = [ "arrayvec" "multithreading" "rayon" "testing-only-no-semver-guarantees-do-not-use" ];
       };
       "chrono" = rec {
         crateName = "chrono";
@@ -590,6 +823,24 @@ rec {
           "wasmbind" = [ "wasm-bindgen" "js-sys" ];
         };
         resolvedDefaultFeatures = [ "clock" "default" "libc" "oldtime" "serde" "std" "time" "winapi" ];
+      };
+      "cipher" = rec {
+        crateName = "cipher";
+        version = "0.3.0";
+        edition = "2018";
+        sha256 = "1dyzsv0c84rgz98d5glnhsz4320wl24x3bq511vnyf0mxir21rby";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "generic-array";
+            packageId = "generic-array";
+          }
+        ];
+        features = {
+          "dev" = [ "blobby" ];
+        };
       };
       "clap" = rec {
         crateName = "clap";
@@ -709,6 +960,27 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" ];
       };
+      "cloudabi" = rec {
+        crateName = "cloudabi";
+        version = "0.0.3";
+        edition = "2015";
+        sha256 = "0kxcg83jlihy0phnd2g8c2c303px3l2p3pkjz357ll6llnd5pz6x";
+        libPath = "cloudabi.rs";
+        authors = [
+          "Nuxi (https://nuxi.nl/) and contributors"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags";
+            optional = true;
+          }
+        ];
+        features = {
+          "default" = [ "bitflags" ];
+        };
+        resolvedDefaultFeatures = [ "bitflags" "default" ];
+      };
       "constant_time_eq" = rec {
         crateName = "constant_time_eq";
         version = "0.1.5";
@@ -755,6 +1027,28 @@ rec {
         features = {
         };
       };
+      "cpufeatures" = rec {
+        crateName = "cpufeatures";
+        version = "0.1.5";
+        edition = "2018";
+        sha256 = "1vvid867wpnz5wzma3f4x2ijl83fgr6x1fc6shspzpf9ysb9djb6";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "libc";
+            packageId = "libc";
+            target = { target, features }: (stdenv.hostPlatform.config == "aarch64-apple-darwin");
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+            target = { target, features }: ((target."arch" == "aarch64") && (target."os" == "linux"));
+          }
+        ];
+
+      };
       "crc32fast" = rec {
         crateName = "crc32fast";
         version = "1.2.1";
@@ -774,6 +1068,32 @@ rec {
           "default" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "crossbeam-channel" = rec {
+        crateName = "crossbeam-channel";
+        version = "0.5.1";
+        edition = "2018";
+        sha256 = "1d1dnp61g51gnmc45cb4vpjsr5n62wz22an2y3q6avgifzhjgv86";
+        authors = [
+          "The Crossbeam Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if 1.0.0";
+          }
+          {
+            name = "crossbeam-utils";
+            packageId = "crossbeam-utils";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "crossbeam-utils/std" ];
+        };
+        resolvedDefaultFeatures = [ "crossbeam-utils" "default" "std" ];
       };
       "crossbeam-deque" = rec {
         crateName = "crossbeam-deque";
@@ -809,9 +1129,9 @@ rec {
       };
       "crossbeam-epoch" = rec {
         crateName = "crossbeam-epoch";
-        version = "0.9.3";
+        version = "0.9.5";
         edition = "2018";
-        sha256 = "04jbrwrm6ibmd83anc3difsvk0fgjyr1aqs9k33sizlmxcwzd115";
+        sha256 = "1zdpfd6hjf944dr5pb7h7rkiccbwksc958x4mp1y4d56384jxh2f";
         authors = [
           "The Crossbeam Project Developers"
         ];
@@ -850,9 +1170,9 @@ rec {
       };
       "crossbeam-utils" = rec {
         crateName = "crossbeam-utils";
-        version = "0.8.3";
+        version = "0.8.5";
         edition = "2018";
-        sha256 = "0j9cjldgd1x6l8lc8kvqryw35fny9iix9in5k7zfya0lm6gxksg7";
+        sha256 = "1ny481cx8a5pdknypb41jqym03dl8x26i2ldyyp3yb3zrq8zqb6q";
         authors = [
           "The Crossbeam Project Developers"
         ];
@@ -867,19 +1187,36 @@ rec {
             optional = true;
           }
         ];
-        buildDependencies = [
-          {
-            name = "autocfg";
-            packageId = "autocfg";
-          }
-        ];
         features = {
           "default" = [ "std" ];
           "std" = [ "lazy_static" ];
         };
         resolvedDefaultFeatures = [ "default" "lazy_static" "std" ];
       };
-      "crypto-mac" = rec {
+      "crypto-mac 0.11.0" = rec {
+        crateName = "crypto-mac";
+        version = "0.11.0";
+        edition = "2018";
+        sha256 = "0ghh3qmjf7hv580zqdk4yrbg99v57jx773zb7lzi7j4hj24bdyi5";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "generic-array";
+            packageId = "generic-array";
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "dev" = [ "blobby" ];
+        };
+      };
+      "crypto-mac 0.8.0" = rec {
         crateName = "crypto-mac";
         version = "0.8.0";
         edition = "2018";
@@ -919,6 +1256,29 @@ rec {
             name = "winapi";
             packageId = "winapi";
             features = [ "basetsd" "minwindef" "memoryapi" ];
+          }
+        ];
+
+      };
+      "ctr" = rec {
+        crateName = "ctr";
+        version = "0.7.0";
+        edition = "2018";
+        sha256 = "10flpzvymypcksd9n0avvs4cvsbpdhb6gp1avpbxfzgk0cmgjcm2";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "cipher";
+            packageId = "cipher";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "cipher";
+            packageId = "cipher";
+            features = [ "dev" ];
           }
         ];
 
@@ -1025,6 +1385,16 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "std" ];
       };
+      "detone" = rec {
+        crateName = "detone";
+        version = "1.0.0";
+        edition = "2018";
+        sha256 = "052mnp8qjp71ypcv0ixvlw7isn1yv79qn05jrcfi9j2r70clq47p";
+        authors = [
+          "Henri Sivonen <hsivonen@hsivonen.fi>"
+        ];
+
+      };
       "diffs" = rec {
         crateName = "diffs";
         version = "0.4.1";
@@ -1057,9 +1427,9 @@ rec {
       };
       "dirs" = rec {
         crateName = "dirs";
-        version = "3.0.1";
+        version = "3.0.2";
         edition = "2015";
-        sha256 = "1zxrb3anxsh80mnp2il7awccv0s5gvy7djn6gis18nbm0bnraa8l";
+        sha256 = "028kqy0vrbfgrk1yc1flq2fqh8snyg17qlygawm0r79w211s1fih";
         authors = [
           "Simon Ochsenreither <simon@ochsenreither.de>"
         ];
@@ -1093,9 +1463,9 @@ rec {
       };
       "dirs-sys" = rec {
         crateName = "dirs-sys";
-        version = "0.3.5";
+        version = "0.3.6";
         edition = "2015";
-        sha256 = "0ym5843xack45b1yjahrh3q2f72shnwf1dd2jncf9qsxf3sxg4wf";
+        sha256 = "102pbpcrfhvhfyfnyvmvvwpl6mfvynh170f6ima6fyinxls6bn03";
         authors = [
           "Simon Ochsenreither <simon@ochsenreither.de>"
         ];
@@ -1107,7 +1477,8 @@ rec {
           }
           {
             name = "redox_users";
-            packageId = "redox_users 0.3.5";
+            packageId = "redox_users";
+            usesDefaultFeatures = false;
             target = { target, features }: (target."os" == "redox");
           }
           {
@@ -1135,7 +1506,7 @@ rec {
           }
           {
             name = "redox_users";
-            packageId = "redox_users 0.4.0";
+            packageId = "redox_users";
             usesDefaultFeatures = false;
             target = { target, features }: (target."os" == "redox");
           }
@@ -1147,6 +1518,108 @@ rec {
           }
         ];
 
+      };
+      "ed25519" = rec {
+        crateName = "ed25519";
+        version = "1.1.1";
+        edition = "2018";
+        sha256 = "1xn80syb553dladvjiw2cvk4w11y86zajrsc50b3j90jbd0n024d";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "serde";
+            packageId = "serde";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "signature";
+            packageId = "signature";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "signature/std" ];
+        };
+        resolvedDefaultFeatures = [ "serde" "std" ];
+      };
+      "ed25519-dalek" = rec {
+        crateName = "ed25519-dalek";
+        version = "1.0.1";
+        edition = "2018";
+        sha256 = "17bsriciv93nkm39z22w7mr0h2a3hnbmgf378v4c895gvkkblqn7";
+        authors = [
+          "isis lovecruft <isis@patternsinthevoid.net>"
+        ];
+        dependencies = [
+          {
+            name = "curve25519-dalek";
+            packageId = "curve25519-dalek";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "ed25519";
+            packageId = "ed25519";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.7.3";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            rename = "serde_crate";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "serde_bytes";
+            packageId = "serde_bytes";
+            optional = true;
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            usesDefaultFeatures = false;
+            features = [ "zeroize_derive" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "rand";
+            packageId = "rand 0.7.3";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+        ];
+        features = {
+          "alloc" = [ "curve25519-dalek/alloc" "rand/alloc" "zeroize/alloc" ];
+          "asm" = [ "sha2/asm" ];
+          "batch" = [ "merlin" "rand" ];
+          "batch_deterministic" = [ "merlin" "rand" "rand_core" ];
+          "default" = [ "std" "rand" "u64_backend" ];
+          "nightly" = [ "curve25519-dalek/nightly" ];
+          "serde" = [ "serde_crate" "serde_bytes" "ed25519/serde" ];
+          "simd_backend" = [ "curve25519-dalek/simd_backend" ];
+          "std" = [ "curve25519-dalek/std" "ed25519/std" "serde_crate/std" "sha2/std" "rand/std" ];
+          "u32_backend" = [ "curve25519-dalek/u32_backend" ];
+          "u64_backend" = [ "curve25519-dalek/u64_backend" ];
+        };
+        resolvedDefaultFeatures = [ "default" "rand" "serde" "serde_bytes" "serde_crate" "std" "u64_backend" ];
       };
       "edit" = rec {
         crateName = "edit";
@@ -1209,9 +1682,9 @@ rec {
       };
       "env_logger" = rec {
         crateName = "env_logger";
-        version = "0.8.3";
+        version = "0.8.4";
         edition = "2018";
-        sha256 = "0gwx1pvbv99fj9wpicknyv4p2vj997xpva8ac5dg03m35q0jlf8p";
+        sha256 = "1qzw8g11dbdfi7ixm44ldykwcqsxqkh8vx5cgpd88zmclgz8g4d1";
         authors = [
           "The Rust Project Developers"
         ];
@@ -1329,7 +1802,7 @@ rec {
           }
           {
             name = "redox_syscall";
-            packageId = "redox_syscall 0.2.6";
+            packageId = "redox_syscall";
             target = { target, features }: (target."os" == "redox");
           }
           {
@@ -1469,11 +1942,21 @@ rec {
         ];
 
       };
+      "fuchsia-cprng" = rec {
+        crateName = "fuchsia-cprng";
+        version = "0.1.1";
+        edition = "2018";
+        sha256 = "1fnkqrbz7ixxzsb04bsz9p0zzazanma8znfdqjvh39n14vapfvx0";
+        authors = [
+          "Erick Tryzelaar <etryzelaar@google.com>"
+        ];
+
+      };
       "futures" = rec {
         crateName = "futures";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "0lyjglxqdm91wdy646x9qrys9wfpk9g93ydzl4yasng48lsq3md9";
+        sha256 = "09zwmmfi8d1glhi0bz2didagjyqz3q9gxa7nq4vzmqns0fl46zhf";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1521,7 +2004,6 @@ rec {
           "alloc" = [ "futures-core/alloc" "futures-task/alloc" "futures-sink/alloc" "futures-channel/alloc" "futures-util/alloc" ];
           "async-await" = [ "futures-util/async-await" "futures-util/async-await-macro" ];
           "bilock" = [ "futures-util/bilock" ];
-          "cfg-target-has-atomic" = [ "futures-core/cfg-target-has-atomic" "futures-task/cfg-target-has-atomic" "futures-channel/cfg-target-has-atomic" "futures-util/cfg-target-has-atomic" ];
           "compat" = [ "std" "futures-util/compat" ];
           "default" = [ "std" "async-await" "executor" ];
           "executor" = [ "std" "futures-executor/std" ];
@@ -1536,9 +2018,9 @@ rec {
       };
       "futures-channel" = rec {
         crateName = "futures-channel";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "09gc57djz490yljh3ihvgxfwx3v81v7y0q9h06k3g4995ajwcyff";
+        sha256 = "1qki53g079ymjkgdxg3rlh5yivys8qvdqhy18l2xz0m8565sd0p6";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1557,19 +2039,17 @@ rec {
         ];
         features = {
           "alloc" = [ "futures-core/alloc" ];
-          "cfg-target-has-atomic" = [ "futures-core/cfg-target-has-atomic" ];
           "default" = [ "std" ];
           "sink" = [ "futures-sink" ];
           "std" = [ "alloc" "futures-core/std" ];
-          "unstable" = [ "futures-core/unstable" ];
         };
         resolvedDefaultFeatures = [ "alloc" "default" "futures-sink" "sink" "std" ];
       };
       "futures-core" = rec {
         crateName = "futures-core";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "058qmyvpvhzkw9aykm6ls20k3dsy4jaafdqs1xjh3jm6vp3d3309";
+        sha256 = "1lbrw5087ndaqvbjrckbz9ld4ya67k72d6w87c22d6m8v1jzf0h4";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1581,9 +2061,9 @@ rec {
       };
       "futures-executor" = rec {
         crateName = "futures-executor";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "17acz5vpbgg850wfn1z5gscl4d5rlh50ilmi9400z87d89qcpxhh";
+        sha256 = "0ydbmzg6ig9gankp2nspaq668r3ngzss4806dliygjgs16lsdnms";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1613,9 +2093,9 @@ rec {
       };
       "futures-io" = rec {
         crateName = "futures-io";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "016b6pfcsaavwcpx22psh6n36s13ymc23nqghcxc188fncgilnin";
+        sha256 = "1899vd5yri6zv88by53pzxb1h4x96mc42riziy6qyd1vzgg9ki5c";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1626,9 +2106,9 @@ rec {
       };
       "futures-macro" = rec {
         crateName = "futures-macro";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "12xvq5rsgi6jyynbxkrvbf1j620jy8xvmrqx9zmpvkc2l4rng336";
+        sha256 = "08fixp6b34lr58cs85kacp3h599bi63njvfd03655pvc92c05i54";
         procMacro = true;
         authors = [
           "Taylor Cramer <cramertj@google.com>"
@@ -1653,13 +2133,19 @@ rec {
             features = [ "full" ];
           }
         ];
+        buildDependencies = [
+          {
+            name = "autocfg";
+            packageId = "autocfg";
+          }
+        ];
 
       };
       "futures-sink" = rec {
         crateName = "futures-sink";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "08vc88majhvizpxpr44h0c240k2ag7is99v153cf6pam7i1jjmjw";
+        sha256 = "10j21j3k358512qyglqpfyxj309kr6bcspj6izg6s3gzrv8flyx5";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1671,9 +2157,9 @@ rec {
       };
       "futures-task" = rec {
         crateName = "futures-task";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "1g41ymlqvfjm7l1x4w2xamgwcpnh9gvh5xx1v6k3nvq7jl8aayms";
+        sha256 = "1bixscylw61w61dizqxhrdlnb8mv7yg9h775pssxsk8szkwvw5la";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1685,9 +2171,9 @@ rec {
       };
       "futures-util" = rec {
         crateName = "futures-util";
-        version = "0.3.14";
+        version = "0.3.15";
         edition = "2018";
-        sha256 = "09f0x4nisa9m9rgdcnh09yv7h4i7whbdidm6y0kkkwk09pall51w";
+        sha256 = "0rqr36zy4na270kn9fwk866adx1xkv1b49zxzm7zjavys8wc5dgy";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -1757,10 +2243,15 @@ rec {
             optional = true;
           }
         ];
+        buildDependencies = [
+          {
+            name = "autocfg";
+            packageId = "autocfg";
+          }
+        ];
         features = {
           "alloc" = [ "futures-core/alloc" "futures-task/alloc" ];
           "async-await-macro" = [ "async-await" "futures-macro" "proc-macro-hack" "proc-macro-nested" ];
-          "cfg-target-has-atomic" = [ "futures-core/cfg-target-has-atomic" "futures-task/cfg-target-has-atomic" ];
           "channel" = [ "std" "futures-channel" ];
           "compat" = [ "std" "futures_01" ];
           "default" = [ "std" "async-await" "async-await-macro" ];
@@ -1844,11 +2335,11 @@ rec {
         };
         resolvedDefaultFeatures = [ "std" ];
       };
-      "getrandom 0.2.2" = rec {
+      "getrandom 0.2.3" = rec {
         crateName = "getrandom";
-        version = "0.2.2";
+        version = "0.2.3";
         edition = "2018";
-        sha256 = "1j1jcwahnkn45kapq9i5nvw2s5hcfmp1zpjx0fzl0wcy4w2mfjf9";
+        sha256 = "0lr7mnkvnzdh1xxmwmhhbm4gwg29k3m2rzhpjmjm4k2jcfa9kkbz";
         authors = [
           "The Rand Project Developers"
         ];
@@ -1877,9 +2368,9 @@ rec {
       };
       "gimli" = rec {
         crateName = "gimli";
-        version = "0.23.0";
+        version = "0.24.0";
         edition = "2018";
-        sha256 = "1km657nwcrb0pnv7v0ldhgl9y8s889y2j9jckmws8k2i8bhkyl7n";
+        sha256 = "12c1arfrzvw0lxy487wm66xb3vn7wy0r1v5hvn32fri6cqw7ah0f";
         authors = [
           "Nick Fitzgerald <fitzgen@gmail.com>"
           "Philip Craig <philipjcraig@gmail.com>"
@@ -1895,9 +2386,9 @@ rec {
       };
       "git2" = rec {
         crateName = "git2";
-        version = "0.13.18";
+        version = "0.13.20";
         edition = "2018";
-        sha256 = "1iq3arga2bw5zw74d6910yd4f1b21w7dbvxly6fhj8al2k1cd0xl";
+        sha256 = "1fkc2gzcnl4ci3rja9mc5jl2ygl3fkc1fgym3rcwby216ac1x0yr";
         authors = [
           "Josh Triplett <josh@joshtriplett.org>"
           "Alex Crichton <alex@alexcrichton.com>"
@@ -1948,9 +2439,9 @@ rec {
       };
       "globset" = rec {
         crateName = "globset";
-        version = "0.4.6";
-        edition = "2015";
-        sha256 = "0jhy0qs5k43g8zyx1fys44kcdzjmcrwjyv9n703kj8g4y6g1cln1";
+        version = "0.4.8";
+        edition = "2018";
+        sha256 = "1gdzphnjjc0wdaawsq3n1nnypv9ja4prhca2n66hcahay2gksihh";
         authors = [
           "Andrew Gallant <jamslam@gmail.com>"
         ];
@@ -1986,9 +2477,9 @@ rec {
       };
       "h2" = rec {
         crateName = "h2";
-        version = "0.3.2";
+        version = "0.3.3";
         edition = "2018";
-        sha256 = "006w22103hxyiwyb4msq7xnfc21ayszpwipj1rypgqkkhcc8w0gw";
+        sha256 = "09kpwgqpwlk282l9jmwvjwm3dssvvjaz60w93xa3zdphxv246lw2";
         authors = [
           "Carl Lerche <me@carllerche.com>"
           "Sean McArthur <sean@seanmonstar.com>"
@@ -2059,9 +2550,9 @@ rec {
       };
       "hashbrown" = rec {
         crateName = "hashbrown";
-        version = "0.9.1";
+        version = "0.11.2";
         edition = "2018";
-        sha256 = "016dsm9s4xmxlkw2jfikm54qlz6vyk0qr280gab7kzp342jf9byp";
+        sha256 = "0vkjsf5nzs7qcia5ya79j9sq2p1caz4crrncr1675wwyj3ag0pmb";
         authors = [
           "Amanieu d'Antras <amanieu@gmail.com>"
         ];
@@ -2074,9 +2565,9 @@ rec {
       };
       "heck" = rec {
         crateName = "heck";
-        version = "0.3.2";
+        version = "0.3.3";
         edition = "2018";
-        sha256 = "1b56s2c1ymdd0qmy31bw0ndhm31hcdamnhg3npp7ssrmc1ag9jw7";
+        sha256 = "0b0kkr790p66lvzn9nsmfjvydrbmh9z5gb664jchwgw64vxiwqkd";
         authors = [
           "Without Boats <woboats@gmail.com>"
         ];
@@ -2090,9 +2581,9 @@ rec {
       };
       "hermit-abi" = rec {
         crateName = "hermit-abi";
-        version = "0.1.18";
+        version = "0.1.19";
         edition = "2018";
-        sha256 = "0p6czgbk1izviwxzm6ypy3vz2wqj1yd3ab03wp82xqjng7klsbrj";
+        sha256 = "0cxcm8093nf5fyn114w8vxbrbcyvv91d4015rdnlgfll7cs6gd32";
         authors = [
           "Stefan Lankes"
         ];
@@ -2107,6 +2598,35 @@ rec {
           "rustc-dep-of-std" = [ "core" "compiler_builtins/rustc-dep-of-std" "libc/rustc-dep-of-std" ];
         };
         resolvedDefaultFeatures = [ "default" ];
+      };
+      "hmac" = rec {
+        crateName = "hmac";
+        version = "0.11.0";
+        edition = "2018";
+        sha256 = "16z61aibdg4di40sqi4ks2s4rz6r29w4sx4gvblfph3yxch26aia";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "crypto-mac";
+            packageId = "crypto-mac 0.11.0";
+          }
+          {
+            name = "digest";
+            packageId = "digest";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "crypto-mac";
+            packageId = "crypto-mac 0.11.0";
+            features = [ "dev" ];
+          }
+        ];
+        features = {
+          "std" = [ "crypto-mac/std" ];
+        };
       };
       "http" = rec {
         crateName = "http";
@@ -2136,9 +2656,9 @@ rec {
       };
       "http-body" = rec {
         crateName = "http-body";
-        version = "0.4.1";
+        version = "0.4.2";
         edition = "2018";
-        sha256 = "0dwpakklfqy17y0pgwkdjrzcqja99c5sxbk940mggqml4g0pgysx";
+        sha256 = "1abmxi1mgv4qxawn4v1bxmp7b7ac835mg7isy2q6sy70w15s3nk0";
         authors = [
           "Carl Lerche <me@carllerche.com>"
           "Lucio Franco <luciofranco14@gmail.com>"
@@ -2162,9 +2682,9 @@ rec {
       };
       "httparse" = rec {
         crateName = "httparse";
-        version = "1.4.0";
+        version = "1.4.1";
         edition = "2015";
-        sha256 = "0ds4grlxbbqnji8c30gr3yhrnhnc7mf31izxqa3lhxn9dw6y872a";
+        sha256 = "0s2y7ki3sxyf1ynp0mm2k3mgafigy23d7g0rzci3rs9pdrhppa7k";
         authors = [
           "Sean McArthur <sean@seanmonstar.com>"
         ];
@@ -2175,9 +2695,9 @@ rec {
       };
       "httpdate" = rec {
         crateName = "httpdate";
-        version = "1.0.0";
+        version = "1.0.1";
         edition = "2018";
-        sha256 = "1ffllpaayc3vfrxyj4h0ychjr4i60q7wn3h6nz626ar38c6jv105";
+        sha256 = "0h240ck2xlp62dqfhfp6g45984avsmh1pkcgjmyywgzkr2kbhmk4";
         authors = [
           "Pyfisch <pyfisch@posteo.org>"
         ];
@@ -2240,9 +2760,9 @@ rec {
       };
       "hyper" = rec {
         crateName = "hyper";
-        version = "0.14.7";
+        version = "0.14.9";
         edition = "2018";
-        sha256 = "0m6g1w40p3ggvg3h9mawi4iidv17kqkhn84ypyivm0a095f10pqy";type = [ "lib" "staticlib" "cdylib" ];
+        sha256 = "10yxz4wchlq1dnya2p3kv9nw8iv5zchw92h9wly5ycs1njhvmmh7";type = [ "lib" "staticlib" "cdylib" ];
         authors = [
           "Sean McArthur <sean@seanmonstar.com>"
         ];
@@ -2291,8 +2811,8 @@ rec {
             packageId = "itoa";
           }
           {
-            name = "pin-project";
-            packageId = "pin-project";
+            name = "pin-project-lite";
+            packageId = "pin-project-lite";
           }
           {
             name = "socket2";
@@ -2416,9 +2936,9 @@ rec {
       };
       "ignore" = rec {
         crateName = "ignore";
-        version = "0.4.17";
-        edition = "2015";
-        sha256 = "1347mxd0cwiidcl0qvixl7za524x5ds0izv8vjh2df0bqr2zp1xj";
+        version = "0.4.18";
+        edition = "2018";
+        sha256 = "07bmnv96msggqb040z6xqp1p7s8ys0f97b731hp6mybkjc9ingvi";
         authors = [
           "Andrew Gallant <jamslam@gmail.com>"
         ];
@@ -2471,9 +2991,9 @@ rec {
       };
       "indexmap" = rec {
         crateName = "indexmap";
-        version = "1.6.2";
+        version = "1.7.0";
         edition = "2018";
-        sha256 = "1wxfh55zlrlpdxfcvvvj6wwc46f23cnb0j9q71190yl9pyh4aj42";
+        sha256 = "19b2zwfajhsfcgny0clv8y4jppy704znfhv8nv2dw9a18l2kcqxw";
         authors = [
           "bluss"
           "Josh Stone <cuviper@gmail.com>"
@@ -2518,9 +3038,9 @@ rec {
       };
       "ipnet" = rec {
         crateName = "ipnet";
-        version = "2.3.0";
+        version = "2.3.1";
         edition = "2015";
-        sha256 = "0db147nh8jnxr23yxa7hwqn7dcjivdqi3aq4mgf2zgkqqqa2zgj7";
+        sha256 = "1ad32j3kkbb0bgf5whzfkdw6843ywr48245dhk7c9gny5r7xdwk8";
         authors = [
           "Kris Price <kris@krisprice.nz>"
         ];
@@ -2558,9 +3078,9 @@ rec {
       };
       "js-sys" = rec {
         crateName = "js-sys";
-        version = "0.3.50";
+        version = "0.3.51";
         edition = "2018";
-        sha256 = "0k526bcp63ma05pwxjwzfmn9zhmiqfxlqnzg8vw6g3sbx3izk69d";
+        sha256 = "0qkhnsidcx4vkgacn4hhl6bf6lxhc3lljfzpad11ms50wfngpgc3";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -2586,9 +3106,9 @@ rec {
       };
       "libc" = rec {
         crateName = "libc";
-        version = "0.2.93";
+        version = "0.2.97";
         edition = "2015";
-        sha256 = "0hcd6xzln31gmi8bpydrbikgq3pj7s9cnqaslqd28nqhyrmzd1ck";
+        sha256 = "1dlgdziv6nkabx287jjmghnlgc5dqv6fgpvh9n7ibpr0synsvf0j";
         authors = [
           "The Rust Project Developers"
         ];
@@ -2601,9 +3121,9 @@ rec {
       };
       "libgit2-sys" = rec {
         crateName = "libgit2-sys";
-        version = "0.12.19+1.1.0";
+        version = "0.12.21+1.1.0";
         edition = "2018";
-        sha256 = "1rj3ck5p8qixlhj8scv3jjkni7mlif8gc10sk6z9x2scaxfia8pk";
+        sha256 = "09b85x3gpvq0d7v1mhg4f3w1b3skzlpbikrx9j2rwarbsyn1n9w6";
         libName = "libgit2_sys";
         libPath = "lib.rs";
         authors = [
@@ -2653,13 +3173,22 @@ rec {
       };
       "libpijul" = rec {
         crateName = "libpijul";
-        version = "1.0.0-alpha.39";
+        version = "1.0.0-alpha.42";
         edition = "2018";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./libpijul; };
         authors = [
           "Pierre-Étienne Meunier <pe@pijul.org>"
         ];
         dependencies = [
+          {
+            name = "adler32";
+            packageId = "adler32";
+          }
+          {
+            name = "aes";
+            packageId = "aes";
+            features = [ "ctr" ];
+          }
           {
             name = "bincode";
             packageId = "bincode";
@@ -2673,6 +3202,10 @@ rec {
             packageId = "blake3";
           }
           {
+            name = "bs58";
+            packageId = "bs58";
+          }
+          {
             name = "byteorder";
             packageId = "byteorder";
           }
@@ -2680,6 +3213,10 @@ rec {
             name = "canonical-path";
             packageId = "canonical-path";
             optional = true;
+          }
+          {
+            name = "chardetng";
+            packageId = "chardetng";
           }
           {
             name = "chrono";
@@ -2708,9 +3245,26 @@ rec {
             packageId = "diffs";
           }
           {
+            name = "ed25519-dalek";
+            packageId = "ed25519-dalek";
+            features = [ "serde" ];
+          }
+          {
+            name = "encoding_rs";
+            packageId = "encoding_rs";
+          }
+          {
             name = "flate2";
             packageId = "flate2";
             optional = true;
+          }
+          {
+            name = "generic-array";
+            packageId = "generic-array";
+          }
+          {
+            name = "hmac";
+            packageId = "hmac";
           }
           {
             name = "ignore";
@@ -2736,8 +3290,22 @@ rec {
             optional = true;
           }
           {
+            name = "pbkdf2";
+            packageId = "pbkdf2";
+            usesDefaultFeatures = false;
+          }
+          {
             name = "pijul-macros";
             packageId = "pijul-macros";
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.5.6";
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.3";
+            features = [ "getrandom" ];
           }
           {
             name = "regex";
@@ -2756,6 +3324,14 @@ rec {
           {
             name = "serde_derive";
             packageId = "serde_derive";
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
           }
           {
             name = "tar";
@@ -2814,9 +3390,9 @@ rec {
       };
       "libsodium-sys" = rec {
         crateName = "libsodium-sys";
-        version = "0.2.6";
+        version = "0.2.7";
         edition = "2015";
-        sha256 = "0n4a5f4vi63lvf4v6xcds20kdiqs8dxpybjz25s90cvvhd7vd1d6";
+        sha256 = "1zcjka23grayr8kjrgbada6vwagp0kkni9m45v0gpbanrn3r6xvb";
         libName = "libsodium_sys";
         authors = [
           "dnaq"
@@ -2843,6 +3419,10 @@ rec {
           {
             name = "pkg-config";
             packageId = "pkg-config";
+          }
+          {
+            name = "walkdir";
+            packageId = "walkdir";
           }
         ];
         features = {
@@ -2899,9 +3479,9 @@ rec {
       };
       "libz-sys" = rec {
         crateName = "libz-sys";
-        version = "1.1.2";
+        version = "1.1.3";
         edition = "2015";
-        sha256 = "0mcn8991kpmw320923hlcmci834nkv1qakkcg4w8znq85cci68b0";
+        sha256 = "0rpcxkccjn8da9114kvl8hrnrkspzsmdn0qcxlix85lwajw3am6y";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
           "Josh Triplett <josh@joshtriplett.org>"
@@ -2950,9 +3530,9 @@ rec {
       };
       "lock_api" = rec {
         crateName = "lock_api";
-        version = "0.4.3";
+        version = "0.4.4";
         edition = "2018";
-        sha256 = "0xii6ch47akyky2spb4h53wxm1xvigcpm6di9dwpfrxf9v192g2s";
+        sha256 = "1sq7pw7h7jbfvnv5nq3vm912gdwhhv8idi3njifd3xnz0q38i0h3";
         authors = [
           "Amanieu d'Antras <amanieu@gmail.com>"
         ];
@@ -3017,11 +3597,32 @@ rec {
         ];
 
       };
+      "md5" = rec {
+        crateName = "md5";
+        version = "0.7.0";
+        edition = "2015";
+        sha256 = "0wcps37hrhz59fkhf8di1ppdnqld6l1w5sdy7jp7p51z0i4c8329";
+        authors = [
+          "Ivan Ukhov <ivan.ukhov@gmail.com>"
+          "Kamal Ahmad <shibe@openmailbox.org>"
+          "Konstantin Stepanov <milezv@gmail.com>"
+          "Lukas Kalbertodt <lukas.kalbertodt@gmail.com>"
+          "Nathan Musoke <nathan.musoke@gmail.com>"
+          "Scott Mabin <scott@mabez.dev>"
+          "Tony Arcieri <bascule@gmail.com>"
+          "Wim de With <register@dewith.io>"
+          "Yosef Dinerstein <yosefdi@gmail.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
       "memchr" = rec {
         crateName = "memchr";
-        version = "2.3.4";
-        edition = "2015";
-        sha256 = "098m9clfs495illlw00hv2gg67mhm7jflld3msyclvi5m9xc9q8f";
+        version = "2.4.0";
+        edition = "2018";
+        sha256 = "1p478fqf4nia2ma0kv4npb8x1hli0zz6k16517ikb51jkryx8sxi";
         authors = [
           "Andrew Gallant <jamslam@gmail.com>"
           "bluss"
@@ -3030,7 +3631,7 @@ rec {
           "default" = [ "std" ];
           "use_std" = [ "std" ];
         };
-        resolvedDefaultFeatures = [ "default" "std" "use_std" ];
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "memmap" = rec {
         crateName = "memmap";
@@ -3057,9 +3658,9 @@ rec {
       };
       "memoffset" = rec {
         crateName = "memoffset";
-        version = "0.6.3";
+        version = "0.6.4";
         edition = "2015";
-        sha256 = "079nahsp9sr5dhahd173i6a8k0sl82w6s4awsigzilcf3rcbcgzq";
+        sha256 = "1yfx2v8kmkhr2d4gwk8ghihdwg73vapn3vvp0im06f0kgx8crb2r";
         authors = [
           "Gilad Naaman <gilad.naaman@gmail.com>"
         ];
@@ -3111,9 +3712,9 @@ rec {
       };
       "mio" = rec {
         crateName = "mio";
-        version = "0.7.11";
+        version = "0.7.13";
         edition = "2018";
-        sha256 = "0mi9ah60l270761sz6qdhhn0hkn5msc8689b53bhnkmk0glx706g";
+        sha256 = "05mvlrn3r2vqps4fflmknw15r0rs8xld4g99sdf8647c2iixnawc";
         authors = [
           "Carl Lerche <me@carllerche.com>"
           "Thomas de Zeeuw <thomasdezeeuw@gmail.com>"
@@ -3299,9 +3900,9 @@ rec {
       };
       "num-bigint" = rec {
         crateName = "num-bigint";
-        version = "0.2.6";
-        edition = "2015";
-        sha256 = "015k3wixdi4w698sappvy43pf8bvkw0f88xplmdgc3zfk2cpy309";
+        version = "0.4.0";
+        edition = "2018";
+        sha256 = "04k5xh7d0nxay4yfb02rj841y9g5jh45d320avi53ak221y083af";
         authors = [
           "The Rust Project Developers"
         ];
@@ -3310,11 +3911,13 @@ rec {
             name = "num-integer";
             packageId = "num-integer";
             usesDefaultFeatures = false;
+            features = [ "i128" ];
           }
           {
             name = "num-traits";
             packageId = "num-traits";
             usesDefaultFeatures = false;
+            features = [ "i128" ];
           }
         ];
         buildDependencies = [
@@ -3325,7 +3928,6 @@ rec {
         ];
         features = {
           "default" = [ "std" ];
-          "i128" = [ "num-integer/i128" "num-traits/i128" ];
           "std" = [ "num-integer/std" "num-traits/std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
@@ -3356,7 +3958,7 @@ rec {
           "i128" = [ "num-traits/i128" ];
           "std" = [ "num-traits/std" ];
         };
-        resolvedDefaultFeatures = [ "default" "std" ];
+        resolvedDefaultFeatures = [ "default" "i128" "std" ];
       };
       "num-traits" = rec {
         crateName = "num-traits";
@@ -3375,7 +3977,7 @@ rec {
         features = {
           "default" = [ "std" ];
         };
-        resolvedDefaultFeatures = [ "std" ];
+        resolvedDefaultFeatures = [ "i128" "std" ];
       };
       "num_cpus" = rec {
         crateName = "num_cpus";
@@ -3400,20 +4002,28 @@ rec {
       };
       "object" = rec {
         crateName = "object";
-        version = "0.23.0";
+        version = "0.25.3";
         edition = "2018";
-        sha256 = "1m658q2ci9hk8csbl17zwcg1hpvcxm2sspjb9bzg0kc1cifsp9x9";
+        sha256 = "1irb91bk41kfd4bpr1ypda8hv1qn9js43zvl003b8mvsd7ijp3x3";
         authors = [
           "Nick Fitzgerald <fitzgen@gmail.com>"
           "Philip Craig <philipjcraig@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "memchr";
+            packageId = "memchr";
+            usesDefaultFeatures = false;
+          }
         ];
         features = {
           "all" = [ "read" "write" "std" "compression" "default" ];
           "compression" = [ "flate2" "std" ];
           "default" = [ "read" "compression" ];
           "pe" = [ "coff" ];
-          "read" = [ "read_core" "archive" "coff" "elf" "macho" "pe" "wasm" "unaligned" ];
+          "read" = [ "read_core" "archive" "coff" "elf" "macho" "pe" "unaligned" ];
           "rustc-dep-of-std" = [ "core" "compiler_builtins" "alloc" ];
+          "std" = [ "memchr/std" ];
           "wasm" = [ "wasmparser" ];
           "write" = [ "write_core" "coff" "elf" "macho" ];
           "write_core" = [ "crc32fast" "indexmap" "std" ];
@@ -3422,9 +4032,9 @@ rec {
       };
       "once_cell" = rec {
         crateName = "once_cell";
-        version = "1.7.2";
+        version = "1.8.0";
         edition = "2018";
-        sha256 = "18qmpyfigg4ibdhjy5mwcjhzk9adwlgfaqv7nj430ivm86q0i2xg";
+        sha256 = "0mkbbxg6416z11r2yzsq91cqrkj9w1iyx5hakq15h5sbnriwnbv9";
         authors = [
           "Aleksey Kladov <aleksey.kladov@gmail.com>"
         ];
@@ -3435,11 +4045,21 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "race" "std" ];
       };
+      "opaque-debug" = rec {
+        crateName = "opaque-debug";
+        version = "0.3.0";
+        edition = "2018";
+        sha256 = "1m8kzi4nd6shdqimn0mgb24f0hxslhnqd1whakyq06wcqd086jk2";
+        authors = [
+          "RustCrypto Developers"
+        ];
+
+      };
       "openssl" = rec {
         crateName = "openssl";
-        version = "0.10.33";
+        version = "0.10.35";
         edition = "2018";
-        sha256 = "0xx5g2v2s9vna36f136ijv73baj0v4v7bphmk2igbzi35av7a456";
+        sha256 = "11fq2dyih820kqg8d7ycjhfk3ksfac2782rfs3k29bkr1jak152l";
         authors = [
           "Steven Fackler <sfackler@gmail.com>"
         ];
@@ -3476,9 +4096,9 @@ rec {
       };
       "openssl-probe" = rec {
         crateName = "openssl-probe";
-        version = "0.1.2";
+        version = "0.1.4";
         edition = "2015";
-        sha256 = "1pijrdifgsdwd45b08c2g0dsmnhz7c3kmagb70839ngrd7d29bvp";
+        sha256 = "0nmrvlrza9ya23kgzmsgfc17f9pxajdxk25cwsk9aq5p5a3qv618";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -3486,9 +4106,9 @@ rec {
       };
       "openssl-sys" = rec {
         crateName = "openssl-sys";
-        version = "0.9.61";
+        version = "0.9.65";
         edition = "2015";
-        sha256 = "0zr76vap4i3g379wx3c66mvvxw6y7lcgmq89gs1pds0r6lwm4dri";
+        sha256 = "07dw7y2w3xgz32inrvf1yvw0klb3dk5xz7100m8vi2x0pzihfybs";
         build = "build/main.rs";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
@@ -3537,11 +4157,11 @@ rec {
       };
       "os_type" = rec {
         crateName = "os_type";
-        version = "2.2.0";
+        version = "2.3.0";
         edition = "2015";
-        sha256 = "1sz90xi9br82zmp3s0fbp397ajm5f0xsir7pikwbg65fy0d03p3y";
+        sha256 = "146zx5mh84n5p2xhlwb8b75wbkqw87fvb87n3adl44lz5pifpsln";
         authors = [
-          "Jan Schulte <hello@unexpected-co.de>"
+          "Jan Schulte <janschulte@fastmail.com>"
         ];
         dependencies = [
           {
@@ -3628,7 +4248,7 @@ rec {
           }
           {
             name = "redox_syscall";
-            packageId = "redox_syscall 0.2.6";
+            packageId = "redox_syscall";
             target = { target, features }: (target."os" == "redox");
           }
           {
@@ -3646,6 +4266,38 @@ rec {
           "deadlock_detection" = [ "petgraph" "thread-id" "backtrace" ];
         };
       };
+      "password-hash" = rec {
+        crateName = "password-hash";
+        version = "0.2.1";
+        edition = "2018";
+        sha256 = "10i2jp5d3cng482baqrfwz01i0p981ianjmqffpc3lh5qblx99f1";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "base64ct";
+            packageId = "base64ct";
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.3";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "alloc" = [ "base64ct/alloc" ];
+          "default" = [ "rand_core" ];
+          "std" = [ "alloc" "base64ct/std" ];
+        };
+        resolvedDefaultFeatures = [ "rand_core" ];
+      };
       "path-slash" = rec {
         crateName = "path-slash";
         version = "0.1.4";
@@ -3655,6 +4307,63 @@ rec {
           "rhysd <https://rhysd.github.io>"
         ];
 
+      };
+      "pbkdf2" = rec {
+        crateName = "pbkdf2";
+        version = "0.8.0";
+        edition = "2018";
+        sha256 = "1ykgicvyjm41701mzqhrfmiz5sm5y0zwfg6csaapaqaf49a54pyr";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "base64ct";
+            packageId = "base64ct";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "crypto-mac";
+            packageId = "crypto-mac 0.11.0";
+          }
+          {
+            name = "hmac";
+            packageId = "hmac";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "password-hash";
+            packageId = "password-hash";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "rand_core" ];
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "hmac";
+            packageId = "hmac";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+          }
+        ];
+        features = {
+          "default" = [ "simple" ];
+          "parallel" = [ "rayon" "std" ];
+          "simple" = [ "sha2" "hmac" "password-hash" "base64ct" ];
+          "std" = [ "password-hash/std" ];
+        };
+        resolvedDefaultFeatures = [ "base64ct" "default" "hmac" "password-hash" "sha2" "simple" ];
       };
       "percent-encoding" = rec {
         crateName = "percent-encoding";
@@ -3669,7 +4378,7 @@ rec {
       };
       "pijul" = rec {
         crateName = "pijul";
-        version = "1.0.0-alpha.48";
+        version = "1.0.0-alpha.49";
         edition = "2018";
         crateBin = [
           { name = "pijul"; path = "src/main.rs"; }
@@ -3776,7 +4485,7 @@ rec {
           }
           {
             name = "rand";
-            packageId = "rand 0.8.3";
+            packageId = "rand 0.8.4";
           }
           {
             name = "regex";
@@ -3785,7 +4494,7 @@ rec {
           {
             name = "reqwest";
             packageId = "reqwest";
-            features = [ "stream" ];
+            features = [ "stream" "json" ];
           }
           {
             name = "rpassword";
@@ -3881,54 +4590,11 @@ rec {
         ];
 
       };
-      "pin-project" = rec {
-        crateName = "pin-project";
-        version = "1.0.7";
-        edition = "2018";
-        sha256 = "1964rh32hiy5v2ircli8wv8fxq9h2nkgfalda6j407040v0rql67";
-        authors = [
-          "Taiki Endo <te316e89@gmail.com>"
-        ];
-        dependencies = [
-          {
-            name = "pin-project-internal";
-            packageId = "pin-project-internal";
-            usesDefaultFeatures = false;
-          }
-        ];
-
-      };
-      "pin-project-internal" = rec {
-        crateName = "pin-project-internal";
-        version = "1.0.7";
-        edition = "2018";
-        sha256 = "0vs289my2262ziwxj60mnzr2k41ibga73z8yddah1dc34l9m1ja8";
-        procMacro = true;
-        authors = [
-          "Taiki Endo <te316e89@gmail.com>"
-        ];
-        dependencies = [
-          {
-            name = "proc-macro2";
-            packageId = "proc-macro2";
-          }
-          {
-            name = "quote";
-            packageId = "quote";
-          }
-          {
-            name = "syn";
-            packageId = "syn";
-            features = [ "full" "visit-mut" ];
-          }
-        ];
-
-      };
       "pin-project-lite" = rec {
         crateName = "pin-project-lite";
-        version = "0.2.6";
+        version = "0.2.7";
         edition = "2018";
-        sha256 = "01g96zxghb33s1vsjmjpn9l3a2nxdqj7glf9lhq7q5wjkhjiy3nw";
+        sha256 = "0hwl8iyx3h9i3i3jr2vqj07nf4ay1v1w1ga29cbjmdd6d4fd2ccd";
         authors = [
           "Taiki Endo <te316e89@gmail.com>"
         ];
@@ -4057,9 +4723,9 @@ rec {
       };
       "proc-macro2" = rec {
         crateName = "proc-macro2";
-        version = "1.0.26";
+        version = "1.0.27";
         edition = "2018";
-        sha256 = "1v4w5jchgsssr727iyv986r8jaw6z80bzlhqgrbp78nw2lr02lm1";
+        sha256 = "0f3h0zl5w5090ajmmvpmhkpr4iwqnn5rip3afacabhc657vwmn7h";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
           "David Tolnay <dtolnay@gmail.com>"
@@ -4095,6 +4761,55 @@ rec {
           "proc-macro" = [ "proc-macro2/proc-macro" ];
         };
         resolvedDefaultFeatures = [ "default" "proc-macro" ];
+      };
+      "rand 0.5.6" = rec {
+        crateName = "rand";
+        version = "0.5.6";
+        edition = "2015";
+        sha256 = "1fdcgja9167hlzkf4g5daqwp498lwiyq7aqm05whklpbsdyc8666";
+        authors = [
+          "The Rust Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "cloudabi";
+            packageId = "cloudabi";
+            optional = true;
+            target = { target, features }: (target."os" == "cloudabi");
+          }
+          {
+            name = "fuchsia-cprng";
+            packageId = "fuchsia-cprng";
+            optional = true;
+            target = { target, features }: (target."os" == "fuchsia");
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+            optional = true;
+            target = { target, features }: (target."unix" or false);
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.3.1";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "winapi";
+            packageId = "winapi";
+            optional = true;
+            target = { target, features }: (target."windows" or false);
+            features = [ "minwindef" "ntsecapi" "profileapi" "winnt" ];
+          }
+        ];
+        features = {
+          "alloc" = [ "rand_core/alloc" ];
+          "default" = [ "std" ];
+          "nightly" = [ "i128_support" ];
+          "serde1" = [ "serde" "serde_derive" "rand_core/serde1" ];
+          "std" = [ "rand_core/std" "alloc" "libc" "winapi" "cloudabi" "fuchsia-cprng" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "cloudabi" "default" "fuchsia-cprng" "libc" "std" "winapi" ];
       };
       "rand 0.7.3" = rec {
         crateName = "rand";
@@ -4154,11 +4869,11 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "getrandom" "getrandom_package" "libc" "std" ];
       };
-      "rand 0.8.3" = rec {
+      "rand 0.8.4" = rec {
         crateName = "rand";
-        version = "0.8.3";
+        version = "0.8.4";
         edition = "2018";
-        sha256 = "0zldxfx4gi551n2fna4zz9ab22zsnzw1mj5hzi5nfs24dgkfgy8f";
+        sha256 = "1n5wska2fbfj4dsfz8mc0pd0dgjlrb6c9anpk5mwym345rip6x9f";
         authors = [
           "The Rand Project Developers"
           "The Rust Project Developers"
@@ -4173,18 +4888,18 @@ rec {
           }
           {
             name = "rand_chacha";
-            packageId = "rand_chacha 0.3.0";
+            packageId = "rand_chacha 0.3.1";
             optional = true;
             usesDefaultFeatures = false;
             target = { target, features }: (!(target."os" == "emscripten"));
           }
           {
             name = "rand_core";
-            packageId = "rand_core 0.6.2";
+            packageId = "rand_core 0.6.3";
           }
           {
             name = "rand_hc";
-            packageId = "rand_hc 0.3.0";
+            packageId = "rand_hc 0.3.1";
             optional = true;
             target = { target, features }: (target."os" == "emscripten");
           }
@@ -4192,14 +4907,14 @@ rec {
         devDependencies = [
           {
             name = "rand_hc";
-            packageId = "rand_hc 0.3.0";
+            packageId = "rand_hc 0.3.1";
           }
         ];
         features = {
           "alloc" = [ "rand_core/alloc" ];
           "default" = [ "std" "std_rng" ];
           "getrandom" = [ "rand_core/getrandom" ];
-          "serde1" = [ "serde" ];
+          "serde1" = [ "serde" "rand_core/serde1" ];
           "simd_support" = [ "packed_simd" ];
           "std" = [ "rand_core/std" "rand_chacha/std" "alloc" "getrandom" "libc" ];
           "std_rng" = [ "rand_chacha" "rand_hc" ];
@@ -4234,11 +4949,11 @@ rec {
         };
         resolvedDefaultFeatures = [ "std" ];
       };
-      "rand_chacha 0.3.0" = rec {
+      "rand_chacha 0.3.1" = rec {
         crateName = "rand_chacha";
-        version = "0.3.0";
+        version = "0.3.1";
         edition = "2018";
-        sha256 = "03df2xh5nbdvwr17qm3sviaxa95r8yhm1nil2pr0pqf90p7ka9z1";
+        sha256 = "123x2adin558xbhvqb8w4f6syjsdkmqff8cxwhmjacpsl1ihmhg6";
         authors = [
           "The Rand Project Developers"
           "The Rust Project Developers"
@@ -4253,14 +4968,53 @@ rec {
           }
           {
             name = "rand_core";
-            packageId = "rand_core 0.6.2";
+            packageId = "rand_core 0.6.3";
           }
         ];
         features = {
           "default" = [ "std" ];
+          "serde1" = [ "serde" ];
           "std" = [ "ppv-lite86/std" ];
         };
         resolvedDefaultFeatures = [ "std" ];
+      };
+      "rand_core 0.3.1" = rec {
+        crateName = "rand_core";
+        version = "0.3.1";
+        edition = "2015";
+        sha256 = "0jzdgszfa4bliigiy4hi66k7fs3gfwi2qxn8vik84ph77fwdwvvs";
+        authors = [
+          "The Rand Project Developers"
+          "The Rust Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.4.2";
+          }
+        ];
+        features = {
+          "alloc" = [ "rand_core/alloc" ];
+          "default" = [ "std" ];
+          "serde1" = [ "rand_core/serde1" ];
+          "std" = [ "rand_core/std" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "std" ];
+      };
+      "rand_core 0.4.2" = rec {
+        crateName = "rand_core";
+        version = "0.4.2";
+        edition = "2015";
+        sha256 = "1p09ynysrq1vcdlmcqnapq4qakl2yd1ng3kxh3qscpx09k2a6cww";
+        authors = [
+          "The Rand Project Developers"
+          "The Rust Project Developers"
+        ];
+        features = {
+          "serde1" = [ "serde" "serde_derive" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "std" ];
       };
       "rand_core 0.5.1" = rec {
         crateName = "rand_core";
@@ -4284,11 +5038,11 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "getrandom" "std" ];
       };
-      "rand_core 0.6.2" = rec {
+      "rand_core 0.6.3" = rec {
         crateName = "rand_core";
-        version = "0.6.2";
+        version = "0.6.3";
         edition = "2018";
-        sha256 = "1rvas1afjvd2827b8mf2ilg78h3ksl9npkrdds3wbw9x33mndkrl";
+        sha256 = "1rxlxc3bpzgwphcg9c9yasvv9idipcg2z2y4j0vlb52jyl418kyk";
         authors = [
           "The Rand Project Developers"
           "The Rust Project Developers"
@@ -4296,7 +5050,7 @@ rec {
         dependencies = [
           {
             name = "getrandom";
-            packageId = "getrandom 0.2.2";
+            packageId = "getrandom 0.2.3";
             optional = true;
           }
         ];
@@ -4322,38 +5076,92 @@ rec {
         ];
 
       };
-      "rand_hc 0.3.0" = rec {
+      "rand_hc 0.3.1" = rec {
         crateName = "rand_hc";
-        version = "0.3.0";
+        version = "0.3.1";
         edition = "2018";
-        sha256 = "0wra6ar22zdjkry9dsq1mg620m4h3qb9s8rfykkz4im4crqfz41i";
+        sha256 = "1rwpykyvhkxs4jvqdja3mzp9dqaqamzn113cxaigs9z2dmcry7nm";
         authors = [
           "The Rand Project Developers"
         ];
         dependencies = [
           {
             name = "rand_core";
-            packageId = "rand_core 0.6.2";
+            packageId = "rand_core 0.6.3";
           }
         ];
 
       };
-      "redox_syscall 0.1.57" = rec {
-        crateName = "redox_syscall";
-        version = "0.1.57";
-        edition = "2015";
-        sha256 = "1kh59fpwy33w9nwd5iyc283yglq8pf2s41hnhvl48iax9mz0zk21";
-        libName = "syscall";
+      "rayon" = rec {
+        crateName = "rayon";
+        version = "1.5.1";
+        edition = "2018";
+        sha256 = "143dl2453bazgk7rwjrickmyqd0ks3q69nfz8axcins19n0clsn0";
         authors = [
-          "Jeremy Soller <jackpot51@gmail.com>"
+          "Niko Matsakis <niko@alum.mit.edu>"
+          "Josh Stone <cuviper@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "crossbeam-deque";
+            packageId = "crossbeam-deque";
+          }
+          {
+            name = "either";
+            packageId = "either";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "rayon-core";
+            packageId = "rayon-core";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "autocfg";
+            packageId = "autocfg";
+          }
         ];
 
       };
-      "redox_syscall 0.2.6" = rec {
-        crateName = "redox_syscall";
-        version = "0.2.6";
+      "rayon-core" = rec {
+        crateName = "rayon-core";
+        version = "1.9.1";
         edition = "2018";
-        sha256 = "0hchadrvdfvsrxg7zxz808nj521bnzq552apgs753sycbi5k2w42";
+        sha256 = "13kdcnqp2p1a5a3amamfjpnm7ay463vq4dfxy4rrh9shr3i210fp";
+        authors = [
+          "Niko Matsakis <niko@alum.mit.edu>"
+          "Josh Stone <cuviper@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "crossbeam-channel";
+            packageId = "crossbeam-channel";
+          }
+          {
+            name = "crossbeam-deque";
+            packageId = "crossbeam-deque";
+          }
+          {
+            name = "crossbeam-utils";
+            packageId = "crossbeam-utils";
+          }
+          {
+            name = "lazy_static";
+            packageId = "lazy_static";
+          }
+          {
+            name = "num_cpus";
+            packageId = "num_cpus";
+          }
+        ];
+
+      };
+      "redox_syscall" = rec {
+        crateName = "redox_syscall";
+        version = "0.2.9";
+        edition = "2018";
+        sha256 = "1vpyfnfrw5ki262720yks8m7vn1a2mg89s4rqi5ir7izvyx9md2s";
         libName = "syscall";
         authors = [
           "Jeremy Soller <jackpot51@gmail.com>"
@@ -4366,37 +5174,7 @@ rec {
         ];
 
       };
-      "redox_users 0.3.5" = rec {
-        crateName = "redox_users";
-        version = "0.3.5";
-        edition = "2015";
-        sha256 = "179fxmyqaqzibp533ajgbn4ljah9lrzpqvd3i73h55bs7qrkf1yy";
-        authors = [
-          "Jose Narvaez <goyox86@gmail.com>"
-          "Wesley Hershberger <mggmugginsmc@gmail.com>"
-        ];
-        dependencies = [
-          {
-            name = "getrandom";
-            packageId = "getrandom 0.1.16";
-          }
-          {
-            name = "redox_syscall";
-            packageId = "redox_syscall 0.1.57";
-          }
-          {
-            name = "rust-argon2";
-            packageId = "rust-argon2";
-            optional = true;
-          }
-        ];
-        features = {
-          "auth" = [ "rust-argon2" ];
-          "default" = [ "auth" ];
-        };
-        resolvedDefaultFeatures = [ "auth" "default" "rust-argon2" ];
-      };
-      "redox_users 0.4.0" = rec {
+      "redox_users" = rec {
         crateName = "redox_users";
         version = "0.4.0";
         edition = "2018";
@@ -4408,12 +5186,12 @@ rec {
         dependencies = [
           {
             name = "getrandom";
-            packageId = "getrandom 0.2.2";
+            packageId = "getrandom 0.2.3";
             features = [ "std" ];
           }
           {
             name = "redox_syscall";
-            packageId = "redox_syscall 0.2.6";
+            packageId = "redox_syscall";
           }
         ];
         features = {
@@ -4423,9 +5201,9 @@ rec {
       };
       "regex" = rec {
         crateName = "regex";
-        version = "1.4.6";
-        edition = "2015";
-        sha256 = "0nf7gj6b7qzrq8b11srnwva2amx6b4v3lnrki1jxajspid0sy9ia";
+        version = "1.5.4";
+        edition = "2018";
+        sha256 = "0qf479kjbmb582h4d1d6gfl75h0j8aq2nrdi5wg6zdcy6llqcynh";
         authors = [
           "The Rust Project Developers"
         ];
@@ -4465,9 +5243,9 @@ rec {
       };
       "regex-syntax" = rec {
         crateName = "regex-syntax";
-        version = "0.6.23";
-        edition = "2015";
-        sha256 = "0j25v3pbfaprpr1k7h8smw5xrs6j5kzznddq50nzcq1f2n4z1m94";
+        version = "0.6.25";
+        edition = "2018";
+        sha256 = "16y87hz1bxmmz6kk360cxwfm3jnbsxb3x4zw9x1gzz7khic2i5zl";
         authors = [
           "The Rust Project Developers"
         ];
@@ -4497,9 +5275,9 @@ rec {
       };
       "reqwest" = rec {
         crateName = "reqwest";
-        version = "0.11.3";
+        version = "0.11.4";
         edition = "2018";
-        sha256 = "097i9z42jq2sn3va3r6pksz3gzffbnr3c4aapk6fhy9rqpxg55i2";
+        sha256 = "08kdxaa7c5wzlr2f4qkqlczc86p30sz84xllk83dyxxvp5hryvi4";
         authors = [
           "Sean McArthur <sean@seanmonstar.com>"
         ];
@@ -4599,6 +5377,11 @@ rec {
             packageId = "serde";
           }
           {
+            name = "serde_json";
+            packageId = "serde_json";
+            optional = true;
+          }
+          {
             name = "serde_urlencoded";
             packageId = "serde_urlencoded";
           }
@@ -4671,10 +5454,12 @@ rec {
           "cookies" = [ "cookie_crate" "cookie_store" "time" ];
           "default" = [ "default-tls" ];
           "default-tls" = [ "hyper-tls" "native-tls-crate" "__tls" "tokio-native-tls" ];
+          "deflate" = [ "async-compression" "async-compression/zlib" "tokio-util" ];
           "gzip" = [ "async-compression" "async-compression/gzip" "tokio-util" ];
           "json" = [ "serde_json" ];
           "multipart" = [ "mime_guess" ];
           "native-tls" = [ "default-tls" ];
+          "native-tls-alpn" = [ "native-tls" "native-tls-crate/alpn" ];
           "native-tls-vendored" = [ "native-tls" "native-tls-crate/vendored" ];
           "rustls-tls" = [ "rustls-tls-webpki-roots" ];
           "rustls-tls-manual-roots" = [ "__rustls" ];
@@ -4683,7 +5468,7 @@ rec {
           "socks" = [ "tokio-socks" ];
           "trust-dns" = [ "trust-dns-resolver" ];
         };
-        resolvedDefaultFeatures = [ "__tls" "default" "default-tls" "hyper-tls" "native-tls-crate" "stream" "tokio-native-tls" ];
+        resolvedDefaultFeatures = [ "__tls" "default" "default-tls" "hyper-tls" "json" "native-tls-crate" "serde_json" "stream" "tokio-native-tls" ];
       };
       "rpassword" = rec {
         crateName = "rpassword";
@@ -4708,44 +5493,11 @@ rec {
         ];
 
       };
-      "rust-argon2" = rec {
-        crateName = "rust-argon2";
-        version = "0.8.3";
-        edition = "2018";
-        sha256 = "1yvqkv04fqk3cbvyasibr4bqbxa6mij8jdvibakwlcsbjh6q462b";
-        libName = "argon2";
-        authors = [
-          "Martijn Rijkeboer <mrr@sru-systems.com>"
-        ];
-        dependencies = [
-          {
-            name = "base64";
-            packageId = "base64";
-          }
-          {
-            name = "blake2b_simd";
-            packageId = "blake2b_simd";
-          }
-          {
-            name = "constant_time_eq";
-            packageId = "constant_time_eq";
-          }
-          {
-            name = "crossbeam-utils";
-            packageId = "crossbeam-utils";
-            optional = true;
-          }
-        ];
-        features = {
-          "default" = [ "crossbeam-utils" ];
-        };
-        resolvedDefaultFeatures = [ "crossbeam-utils" "default" ];
-      };
       "rustc-demangle" = rec {
         crateName = "rustc-demangle";
-        version = "0.1.18";
+        version = "0.1.20";
         edition = "2015";
-        sha256 = "0cn2hdq0glr875hvpi0hvb19xj3y9gfnk0lnsw3wl538wc7asfvf";
+        sha256 = "0jcdh4zanli1r4pcfj5ah1xcbxv87vh02syb9f0rqgp0nnq71bfy";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -4783,9 +5535,9 @@ rec {
       };
       "sanakirja" = rec {
         crateName = "sanakirja";
-        version = "1.2.0";
+        version = "1.2.5";
         edition = "2018";
-        sha256 = "0rbjc604xsmhahq3j3z9r0q33nl1jgww6z0v4bdcx2a9lcnrj8nq";
+        sha256 = "0d888pjb1flgg5cxv77qirqjlrjg1nrkisv0f62q1rabr69fy0sm";
         authors = [
           "Pierre-Étienne Meunier"
         ];
@@ -4837,10 +5589,10 @@ rec {
       };
       "sanakirja-core" = rec {
         crateName = "sanakirja-core";
-        version = "1.2.8";
+        version = "1.2.9";
         edition = "2018";
         crateBin = [];
-        sha256 = "1vpnggj97zdrxjra90mvj1hbrgg58m06vi2n4sx41a9hspv5h4qj";
+        sha256 = "015l0d3h21cwf9jxzf3q70sbjrg54mr6xbd236a5f9vg7zaxqxav";
         authors = [
           "Pierre-Étienne Meunier"
           "Florent Becker"
@@ -4894,9 +5646,9 @@ rec {
       };
       "security-framework" = rec {
         crateName = "security-framework";
-        version = "2.2.0";
+        version = "2.3.1";
         edition = "2018";
-        sha256 = "115xn71aa7qimk1rrg9zxai6mh76mdxas7n75ccls27nzp9b2w1n";
+        sha256 = "0rz4xhcz70718iww6qa4zbmjzff0dqbcf6yggvbi2fks2j2sr8i3";
         authors = [
           "Steven Fackler <sfackler@gmail.com>"
           "Kornel <kornel@geekhood.net>"
@@ -4937,9 +5689,9 @@ rec {
       };
       "security-framework-sys" = rec {
         crateName = "security-framework-sys";
-        version = "2.2.0";
+        version = "2.3.0";
         edition = "2018";
-        sha256 = "0fb3q4d0z7zbfdip85xvwkipr14dg4w31klrxjhckqngsf7jaxin";
+        sha256 = "1172fsfk37jxh33qbx3bivzph0hnxrn0nrrfffvnz2sb3fwzykky";
         authors = [
           "Steven Fackler <sfackler@gmail.com>"
           "Kornel <kornel@geekhood.net>"
@@ -4966,9 +5718,9 @@ rec {
       };
       "serde" = rec {
         crateName = "serde";
-        version = "1.0.125";
+        version = "1.0.126";
         edition = "2015";
-        sha256 = "0w8i0f4wsq4zd9vz1k6lq00066rjrgzlxkm25h8sfpss387cb3am";
+        sha256 = "00vdk7y3j8h2xv28a2i2ad1d19g5iwrdknbq8yp79v6axamhaxgc";
         authors = [
           "Erick Tryzelaar <erick.tryzelaar@gmail.com>"
           "David Tolnay <dtolnay@gmail.com>"
@@ -4992,11 +5744,33 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "derive" "serde_derive" "std" ];
       };
+      "serde_bytes" = rec {
+        crateName = "serde_bytes";
+        version = "0.11.5";
+        edition = "2018";
+        sha256 = "1fcb6sw8wkrj4ylm118wkb31hw124nkjnqyhbgqnd8w85zfhgbhn";
+        authors = [
+          "David Tolnay <dtolnay@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "serde";
+            packageId = "serde";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "alloc" = [ "serde/alloc" ];
+          "default" = [ "std" ];
+          "std" = [ "serde/std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
       "serde_derive" = rec {
         crateName = "serde_derive";
-        version = "1.0.125";
+        version = "1.0.126";
         edition = "2015";
-        sha256 = "0vfhndim4sa1i1x38dyvrxyq5v8zxjs0av05ldfkn82qpfibg4xh";
+        sha256 = "0hsdh39qj0g187nwndfzg67q4qajbm5g6x0fr5xarblmk2y7sfln";
         procMacro = true;
         authors = [
           "Erick Tryzelaar <erick.tryzelaar@gmail.com>"
@@ -5081,11 +5855,67 @@ rec {
         ];
 
       };
+      "sha2" = rec {
+        crateName = "sha2";
+        version = "0.9.5";
+        edition = "2018";
+        sha256 = "04lzf4swq6cijvxnc6facr3g72h5v7a5z8lz3xrkf8gxa9bswqmk";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "block-buffer";
+            packageId = "block-buffer";
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if 1.0.0";
+          }
+          {
+            name = "cpufeatures";
+            packageId = "cpufeatures";
+            target = { target, features }: (stdenv.hostPlatform.config == "aarch64-apple-darwin");
+          }
+          {
+            name = "cpufeatures";
+            packageId = "cpufeatures";
+            target = { target, features }: ((target."arch" == "aarch64") && (target."os" == "linux"));
+          }
+          {
+            name = "cpufeatures";
+            packageId = "cpufeatures";
+            target = { target, features }: ((target."arch" == "x86") || (target."arch" == "x86_64"));
+          }
+          {
+            name = "digest";
+            packageId = "digest";
+          }
+          {
+            name = "opaque-debug";
+            packageId = "opaque-debug";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "digest";
+            packageId = "digest";
+            features = [ "dev" ];
+          }
+        ];
+        features = {
+          "asm" = [ "sha2-asm" ];
+          "asm-aarch64" = [ "asm" ];
+          "default" = [ "std" ];
+          "std" = [ "digest/std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
       "signal-hook-registry" = rec {
         crateName = "signal-hook-registry";
-        version = "1.3.0";
+        version = "1.4.0";
         edition = "2015";
-        sha256 = "19hirq0h33jjyh505s8hf9q5dq0ky80ygivkl3vshjv0y7zd1w8n";
+        sha256 = "1c2mhijg54y6c1zi4630yki1vpq3z96ljfnsrdy0rb64ilr767p5";
         authors = [
           "Michal 'vorner' Vaner <vorner@vorner.cz>"
           "Masaki Hara <ackie.h.gmai@gmail.com>"
@@ -5097,6 +5927,22 @@ rec {
           }
         ];
 
+      };
+      "signature" = rec {
+        crateName = "signature";
+        version = "1.3.1";
+        edition = "2018";
+        sha256 = "0d9kh208899sis8q8j40v3204ajzi3al3jq3rymcxljd7jz755y1";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        features = {
+          "default" = [ "std" ];
+          "derive-preview" = [ "digest-preview" "signature_derive" ];
+          "digest-preview" = [ "digest" ];
+          "rand-preview" = [ "rand_core" ];
+        };
+        resolvedDefaultFeatures = [ "std" ];
       };
       "slab" = rec {
         crateName = "slab";
@@ -5184,9 +6030,9 @@ rec {
       };
       "syn" = rec {
         crateName = "syn";
-        version = "1.0.70";
+        version = "1.0.73";
         edition = "2018";
-        sha256 = "10r8z3bv25h1hmdfwn5drvd1zflfghsswxvgnj7anaw7ghq5yl5r";
+        sha256 = "1ixw4lscc7009ibaic8g5bvnc94hdcr62ksjk3jjl38363zqj57p";
         authors = [
           "David Tolnay <dtolnay@gmail.com>"
         ];
@@ -5213,13 +6059,49 @@ rec {
           "proc-macro" = [ "proc-macro2/proc-macro" "quote/proc-macro" ];
           "test" = [ "syn-test-suite/all-features" ];
         };
-        resolvedDefaultFeatures = [ "clone-impls" "default" "derive" "full" "parsing" "printing" "proc-macro" "quote" "visit" "visit-mut" ];
+        resolvedDefaultFeatures = [ "clone-impls" "default" "derive" "extra-traits" "full" "parsing" "printing" "proc-macro" "quote" "visit" ];
+      };
+      "synstructure" = rec {
+        crateName = "synstructure";
+        version = "0.12.4";
+        edition = "2018";
+        sha256 = "00c72ij813xsilssgya6m6f73d0s5zzsld1y26bvhk3kdzbg4d5q";
+        authors = [
+          "Nika Layzell <nika@thelayzells.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "syn";
+            packageId = "syn";
+            usesDefaultFeatures = false;
+            features = [ "derive" "parsing" "printing" "clone-impls" "visit" "extra-traits" ];
+          }
+          {
+            name = "unicode-xid";
+            packageId = "unicode-xid";
+          }
+        ];
+        features = {
+          "default" = [ "proc-macro" ];
+          "proc-macro" = [ "proc-macro2/proc-macro" "syn/proc-macro" "quote/proc-macro" ];
+        };
+        resolvedDefaultFeatures = [ "default" "proc-macro" ];
       };
       "tar" = rec {
         crateName = "tar";
-        version = "0.4.33";
+        version = "0.4.35";
         edition = "2018";
-        sha256 = "0a7jjp9lqyqz2fd5q5ryqffhhr9xzygld0hd4zd1ydlqlpbgpg60";
+        sha256 = "100v082cda6g8a237vrnpf075pqr7z46wrhgawa960pzmv39sxvx";
         authors = [
           "Alex Crichton <alex@alexcrichton.com>"
         ];
@@ -5268,11 +6150,11 @@ rec {
           }
           {
             name = "rand";
-            packageId = "rand 0.8.3";
+            packageId = "rand 0.8.4";
           }
           {
             name = "redox_syscall";
-            packageId = "redox_syscall 0.2.6";
+            packageId = "redox_syscall";
             target = { target, features }: (target."os" == "redox");
           }
           {
@@ -5307,9 +6189,9 @@ rec {
       };
       "terminal_size" = rec {
         crateName = "terminal_size";
-        version = "0.1.16";
+        version = "0.1.17";
         edition = "2018";
-        sha256 = "01i4zlv8dplx8ps328wl14xv7w1ah0ni6i3g0w1dnd07fpnqrjl6";
+        sha256 = "1pq60ng1a7fjp597ifk1cqlz8fv9raz9xihddld1m1pfdia1lg33";
         authors = [
           "Andrew Chin <achin@eminence32.net>"
         ];
@@ -5346,9 +6228,9 @@ rec {
       };
       "thiserror" = rec {
         crateName = "thiserror";
-        version = "1.0.24";
+        version = "1.0.26";
         edition = "2018";
-        sha256 = "13m99wjikivkkwd209fgxhdprjxj17s39ldfvn1l8k89jxasdx70";
+        sha256 = "1qmz542pq4wmz3p0s4kavsqv09h0x99klkf3k33ydjy1x97rw4ck";
         authors = [
           "David Tolnay <dtolnay@gmail.com>"
         ];
@@ -5362,9 +6244,9 @@ rec {
       };
       "thiserror-impl" = rec {
         crateName = "thiserror-impl";
-        version = "1.0.24";
+        version = "1.0.26";
         edition = "2018";
-        sha256 = "1h7kh6rr4vsm79dmv8qk8drhh2if3zyxc1lqa921l96q22b1hrbp";
+        sha256 = "0ia72qiynlws5avb8f1xqlazp4g6bqgzjbwy5vs6nyg7myh6j386";
         procMacro = true;
         authors = [
           "David Tolnay <dtolnay@gmail.com>"
@@ -5421,9 +6303,9 @@ rec {
       };
       "thrussh" = rec {
         crateName = "thrussh";
-        version = "0.32.8";
+        version = "0.33.2";
         edition = "2018";
-        sha256 = "13wvip0xnyrwjwnvb1sad0ssqndsgrmmi35lixlazwb8w57zi6qk";
+        sha256 = "0vmr3shp30mcnp5xmldnx59347wnal0zajqslvgbrbxxkc545g6b";
         authors = [
           "Pierre-Étienne Meunier <pe@pijul.org>"
         ];
@@ -5441,6 +6323,10 @@ rec {
             packageId = "cryptovec";
           }
           {
+            name = "digest";
+            packageId = "digest";
+          }
+          {
             name = "flate2";
             packageId = "flate2";
             optional = true;
@@ -5450,12 +6336,20 @@ rec {
             packageId = "futures";
           }
           {
+            name = "generic-array";
+            packageId = "generic-array";
+          }
+          {
             name = "log";
             packageId = "log";
           }
           {
-            name = "openssl";
-            packageId = "openssl";
+            name = "rand";
+            packageId = "rand 0.8.4";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
           }
           {
             name = "thiserror";
@@ -5526,16 +6420,29 @@ rec {
       };
       "thrussh-keys" = rec {
         crateName = "thrussh-keys";
-        version = "0.20.3";
+        version = "0.21.0";
         edition = "2018";
-        sha256 = "0582s732sdgns8dsgwpm52p26vrr8jwr14w7fmvmlzrjw8r4q89j";
+        sha256 = "1azmv32m5jpxsflj4dq62i84mv2cavc354r8yy98vc9j54dcab57";
         authors = [
           "Pierre-Étienne Meunier <pe@pijul.org>"
         ];
         dependencies = [
           {
+            name = "aes";
+            packageId = "aes";
+            features = [ "ctr" ];
+          }
+          {
+            name = "bcrypt-pbkdf";
+            packageId = "bcrypt-pbkdf";
+          }
+          {
             name = "bit-vec";
             packageId = "bit-vec";
+          }
+          {
+            name = "block-modes";
+            packageId = "block-modes";
           }
           {
             name = "byteorder";
@@ -5558,8 +6465,16 @@ rec {
             packageId = "futures";
           }
           {
+            name = "hmac";
+            packageId = "hmac";
+          }
+          {
             name = "log";
             packageId = "log";
+          }
+          {
+            name = "md5";
+            packageId = "md5";
           }
           {
             name = "num-bigint";
@@ -5570,8 +6485,12 @@ rec {
             packageId = "num-integer";
           }
           {
-            name = "openssl";
-            packageId = "openssl";
+            name = "pbkdf2";
+            packageId = "pbkdf2";
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.8.4";
           }
           {
             name = "serde";
@@ -5580,6 +6499,10 @@ rec {
           {
             name = "serde_derive";
             packageId = "serde_derive";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
           }
           {
             name = "thiserror";
@@ -5593,6 +6516,11 @@ rec {
             name = "tokio";
             packageId = "tokio";
             features = [ "io-util" "rt-multi-thread" "time" "net" ];
+          }
+          {
+            name = "tokio-stream";
+            packageId = "tokio-stream";
+            features = [ "net" ];
           }
           {
             name = "yasna";
@@ -5697,9 +6625,9 @@ rec {
       };
       "tokio" = rec {
         crateName = "tokio";
-        version = "1.5.0";
+        version = "1.8.0";
         edition = "2018";
-        sha256 = "199pf7dy992rjpxygrj6790pzbyhhzvvlm9hcq5vbnmdq3kwiw43";
+        sha256 = "1m18rs51wz6s7dwdwzr0j63kh815x4dx9k0f2c485crs7fqjw32p";
         authors = [
           "Tokio Contributors <team@tokio.rs>"
         ];
@@ -5775,7 +6703,7 @@ rec {
           "full" = [ "fs" "io-util" "io-std" "macros" "net" "parking_lot" "process" "rt" "rt-multi-thread" "signal" "sync" "time" ];
           "io-util" = [ "memchr" "bytes" ];
           "macros" = [ "tokio-macros" ];
-          "net" = [ "libc" "mio/os-poll" "mio/os-util" "mio/tcp" "mio/udp" "mio/uds" ];
+          "net" = [ "libc" "mio/os-poll" "mio/os-util" "mio/tcp" "mio/udp" "mio/uds" "winapi/namedpipeapi" ];
           "process" = [ "bytes" "once_cell" "libc" "mio/os-poll" "mio/os-util" "mio/uds" "signal-hook-registry" "winapi/threadpoollegacyapiset" ];
           "rt-multi-thread" = [ "num_cpus" "rt" ];
           "signal" = [ "once_cell" "libc" "mio/os-poll" "mio/uds" "mio/os-util" "signal-hook-registry" "winapi/consoleapi" ];
@@ -5784,9 +6712,9 @@ rec {
       };
       "tokio-macros" = rec {
         crateName = "tokio-macros";
-        version = "1.1.0";
+        version = "1.2.0";
         edition = "2018";
-        sha256 = "0mys5zm2gcdgc0iq8nqipzn703q26x1bpw59m04shikgacdb3xya";
+        sha256 = "0drws4ji260pmbv5afb72mb1ql6qamkm0wk40j3gpnj173s3v7n4";
         procMacro = true;
         authors = [
           "Tokio Contributors <team@tokio.rs>"
@@ -5835,11 +6763,52 @@ rec {
         ];
 
       };
+      "tokio-stream" = rec {
+        crateName = "tokio-stream";
+        version = "0.1.6";
+        edition = "2018";
+        sha256 = "0rj0k7s2qnchf6viif7flscaq3bjjb47lr297a2c0g6vdxq4v1pq";
+        authors = [
+          "Tokio Contributors <team@tokio.rs>"
+        ];
+        dependencies = [
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+          }
+          {
+            name = "pin-project-lite";
+            packageId = "pin-project-lite";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "sync" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "full" "test-util" ];
+          }
+        ];
+        features = {
+          "default" = [ "time" ];
+          "fs" = [ "tokio/fs" ];
+          "io-util" = [ "tokio/io-util" ];
+          "net" = [ "tokio/net" ];
+          "signal" = [ "tokio/signal" ];
+          "sync" = [ "tokio/sync" "tokio-util" ];
+          "time" = [ "tokio/time" ];
+        };
+        resolvedDefaultFeatures = [ "default" "net" "time" ];
+      };
       "tokio-util" = rec {
         crateName = "tokio-util";
-        version = "0.6.6";
+        version = "0.6.7";
         edition = "2018";
-        sha256 = "13hyc0vm8l9g5h9bfaqh414zwgqqpv0lx84vvnl1xhv5jg4i42ll";
+        sha256 = "14imdf24bng2ynsxa9hvmcx65h4xm75zib5mavdlk84lil60pahw";
         authors = [
           "Tokio Contributors <team@tokio.rs>"
         ];
@@ -5918,9 +6887,9 @@ rec {
       };
       "tracing" = rec {
         crateName = "tracing";
-        version = "0.1.25";
+        version = "0.1.26";
         edition = "2018";
-        sha256 = "17wmgw7bxqvhh5ls1jww4ach3ri5720cawsvbymv32j9nhmxrsq1";
+        sha256 = "17dqjhixmnbrk0c99ydb3b9pygjnzfb7yhlasb6134s4jy6fpb89";
         authors = [
           "Eliza Weisman <eliza@buoyant.io>"
           "Tokio Contributors <team@tokio.rs>"
@@ -5950,9 +6919,9 @@ rec {
       };
       "tracing-core" = rec {
         crateName = "tracing-core";
-        version = "0.1.17";
+        version = "0.1.18";
         edition = "2018";
-        sha256 = "0pvbgv301vw6dq4krc14yqbyyixb42lcs4s57xw05llkgy9f63gm";
+        sha256 = "0lm0li6lx75jgbbgxsb45439257sqb0j7828caf2hjqsigwi9zx9";
         authors = [
           "Tokio Contributors <team@tokio.rs>"
         ];
@@ -6048,9 +7017,9 @@ rec {
       };
       "unicode-normalization" = rec {
         crateName = "unicode-normalization";
-        version = "0.1.17";
+        version = "0.1.19";
         edition = "2018";
-        sha256 = "1vzajca1hk9plka5d3z3426frmnr7229fd2kidz58zd9r3hzryq7";
+        sha256 = "1yabhmg8zlcksda3ajly9hpbzqgbhknxwch8dwkfkaa1569r0ifm";
         authors = [
           "kwantam <kwantam@gmail.com>"
           "Manish Goregaokar <manishsmail@gmail.com>"
@@ -6069,9 +7038,9 @@ rec {
       };
       "unicode-segmentation" = rec {
         crateName = "unicode-segmentation";
-        version = "1.7.1";
-        edition = "2015";
-        sha256 = "15n736z0pbj30pj44jb9s9rjavzrmx8v8pzdgsl5yfmfwrxjw3dv";
+        version = "1.8.0";
+        edition = "2018";
+        sha256 = "0nrqfgxkh00wb5dhl0874z20789i2yjimp6ndgh4ay4yjjd895c8";
         authors = [
           "kwantam <kwantam@gmail.com>"
           "Manish Goregaokar <manishsmail@gmail.com>"
@@ -6095,12 +7064,13 @@ rec {
       };
       "unicode-xid" = rec {
         crateName = "unicode-xid";
-        version = "0.2.1";
+        version = "0.2.2";
         edition = "2015";
-        sha256 = "0r6mknipyy9vpz8mwmxvkx65ff2ha1n2pxqjj6f46lcn8yrhpzpp";
+        sha256 = "1wrkgcw557v311dkdb6n2hrix9dm2qdsb1zpw7pn79l03zb85jwc";
         authors = [
           "erick.tryzelaar <erick.tryzelaar@gmail.com>"
           "kwantam <kwantam@gmail.com>"
+          "Manish Goregaokar <manishsmail@gmail.com>"
         ];
         features = {
         };
@@ -6108,9 +7078,9 @@ rec {
       };
       "url" = rec {
         crateName = "url";
-        version = "2.2.1";
+        version = "2.2.2";
         edition = "2018";
-        sha256 = "12qzdzgcvmc5l1fk4psldiipx80423mikb6g4a9qwb322d0rdkcw";
+        sha256 = "132pzpvfvpw33gjlzqd55n5iag9qddzffq8qbp1myfykna1w61x5";
         authors = [
           "The rust-url developers"
         ];
@@ -6148,7 +7118,7 @@ rec {
         dependencies = [
           {
             name = "getrandom";
-            packageId = "getrandom 0.2.2";
+            packageId = "getrandom 0.2.3";
             optional = true;
           }
         ];
@@ -6165,9 +7135,9 @@ rec {
       };
       "vcpkg" = rec {
         crateName = "vcpkg";
-        version = "0.2.12";
+        version = "0.2.15";
         edition = "2015";
-        sha256 = "0p9ypqvv55cq2rl0s7g5ca2bkvwn62cdrdb0hm8j0hd2crigznyb";
+        sha256 = "09i4nf5y8lig6xgj3f7fyrvzd3nlaw4znrihw8psidvv5yk4xkdc";
         authors = [
           "Jim McGrath <jimmc2@gmail.com>"
         ];
@@ -6297,9 +7267,9 @@ rec {
       };
       "wasm-bindgen" = rec {
         crateName = "wasm-bindgen";
-        version = "0.2.73";
+        version = "0.2.74";
         edition = "2018";
-        sha256 = "1n93yq72c7bd2464gg48405yzgvwakwc0cqzz647864xcm4ha943";
+        sha256 = "1zcp57mwb47vdw3r594cl7vbj6pwd503xrkq8a3phvs8xpaf2knm";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -6335,9 +7305,9 @@ rec {
       };
       "wasm-bindgen-backend" = rec {
         crateName = "wasm-bindgen-backend";
-        version = "0.2.73";
+        version = "0.2.74";
         edition = "2018";
-        sha256 = "1bkxxkmxfy182aav9qqkcq7mz48yxgmx61kdr8ak55fa24j64w5f";
+        sha256 = "005ra6jc8pm1y2wi6swkvn34r2is3knv5f2dv59ymkscd6hgccrv";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -6379,9 +7349,9 @@ rec {
       };
       "wasm-bindgen-futures" = rec {
         crateName = "wasm-bindgen-futures";
-        version = "0.4.23";
+        version = "0.4.24";
         edition = "2018";
-        sha256 = "1sk3zhmrwvz3aa9b63yz7ms04agd1dlqn5pjig0nmpi3mxkvgf41";
+        sha256 = "1wb75qgv91qjblv685hnka2fn3w4fp0wi05cs3i3rmbrqrw7kfjz";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -6411,9 +7381,9 @@ rec {
       };
       "wasm-bindgen-macro" = rec {
         crateName = "wasm-bindgen-macro";
-        version = "0.2.73";
+        version = "0.2.74";
         edition = "2018";
-        sha256 = "0vqgbnbnh6zs339v6g9w3j9idi8m3s1dws8rnkypn5rz8j8lswry";
+        sha256 = "1m4bn6wlzc2rkp693zgnn7kh05r5fm4w55l0igjy23s3c756k088";
         procMacro = true;
         authors = [
           "The wasm-bindgen Developers"
@@ -6436,9 +7406,9 @@ rec {
       };
       "wasm-bindgen-macro-support" = rec {
         crateName = "wasm-bindgen-macro-support";
-        version = "0.2.73";
+        version = "0.2.74";
         edition = "2018";
-        sha256 = "0b0vcb8pvg03cmq9sg5b94a0p05bp1rc6m6dvc7qp9n813zkjdym";
+        sha256 = "15vsk3q4jfk8ax4walc8vy3fgvrpkg86vjz2ym0z5ngk5xa428my";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -6473,9 +7443,9 @@ rec {
       };
       "wasm-bindgen-shared" = rec {
         crateName = "wasm-bindgen-shared";
-        version = "0.2.73";
+        version = "0.2.74";
         edition = "2018";
-        sha256 = "12a4kq5wvy3znkqlqn6ib25ips1k9apxjpknpca3s8xacsp479fr";
+        sha256 = "0ksbnhjzvnsmzc1n18bs98swnrzrwxjrpx3clrsyv3pip1vgikyp";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -6483,9 +7453,9 @@ rec {
       };
       "web-sys" = rec {
         crateName = "web-sys";
-        version = "0.3.50";
+        version = "0.3.51";
         edition = "2018";
-        sha256 = "1gl1akzrzprc3hc16h1lcai2f3dm1xkr6cvd8ihqiv4g91zda1d9";
+        sha256 = "10p514z7zmwzxqll0z0zqhlswv3hadbrwais3l8zfgcz6xxl2a78";
         authors = [
           "The wasm-bindgen Developers"
         ];
@@ -7085,9 +8055,9 @@ rec {
       };
       "yasna" = rec {
         crateName = "yasna";
-        version = "0.3.2";
-        edition = "2015";
-        sha256 = "1nsdd1di06yvh6n2mv54wgvkl5fz155lbn7nhmna1wmlfbwvzrqd";
+        version = "0.4.0";
+        edition = "2018";
+        sha256 = "0xgsvxqnycdakh6j3hg4dk3mylrpnba50w0d36vg5k311sfs4qp2";
         authors = [
           "Masaki Hara <ackie.h.gmai@gmail.com>"
         ];
@@ -7117,10 +8087,46 @@ rec {
         authors = [
           "Tony Arcieri <tony@iqlusion.io>"
         ];
+        dependencies = [
+          {
+            name = "zeroize_derive";
+            packageId = "zeroize_derive";
+            optional = true;
+          }
+        ];
         features = {
           "default" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "alloc" ];
+        resolvedDefaultFeatures = [ "alloc" "zeroize_derive" ];
+      };
+      "zeroize_derive" = rec {
+        crateName = "zeroize_derive";
+        version = "1.1.0";
+        edition = "2018";
+        sha256 = "1cfsssf3jrkzhly58ln410j0jjx1mk5rmgw673rb5smspqqf3hd2";
+        procMacro = true;
+        authors = [
+          "Tony Arcieri <tony@iqlusion.io>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn";
+          }
+          {
+            name = "synstructure";
+            packageId = "synstructure";
+          }
+        ];
+
       };
       "zstd-seekable" = rec {
         crateName = "zstd-seekable";
