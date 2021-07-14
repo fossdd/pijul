@@ -39,16 +39,6 @@ rec {
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
-    "chardetng" = rec {
-      packageId = "chardetng";
-      build = internal.buildRustCrateWithFeatures {
-        packageId = "chardetng";
-      };
-
-      # Debug support which might change between releases.
-      # File a bug if you depend on any for non-debug work!
-      debug = internal.debugCrate { inherit packageId; };
-    };
     "libpijul" = rec {
       packageId = "libpijul";
       build = internal.buildRustCrateWithFeatures {
@@ -257,7 +247,7 @@ rec {
         features = {
           "default" = [ "std" ];
         };
-        resolvedDefaultFeatures = [ "array-sizes-33-128" "default" "std" ];
+        resolvedDefaultFeatures = [ "array-sizes-33-128" ];
       };
       "atty" = rec {
         crateName = "atty";
@@ -728,49 +718,6 @@ rec {
           "rustc-dep-of-std" = [ "core" "compiler_builtins" ];
         };
       };
-      "chardetng" = rec {
-        crateName = "chardetng";
-        version = "0.1.13";
-        edition = "2018";
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./chardetng; };
-        authors = [
-          "Henri Sivonen <hsivonen@hsivonen.fi>"
-        ];
-        dependencies = [
-          {
-            name = "arrayvec";
-            packageId = "arrayvec";
-            optional = true;
-          }
-          {
-            name = "cfg-if";
-            packageId = "cfg-if 0.1.10";
-          }
-          {
-            name = "encoding_rs";
-            packageId = "encoding_rs";
-          }
-          {
-            name = "memchr";
-            packageId = "memchr";
-          }
-          {
-            name = "rayon";
-            packageId = "rayon";
-            optional = true;
-          }
-        ];
-        devDependencies = [
-          {
-            name = "detone";
-            packageId = "detone";
-          }
-        ];
-        features = {
-          "multithreading" = [ "rayon" "arrayvec" ];
-        };
-        resolvedDefaultFeatures = [ "arrayvec" "multithreading" "rayon" "testing-only-no-semver-guarantees-do-not-use" ];
-      };
       "chrono" = rec {
         crateName = "chrono";
         version = "0.4.19";
@@ -960,27 +907,6 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" ];
       };
-      "cloudabi" = rec {
-        crateName = "cloudabi";
-        version = "0.0.3";
-        edition = "2015";
-        sha256 = "0kxcg83jlihy0phnd2g8c2c303px3l2p3pkjz357ll6llnd5pz6x";
-        libPath = "cloudabi.rs";
-        authors = [
-          "Nuxi (https://nuxi.nl/) and contributors"
-        ];
-        dependencies = [
-          {
-            name = "bitflags";
-            packageId = "bitflags";
-            optional = true;
-          }
-        ];
-        features = {
-          "default" = [ "bitflags" ];
-        };
-        resolvedDefaultFeatures = [ "bitflags" "default" ];
-      };
       "constant_time_eq" = rec {
         crateName = "constant_time_eq";
         version = "0.1.5";
@@ -1068,32 +994,6 @@ rec {
           "default" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
-      };
-      "crossbeam-channel" = rec {
-        crateName = "crossbeam-channel";
-        version = "0.5.1";
-        edition = "2018";
-        sha256 = "1d1dnp61g51gnmc45cb4vpjsr5n62wz22an2y3q6avgifzhjgv86";
-        authors = [
-          "The Crossbeam Project Developers"
-        ];
-        dependencies = [
-          {
-            name = "cfg-if";
-            packageId = "cfg-if 1.0.0";
-          }
-          {
-            name = "crossbeam-utils";
-            packageId = "crossbeam-utils";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-        ];
-        features = {
-          "default" = [ "std" ];
-          "std" = [ "crossbeam-utils/std" ];
-        };
-        resolvedDefaultFeatures = [ "crossbeam-utils" "default" "std" ];
       };
       "crossbeam-deque" = rec {
         crateName = "crossbeam-deque";
@@ -1942,16 +1842,6 @@ rec {
         ];
 
       };
-      "fuchsia-cprng" = rec {
-        crateName = "fuchsia-cprng";
-        version = "0.1.1";
-        edition = "2018";
-        sha256 = "1fnkqrbz7ixxzsb04bsz9p0zzazanma8znfdqjvh39n14vapfvx0";
-        authors = [
-          "Erick Tryzelaar <etryzelaar@google.com>"
-        ];
-
-      };
       "futures" = rec {
         crateName = "futures";
         version = "0.3.15";
@@ -2760,9 +2650,9 @@ rec {
       };
       "hyper" = rec {
         crateName = "hyper";
-        version = "0.14.9";
+        version = "0.14.10";
         edition = "2018";
-        sha256 = "10yxz4wchlq1dnya2p3kv9nw8iv5zchw92h9wly5ycs1njhvmmh7";type = [ "lib" "staticlib" "cdylib" ];
+        sha256 = "00zxw09lbw86hvvjw8jv08hpf91vv75ln802vrgncwkx9hnafa3p";type = [ "lib" "staticlib" "cdylib" ];
         authors = [
           "Sean McArthur <sean@seanmonstar.com>"
         ];
@@ -3106,9 +2996,9 @@ rec {
       };
       "libc" = rec {
         crateName = "libc";
-        version = "0.2.97";
+        version = "0.2.98";
         edition = "2015";
-        sha256 = "1dlgdziv6nkabx287jjmghnlgc5dqv6fgpvh9n7ibpr0synsvf0j";
+        sha256 = "144728k6d98k3hplzklqn18a134nq6nw0jzdxy1s98sx2xvzw31j";
         authors = [
           "The Rust Project Developers"
         ];
@@ -3173,7 +3063,7 @@ rec {
       };
       "libpijul" = rec {
         crateName = "libpijul";
-        version = "1.0.0-alpha.42";
+        version = "1.0.0-alpha.44";
         edition = "2018";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./libpijul; };
         authors = [
@@ -3215,8 +3105,8 @@ rec {
             optional = true;
           }
           {
-            name = "chardetng";
-            packageId = "chardetng";
+            name = "cfg-if";
+            packageId = "cfg-if 1.0.0";
           }
           {
             name = "chrono";
@@ -3285,6 +3175,14 @@ rec {
             optional = true;
           }
           {
+            name = "memchr";
+            packageId = "memchr";
+          }
+          {
+            name = "parking_lot";
+            packageId = "parking_lot";
+          }
+          {
             name = "path-slash";
             packageId = "path-slash";
             optional = true;
@@ -3300,7 +3198,7 @@ rec {
           }
           {
             name = "rand";
-            packageId = "rand 0.5.6";
+            packageId = "rand 0.7.3";
           }
           {
             name = "rand_core";
@@ -3373,8 +3271,20 @@ rec {
             packageId = "anyhow";
           }
           {
+            name = "detone";
+            packageId = "detone";
+          }
+          {
             name = "env_logger";
             packageId = "env_logger";
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.7.3";
+          }
+          {
+            name = "rand_chacha";
+            packageId = "rand_chacha 0.2.2";
           }
         ];
         features = {
@@ -4378,7 +4288,7 @@ rec {
       };
       "pijul" = rec {
         crateName = "pijul";
-        version = "1.0.0-alpha.49";
+        version = "1.0.0-alpha.51";
         edition = "2018";
         crateBin = [
           { name = "pijul"; path = "src/main.rs"; }
@@ -4399,6 +4309,10 @@ rec {
           {
             name = "byteorder";
             packageId = "byteorder";
+          }
+          {
+            name = "bytes";
+            packageId = "bytes";
           }
           {
             name = "canonical-path";
@@ -4540,7 +4454,7 @@ rec {
           {
             name = "tokio";
             packageId = "tokio";
-            features = [ "rt-multi-thread" "macros" "sync" ];
+            features = [ "rt-multi-thread" "macros" "sync" "fs" ];
           }
           {
             name = "toml";
@@ -4556,10 +4470,11 @@ rec {
           }
         ];
         features = {
-          "default" = [ "keep-changes" ];
+          "default" = [ "keep-changes" "openssl" ];
           "git" = [ "git2" ];
+          "openssl" = [ "thrussh/openssl" "thrussh-keys/openssl" ];
         };
-        resolvedDefaultFeatures = [ "default" "git" "git2" "keep-changes" ];
+        resolvedDefaultFeatures = [ "default" "git" "git2" "keep-changes" "openssl" ];
       };
       "pijul-macros" = rec {
         crateName = "pijul-macros";
@@ -4762,55 +4677,6 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "proc-macro" ];
       };
-      "rand 0.5.6" = rec {
-        crateName = "rand";
-        version = "0.5.6";
-        edition = "2015";
-        sha256 = "1fdcgja9167hlzkf4g5daqwp498lwiyq7aqm05whklpbsdyc8666";
-        authors = [
-          "The Rust Project Developers"
-        ];
-        dependencies = [
-          {
-            name = "cloudabi";
-            packageId = "cloudabi";
-            optional = true;
-            target = { target, features }: (target."os" == "cloudabi");
-          }
-          {
-            name = "fuchsia-cprng";
-            packageId = "fuchsia-cprng";
-            optional = true;
-            target = { target, features }: (target."os" == "fuchsia");
-          }
-          {
-            name = "libc";
-            packageId = "libc";
-            optional = true;
-            target = { target, features }: (target."unix" or false);
-          }
-          {
-            name = "rand_core";
-            packageId = "rand_core 0.3.1";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "winapi";
-            packageId = "winapi";
-            optional = true;
-            target = { target, features }: (target."windows" or false);
-            features = [ "minwindef" "ntsecapi" "profileapi" "winnt" ];
-          }
-        ];
-        features = {
-          "alloc" = [ "rand_core/alloc" ];
-          "default" = [ "std" ];
-          "nightly" = [ "i128_support" ];
-          "serde1" = [ "serde" "serde_derive" "rand_core/serde1" ];
-          "std" = [ "rand_core/std" "alloc" "libc" "winapi" "cloudabi" "fuchsia-cprng" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "cloudabi" "default" "fuchsia-cprng" "libc" "std" "winapi" ];
-      };
       "rand 0.7.3" = rec {
         crateName = "rand";
         version = "0.7.3";
@@ -4947,7 +4813,7 @@ rec {
           "default" = [ "std" "simd" ];
           "std" = [ "ppv-lite86/std" ];
         };
-        resolvedDefaultFeatures = [ "std" ];
+        resolvedDefaultFeatures = [ "default" "simd" "std" ];
       };
       "rand_chacha 0.3.1" = rec {
         crateName = "rand_chacha";
@@ -4977,44 +4843,6 @@ rec {
           "std" = [ "ppv-lite86/std" ];
         };
         resolvedDefaultFeatures = [ "std" ];
-      };
-      "rand_core 0.3.1" = rec {
-        crateName = "rand_core";
-        version = "0.3.1";
-        edition = "2015";
-        sha256 = "0jzdgszfa4bliigiy4hi66k7fs3gfwi2qxn8vik84ph77fwdwvvs";
-        authors = [
-          "The Rand Project Developers"
-          "The Rust Project Developers"
-        ];
-        dependencies = [
-          {
-            name = "rand_core";
-            packageId = "rand_core 0.4.2";
-          }
-        ];
-        features = {
-          "alloc" = [ "rand_core/alloc" ];
-          "default" = [ "std" ];
-          "serde1" = [ "rand_core/serde1" ];
-          "std" = [ "rand_core/std" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "std" ];
-      };
-      "rand_core 0.4.2" = rec {
-        crateName = "rand_core";
-        version = "0.4.2";
-        edition = "2015";
-        sha256 = "1p09ynysrq1vcdlmcqnapq4qakl2yd1ng3kxh3qscpx09k2a6cww";
-        authors = [
-          "The Rand Project Developers"
-          "The Rust Project Developers"
-        ];
-        features = {
-          "serde1" = [ "serde" "serde_derive" ];
-          "std" = [ "alloc" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "std" ];
       };
       "rand_core 0.5.1" = rec {
         crateName = "rand_core";
@@ -5088,71 +4916,6 @@ rec {
           {
             name = "rand_core";
             packageId = "rand_core 0.6.3";
-          }
-        ];
-
-      };
-      "rayon" = rec {
-        crateName = "rayon";
-        version = "1.5.1";
-        edition = "2018";
-        sha256 = "143dl2453bazgk7rwjrickmyqd0ks3q69nfz8axcins19n0clsn0";
-        authors = [
-          "Niko Matsakis <niko@alum.mit.edu>"
-          "Josh Stone <cuviper@gmail.com>"
-        ];
-        dependencies = [
-          {
-            name = "crossbeam-deque";
-            packageId = "crossbeam-deque";
-          }
-          {
-            name = "either";
-            packageId = "either";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "rayon-core";
-            packageId = "rayon-core";
-          }
-        ];
-        buildDependencies = [
-          {
-            name = "autocfg";
-            packageId = "autocfg";
-          }
-        ];
-
-      };
-      "rayon-core" = rec {
-        crateName = "rayon-core";
-        version = "1.9.1";
-        edition = "2018";
-        sha256 = "13kdcnqp2p1a5a3amamfjpnm7ay463vq4dfxy4rrh9shr3i210fp";
-        authors = [
-          "Niko Matsakis <niko@alum.mit.edu>"
-          "Josh Stone <cuviper@gmail.com>"
-        ];
-        dependencies = [
-          {
-            name = "crossbeam-channel";
-            packageId = "crossbeam-channel";
-          }
-          {
-            name = "crossbeam-deque";
-            packageId = "crossbeam-deque";
-          }
-          {
-            name = "crossbeam-utils";
-            packageId = "crossbeam-utils";
-          }
-          {
-            name = "lazy_static";
-            packageId = "lazy_static";
-          }
-          {
-            name = "num_cpus";
-            packageId = "num_cpus";
           }
         ];
 
@@ -6303,9 +6066,9 @@ rec {
       };
       "thrussh" = rec {
         crateName = "thrussh";
-        version = "0.33.2";
+        version = "0.33.5";
         edition = "2018";
-        sha256 = "0vmr3shp30mcnp5xmldnx59347wnal0zajqslvgbrbxxkc545g6b";
+        sha256 = "1y1nhpg9l8jwjv59am9kmf9gib2j58c1qm36dvgq7pwsi8il0rcf";
         authors = [
           "Pierre-Étienne Meunier <pe@pijul.org>"
         ];
@@ -6344,6 +6107,11 @@ rec {
             packageId = "log";
           }
           {
+            name = "openssl";
+            packageId = "openssl";
+            optional = true;
+          }
+          {
             name = "rand";
             packageId = "rand 0.8.4";
           }
@@ -6379,7 +6147,7 @@ rec {
         features = {
           "default" = [ "flate2" ];
         };
-        resolvedDefaultFeatures = [ "default" "flate2" ];
+        resolvedDefaultFeatures = [ "default" "flate2" "openssl" ];
       };
       "thrussh-config" = rec {
         crateName = "thrussh-config";
@@ -6485,6 +6253,11 @@ rec {
             packageId = "num-integer";
           }
           {
+            name = "openssl";
+            packageId = "openssl";
+            optional = true;
+          }
+          {
             name = "pbkdf2";
             packageId = "pbkdf2";
           }
@@ -6529,6 +6302,7 @@ rec {
           }
         ];
 
+        resolvedDefaultFeatures = [ "openssl" ];
       };
       "thrussh-libsodium" = rec {
         crateName = "thrussh-libsodium";
@@ -6625,9 +6399,9 @@ rec {
       };
       "tokio" = rec {
         crateName = "tokio";
-        version = "1.8.0";
+        version = "1.8.1";
         edition = "2018";
-        sha256 = "1m18rs51wz6s7dwdwzr0j63kh815x4dx9k0f2c485crs7fqjw32p";
+        sha256 = "11g9x25mrs5589jqdcxq4igryy2k0c893lrxss1ylxacq5fv1j4q";
         authors = [
           "Tokio Contributors <team@tokio.rs>"
         ];
@@ -6708,13 +6482,13 @@ rec {
           "rt-multi-thread" = [ "num_cpus" "rt" ];
           "signal" = [ "once_cell" "libc" "mio/os-poll" "mio/uds" "mio/os-util" "signal-hook-registry" "winapi/consoleapi" ];
         };
-        resolvedDefaultFeatures = [ "bytes" "default" "io-util" "libc" "macros" "memchr" "mio" "net" "num_cpus" "once_cell" "process" "rt" "rt-multi-thread" "signal-hook-registry" "sync" "time" "tokio-macros" "winapi" ];
+        resolvedDefaultFeatures = [ "bytes" "default" "fs" "io-util" "libc" "macros" "memchr" "mio" "net" "num_cpus" "once_cell" "process" "rt" "rt-multi-thread" "signal-hook-registry" "sync" "time" "tokio-macros" "winapi" ];
       };
       "tokio-macros" = rec {
         crateName = "tokio-macros";
-        version = "1.2.0";
+        version = "1.3.0";
         edition = "2018";
-        sha256 = "0drws4ji260pmbv5afb72mb1ql6qamkm0wk40j3gpnj173s3v7n4";
+        sha256 = "045igm2h1mfjakbi68hrl07dflgs2rfvvjff17ylxgjf3zk3nisl";
         procMacro = true;
         authors = [
           "Tokio Contributors <team@tokio.rs>"
@@ -6765,9 +6539,9 @@ rec {
       };
       "tokio-stream" = rec {
         crateName = "tokio-stream";
-        version = "0.1.6";
+        version = "0.1.7";
         edition = "2018";
-        sha256 = "0rj0k7s2qnchf6viif7flscaq3bjjb47lr297a2c0g6vdxq4v1pq";
+        sha256 = "0zvj8d2i1147s4i3ml3lh3h6fypncjmbw0h1mhck3w2kh9lkybvv";
         authors = [
           "Tokio Contributors <team@tokio.rs>"
         ];
