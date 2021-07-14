@@ -11,6 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: fossdd/action-setup-pijul@v1
+      - name: Remove old data
+        run: rm -fr *
       - name: Clone Pijul
         run: pijul clone https://nest.pijul.com/pijul/pijul tmp
       - name: Clean up
