@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use canonical_path::CanonicalPathBuf;
 use clap::Clap;
 use libpijul::change::*;
-use libpijul::MutTxnT;
+use libpijul::{MutTxnT, TxnT, TxnTExt};
 use serde_derive::Serialize;
 
 use crate::repository::*;
@@ -28,26 +27,37 @@ pub struct Diff {
     /// Show a short version of the diff.
     #[clap(long = "short")]
     pub short: bool,
+    /// Include the untracked files
+    #[clap(long = "untracked")]
+    pub untracked: bool,
     /// Only diff those paths (files or directories). If missing, diff the entire repository.
     pub prefixes: Vec<PathBuf>,
 }
 
 impl Diff {
     pub async fn run(mut self) -> Result<(), anyhow::Error> {
-        let repo = Repository::find_root(self.repo_path.clone()).await?;
-        let mut txn = repo.pristine.mut_txn_begin()?;
+        let repo = Repository::find_root(self.repo_path.clone())?;
+        let txn = repo.pristine.arc_txn_begin()?;
         let mut stdout = std::io::stdout();
-        let channel =
-            txn.open_or_create_channel(repo.config.get_current_channel(self.channel.as_deref()).0)?;
+        let cur = txn
+            .read()
+            .current_channel()
+            .unwrap_or(crate::DEFAULT_CHANNEL)
+            .to_string();
+        let channel = if let Some(ref c) = self.channel {
+            c
+        } else {
+            cur.as_str()
+        };
+        let channel = txn.write().open_or_create_channel(&channel)?;
 
         let mut state = libpijul::RecordBuilder::new();
-        let txn = Arc::new(RwLock::new(txn));
         if self.prefixes.is_empty() {
             state.record(
                 txn.clone(),
                 libpijul::Algorithm::default(),
                 channel.clone(),
-                repo.working_copy.clone(),
+                &repo.working_copy,
                 &repo.changes,
                 "",
                 num_cpus::get(),
@@ -69,14 +79,14 @@ impl Diff {
         if rec.actions.is_empty() {
             return Ok(());
         }
-        let txn = txn.write().unwrap();
+        let txn = txn.write();
         let actions = rec
             .actions
             .into_iter()
             .map(|rec| rec.globalize(&*txn).unwrap())
             .collect();
         let contents = if let Ok(cont) = std::sync::Arc::try_unwrap(rec.contents) {
-            cont.into_inner().unwrap()
+            cont.into_inner()
         } else {
             unreachable!()
         };
@@ -92,37 +102,45 @@ impl Diff {
         let (dependencies, extra_known) = if self.tag {
             full_dependencies(&*txn, &channel)?
         } else {
-            dependencies(&*txn, &*channel.read()?, change.changes.iter())?
+            dependencies(&*txn, &*channel.read(), change.changes.iter())?
         };
         change.dependencies = dependencies;
         change.extra_known = extra_known;
 
         let colors = is_colored();
         if self.json {
-            let mut changes = BTreeMap::new();
-            for ch in change.changes.iter() {
-                changes
-                    .entry(ch.path())
-                    .or_insert_with(Vec::new)
-                    .push(Status {
-                        operation: match ch {
-                            Hunk::FileMove { .. } => "file move",
-                            Hunk::FileDel { .. } => "file del",
-                            Hunk::FileUndel { .. } => "file undel",
-                            Hunk::SolveNameConflict { .. } => "solve name conflict",
-                            Hunk::UnsolveNameConflict { .. } => "unsolve name conflict",
-                            Hunk::FileAdd { .. } => "file add",
-                            Hunk::Edit { .. } => "edit",
-                            Hunk::Replacement { .. } => "replacement",
-                            Hunk::SolveOrderConflict { .. } => "solve order conflict",
-                            Hunk::UnsolveOrderConflict { .. } => "unsolve order conflict",
-                            Hunk::ResurrectZombies { .. } => "resurrect zombies",
-                        },
-                        line: ch.line(),
-                    });
+            if self.untracked {
+                serde_json::to_writer_pretty(
+                    &mut std::io::stdout(),
+                    &untracked(&repo, &*txn)?.collect::<Vec<_>>(),
+                )?;
+                writeln!(stdout)?;
+            } else {
+                let mut changes = BTreeMap::new();
+                for ch in change.changes.iter() {
+                    changes
+                        .entry(ch.path())
+                        .or_insert_with(Vec::new)
+                        .push(Status {
+                            operation: match ch {
+                                Hunk::FileMove { .. } => "file move",
+                                Hunk::FileDel { .. } => "file del",
+                                Hunk::FileUndel { .. } => "file undel",
+                                Hunk::SolveNameConflict { .. } => "solve name conflict",
+                                Hunk::UnsolveNameConflict { .. } => "unsolve name conflict",
+                                Hunk::FileAdd { .. } => "file add",
+                                Hunk::Edit { .. } => "edit",
+                                Hunk::Replacement { .. } => "replacement",
+                                Hunk::SolveOrderConflict { .. } => "solve order conflict",
+                                Hunk::UnsolveOrderConflict { .. } => "unsolve order conflict",
+                                Hunk::ResurrectZombies { .. } => "resurrect zombies",
+                            },
+                            line: ch.line(),
+                        });
+                }
+                serde_json::to_writer_pretty(&mut std::io::stdout(), &changes)?;
+                writeln!(stdout)?;
             }
-            serde_json::to_writer_pretty(&mut std::io::stdout(), &changes)?;
-            writeln!(stdout)?;
         } else if self.short {
             let mut changes = Vec::new();
             for ch in change.changes.iter() {
@@ -159,6 +177,13 @@ impl Diff {
             changes.dedup();
             for ch in changes {
                 writeln!(stdout, "{}", ch)?;
+            }
+            for path in untracked(&repo, &*txn)? {
+                writeln!(stdout, "U  {}", path.to_str().unwrap())?;
+            }
+        } else if self.untracked {
+            for path in untracked(&repo, &*txn)? {
+                writeln!(stdout, "{}", path.to_str().unwrap())?;
             }
         } else {
             match change.write(
@@ -224,10 +249,10 @@ impl<W: termcolor::WriteColor> libpijul::change::WriteChangeLine for Colored<W> 
                 Color::Red
             };
             self.w.set_color(ColorSpec::new().set_fg(Some(col)))?;
-            write!(self.w, "{} {}", pref, contents)?;
+            writeln!(self.w, "{} {}", pref, contents)?;
             self.w.reset()
         } else {
-            write!(self.w, "{} {}", pref, contents)
+            writeln!(self.w, "{} {}", pref, contents)
         }
     }
     fn write_change_line_binary(
@@ -262,7 +287,7 @@ impl<W: termcolor::WriteColor> libpijul::change::WriteChangeLine for Colored<W> 
 
 pub fn is_colored() -> bool {
     let mut colors = atty::is(atty::Stream::Stdout);
-    if let Ok(global) = crate::config::Global::load() {
+    if let Ok((global, _)) = crate::config::Global::load() {
         match global.colors {
             Some(crate::config::Choice::Always) => colors = true,
             Some(crate::config::Choice::Never) => colors = false,
@@ -278,4 +303,30 @@ pub fn is_colored() -> bool {
         colors &= super::pager();
     }
     colors
+}
+
+fn untracked<'a, T: TxnTExt>(
+    repo: &Repository,
+    txn: &'a T,
+) -> Result<impl Iterator<Item = PathBuf> + 'a, anyhow::Error> {
+    let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
+    let threads = num_cpus::get();
+    Ok(repo
+        .working_copy
+        .iterate_prefix_rec(repo_path.clone(), repo_path.clone(), threads)?
+        .filter_map(move |x| {
+            let (path, _) = x.unwrap();
+            let path_ = if let Ok(path) = path.as_path().strip_prefix(&repo_path.as_path()) {
+                path
+            } else {
+                return None;
+            };
+            use path_slash::PathExt;
+            let path_str = path_.to_slash_lossy();
+            if !txn.is_tracked(&path_str).unwrap() {
+                Some(path)
+            } else {
+                None
+            }
+        }))
 }

@@ -3,10 +3,11 @@ use crate::pristine::*;
 use crate::HashSet;
 use crate::TxnT;
 use log::*;
+use parking_lot::RwLock;
 use serde_derive::*;
 use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct FileHeader {
@@ -79,7 +80,8 @@ impl OpenTagFile {
     }
 }
 
-pub const VERSION: u64 = 5;
+pub const VERSION: u64 = 7;
+pub const VERSION_NOENC: u64 = 5;
 
 const BLOCK_SIZE: usize = 4096;
 
@@ -102,7 +104,13 @@ pub fn restore_channel(
     let filetxn = Txn::from_slice(&mut buf);
     let external: ::sanakirja::btree::Db_<ChangeId, SerializedHash, UP<ChangeId, SerializedHash>> =
         ::sanakirja::btree::Db_::from_page(tag.header.offsets.external);
-    debug!("restoring graph");
+    let mut vi = Vec::new();
+    for i in ::sanakirja::btree::iter(&filetxn, &external, None).unwrap() {
+        debug!("{:?}", i);
+        vi.push(i.unwrap());
+    }
+    vi.sort();
+    debug!("restoring graph {:?}", vi);
     let graph = restore(
         &filetxn,
         txn,
@@ -212,9 +220,18 @@ pub fn restore_channel(
             apply_counter: tag.header.offsets.apply_counter,
             name: name.clone(),
             last_modified: 0,
+            id: {
+                let mut rng = rand::thread_rng();
+                use rand::Rng;
+                let mut m = crate::pristine::RemoteId([0; 16]);
+                for m in m.0.iter_mut() {
+                    *m = rng.gen()
+                }
+                m
+            },
         })),
     };
-    txn.open_channels.lock().unwrap().insert(name, br.clone());
+    txn.open_channels.lock().insert(name, br.clone());
     Ok(br)
 }
 
@@ -243,8 +260,8 @@ impl<'a> ::sanakirja::LoadPage for Txn<'a> {
 }
 
 fn restore<
-    K: ::sanakirja::UnsizedStorable,
-    V: ::sanakirja::UnsizedStorable,
+    K: ::sanakirja::UnsizedStorable + PartialEq,
+    V: ::sanakirja::UnsizedStorable + PartialEq,
     P: ::sanakirja::btree::BTreeMutPage<K, V>,
     F,
 >(
@@ -276,14 +293,19 @@ where
         let mut new_curs = P::cursor_first(&new_page_.0);
         P::init(&mut new_page_);
         unsafe {
-            P::set_left_child(
-                &mut new_page_,
-                &new_curs,
-                P::left_child(page.as_page(), &curs),
-            );
+            let left = P::left_child(page.as_page(), &curs);
+            if left != 0 {
+                assert!(dict.insert(left));
+                let new_page = txn.txn.alloc_page()?;
+                let off = new_page.0.offset;
+                P::set_left_child(&mut new_page_, &new_curs, off);
+                pending.push((left, new_page));
+            }
         }
-        while let Some((k, v, r)) = P::next(&txn.txn, page.as_page(), &mut curs) {
-            let (k, v) = f(file_txn, txn, k, v)?;
+        while let Some((k_, v_, r)) = P::next(&txn.txn, page.as_page(), &mut curs) {
+            let (k, v) = f(file_txn, txn, k_, v_)?;
+            assert_eq!(&k, k_);
+            assert_eq!(&v, v_);
             let r = if r > 0 {
                 assert!(dict.insert(r));
                 let new_page = txn.txn.alloc_page()?;
@@ -293,14 +315,17 @@ where
             } else {
                 0
             };
-            unsafe { P::put_mut(&mut new_page_, &new_curs, &k, &v, r) }
+            unsafe { P::put_mut(&mut new_page_, &mut new_curs, &k, &v, r) }
             P::move_next(&mut new_curs);
         }
     }
     Ok(::sanakirja::btree::Db_::from_page(result))
 }
 
-pub fn from_channel<W: std::io::Write, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
+pub fn from_channel<
+    W: std::io::Write,
+    T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage,
+>(
     txn: &crate::pristine::sanakirja::GenericTxn<T>,
     channel: &str,
     header: &crate::change::ChangeHeader,
@@ -346,7 +371,7 @@ const PIPE_LEN: usize = 10;
 
 fn compress_channel<
     W: std::io::Write + Send + 'static,
-    T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>,
+    T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage,
 >(
     txn: &crate::pristine::sanakirja::GenericTxn<T>,
     channel: &str,
@@ -386,7 +411,7 @@ fn compress_channel<
         Ok((to, n))
     });
     let channel = txn.load_channel(channel)?.unwrap();
-    let channel = channel.read().unwrap();
+    let channel = channel.read();
     let mut new = 0;
     debug!("copying internal");
     let internal = copy::<SerializedHash, ChangeId, UP<SerializedHash, ChangeId>, _>(
@@ -466,19 +491,20 @@ fn copy<
     K: ::sanakirja::UnsizedStorable,
     V: ::sanakirja::UnsizedStorable,
     P: ::sanakirja::btree::BTreeMutPage<K, V>,
-    T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>,
+    T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage,
 >(
     txn: &crate::pristine::sanakirja::GenericTxn<T>,
-    pending: u64,
+    pending_: u64,
     new_page: &mut u64,
     sender: &std::sync::mpsc::SyncSender<Vec<u8>>,
     buffers: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Result<u64, TagError> {
     let mut dict = HashSet::default();
     let result = *new_page;
-    let mut pending = vec![(pending, *new_page)];
+    let mut pending = std::collections::VecDeque::new();
+    pending.push_back((pending_, *new_page));
     *new_page += BLOCK_SIZE as u64;
-    while let Some((old_page_off, new_page_)) = pending.pop() {
+    while let Some((old_page_off, new_page_)) = pending.pop_front() {
         let page = txn.txn.load_page(old_page_off).unwrap();
         let mut memory = buffers.recv().map_err(|_| TagError::Sync)?;
         let mut new_page_ = ::sanakirja::MutPage(::sanakirja::CowPage {
@@ -489,18 +515,20 @@ fn copy<
         let mut curs = P::cursor_first(&page);
         let mut new_curs = P::cursor_first(&new_page_.0);
         unsafe {
-            P::set_left_child(
-                &mut new_page_,
-                &new_curs,
-                P::left_child(page.as_page(), &curs),
-            );
+            let left = P::left_child(page.as_page(), &curs);
+            if left != 0 {
+                let new = *new_page;
+                *new_page += BLOCK_SIZE as u64;
+                P::set_left_child(&mut new_page_, &new_curs, new);
+                pending.push_back((left, new));
+            }
         }
         while let Some((k, v, r)) = P::next(&txn.txn, page.as_page(), &mut curs) {
             let r = if r > 0 {
                 assert!(dict.insert(r));
                 let new = *new_page;
                 *new_page += BLOCK_SIZE as u64;
-                pending.push((r, new));
+                pending.push_back((r, new));
                 unsafe {
                     P::set_left_child(&mut new_page_, &curs, new);
                 }
@@ -509,7 +537,7 @@ fn copy<
                 0
             };
             debug!("put {:?} {:?}", k, v);
-            unsafe { P::put_mut(&mut new_page_, &new_curs, k, v, r) }
+            unsafe { P::put_mut(&mut new_page_, &mut new_curs, k, v, r) }
             P::move_next(&mut new_curs);
         }
         sender.send(memory).unwrap();

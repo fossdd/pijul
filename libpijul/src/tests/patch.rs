@@ -84,7 +84,6 @@ apply::apply_local_patch(&patches, &mut txn, &mut branch, &patch0, &rec.updatabl
 
 hash_mismatch(&patch0)?;
 
-debug_to_file(&debug_to_file((debug_to_file((txn, &branch, "debug")?;
 
 Ok(())
 }

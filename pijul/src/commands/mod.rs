@@ -1,3 +1,5 @@
+use anyhow::bail;
+
 mod init;
 pub use init::Init;
 
@@ -54,6 +56,9 @@ pub use credit::*;
 mod tag;
 pub use tag::*;
 
+mod key;
+pub use key::*;
+
 // #[cfg(debug_assertions)]
 mod debug;
 // #[cfg(debug_assertions)]
@@ -62,7 +67,7 @@ pub use debug::*;
 /// Record the pending change (i.e. any unrecorded modifications in
 /// the working copy), returning its hash.
 fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
-    txn: std::sync::Arc<std::sync::RwLock<T>>,
+    txn: libpijul::ArcTxn<T>,
     channel: &libpijul::ChannelRef<T>,
     repo: &mut crate::repository::Repository,
 ) -> Result<Option<libpijul::Hash>, anyhow::Error> {
@@ -73,7 +78,7 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
         txn.clone(),
         libpijul::Algorithm::default(),
         channel.clone(),
-        repo.working_copy.clone(),
+        &repo.working_copy,
         &repo.changes,
         "",
         num_cpus::get(),
@@ -82,14 +87,14 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
     if recorded.actions.is_empty() {
         return Ok(None);
     }
-    let mut txn = txn.write().unwrap();
+    let mut txn = txn.write();
     let actions = recorded
         .actions
         .into_iter()
         .map(|rec| rec.globalize(&*txn).unwrap())
         .collect();
     let contents = if let Ok(c) = std::sync::Arc::try_unwrap(recorded.contents) {
-        c.into_inner().unwrap()
+        c.into_inner()
     } else {
         unreachable!()
     };
@@ -102,7 +107,7 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
         Vec::new(),
     )?;
     let (dependencies, extra_known) =
-        libpijul::change::dependencies(&*txn, &*channel.read()?, pending_change.changes.iter())?;
+        libpijul::change::dependencies(&*txn, &*channel.read(), pending_change.changes.iter())?;
     pending_change.dependencies = dependencies;
     pending_change.extra_known = extra_known;
     let hash = repo.changes.save_change(&pending_change).unwrap();
@@ -182,7 +187,11 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
                 write!(v, ", ").unwrap();
             }
             first = false;
-            write!(v, "{}", a).unwrap();
+            if let Some(s) = a.0.get("name") {
+                write!(v, "{}", s).unwrap()
+            } else if let Some(k) = a.0.get("key") {
+                write!(v, "{}", k).unwrap()
+            }
         }
         writeln!(v, "]").unwrap();
         writeln!(v, "  Date: {}\n", change.timestamp).unwrap();
@@ -211,4 +220,77 @@ fn parse_changelist(o: &[u8]) -> Vec<libpijul::Hash> {
     } else {
         Vec::new()
     }
+}
+
+use serde_derive::*;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Identity {
+    pub public_key: libpijul::key::PublicKey,
+    pub login: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    pub last_modified: u64,
+}
+
+fn load_key() -> Result<libpijul::key::SKey, anyhow::Error> {
+    if let Some(mut dir) = crate::config::global_config_dir() {
+        dir.push("secretkey.json");
+        if let Ok(key) = std::fs::File::open(&dir) {
+            let k: libpijul::key::SecretKey = serde_json::from_reader(key)?;
+            let pass = if k.encryption.is_some() {
+                Some(rpassword::read_password_from_tty(Some(&format!(
+                    "Password for {:?}: ",
+                    dir
+                )))?)
+            } else {
+                None
+            };
+            Ok(k.load(pass.as_deref())?)
+        } else {
+            bail!("Secret key not found, please use `pijul key generate` and try again")
+        }
+    } else {
+        bail!("Secret key not found, please use `pijul key generate` and try again")
+    }
+}
+
+fn find_hash(path: &mut std::path::PathBuf, hash: &str) -> Result<libpijul::Hash, anyhow::Error> {
+    use libpijul::Base32;
+    if hash.len() < 2 {
+        bail!("Ambiguous hash, need at least two characters")
+    }
+    let (a, b) = hash.split_at(2);
+    path.push(a);
+    let mut result = None;
+    for f in std::fs::read_dir(&path)? {
+        let e = f?;
+        let p = if let Ok(p) = e.file_name().into_string() {
+            p
+        } else {
+            continue;
+        };
+        if p.starts_with(b) {
+            if result.is_none() {
+                result = Some(p)
+            } else {
+                bail!("Ambiguous hash");
+            }
+        }
+    }
+    if let Some(mut r) = result {
+        path.push(&r);
+        if let Some(i) = r.find('.') {
+            r.truncate(i)
+        }
+        let f = format!("{}{}", a, r);
+        if let Some(h) = libpijul::Hash::from_base32(f.as_bytes()) {
+            return Ok(h);
+        }
+    }
+    bail!("Hash not found")
 }

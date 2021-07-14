@@ -338,4 +338,3 @@ static PUNYCODE_VALUES: [Tld; 46] = [
     Tld::SimplifiedTraditional, // yfro4i67o
     Tld::Arabic,                // ygbi2ammx
 ];
-

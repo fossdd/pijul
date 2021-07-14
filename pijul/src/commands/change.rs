@@ -19,20 +19,20 @@ pub struct Change {
 
 impl Change {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = unsafe { Repository::find_root(self.repo_path.clone()).await? };
+        let repo = Repository::find_root(self.repo_path.clone())?;
         let txn = repo.pristine.txn_begin()?;
         let changes = repo.changes;
 
         let hash = if let Some(hash) = self.hash {
             txn.hash_from_prefix(&hash)?.0
         } else {
-            let (channel_name, _) = repo.config.get_current_channel(None);
-            let channel = if let Some(channel) = txn.load_channel(channel_name)? {
+            let channel_name = txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL);
+            let channel = if let Some(channel) = txn.load_channel(&channel_name)? {
                 channel
             } else {
                 return Ok(());
             };
-            let channel = channel.read()?;
+            let channel = channel.read();
             if let Some(h) = txn.reverse_log(&*channel, None)?.next() {
                 (h?.1).0.into()
             } else {

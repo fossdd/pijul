@@ -1,14 +1,15 @@
 use super::*;
 use crate::change::{Change, ChangeFile};
 use crate::pristine::{Base32, ChangeId, Hash, Vertex};
-use std::cell::{RefCell, RefMut};
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const CHANGE_CACHE_SIZE: usize = 100;
 
 /// A file system change store.
 pub struct FileSystem {
-    change_cache: RefCell<lru_cache::LruCache<ChangeId, ChangeFile<'static>>>,
+    change_cache: Arc<Mutex<lru_cache::LruCache<ChangeId, ChangeFile<'static>>>>,
     changes_dir: PathBuf,
 }
 
@@ -16,7 +17,7 @@ impl Clone for FileSystem {
     fn clone(&self) -> Self {
         FileSystem {
             changes_dir: self.changes_dir.clone(),
-            change_cache: RefCell::new(lru_cache::LruCache::new(CHANGE_CACHE_SIZE)),
+            change_cache: Arc::new(Mutex::new(lru_cache::LruCache::new(CHANGE_CACHE_SIZE))),
         }
     }
 }
@@ -71,7 +72,7 @@ impl FileSystem {
         std::fs::create_dir_all(&changes_dir).unwrap();
         FileSystem {
             changes_dir,
-            change_cache: RefCell::new(lru_cache::LruCache::new(CHANGE_CACHE_SIZE)),
+            change_cache: Arc::new(Mutex::new(lru_cache::LruCache::new(CHANGE_CACHE_SIZE))),
         }
     }
 
@@ -80,10 +81,12 @@ impl FileSystem {
         hash: F,
         change: ChangeId,
     ) -> Result<
-        RefMut<lru_cache::LruCache<ChangeId, ChangeFile<'static>>>,
+        parking_lot::MutexGuard<
+            lru_cache::LruCache<crate::pristine::ChangeId, crate::change::ChangeFile<'static>>,
+        >,
         crate::change::ChangeError,
     > {
-        let mut change_cache = self.change_cache.borrow_mut();
+        let mut change_cache = self.change_cache.lock();
         if !change_cache.contains_key(&change) {
             let h = hash(change).unwrap();
             let path = self.filename(&h);
@@ -120,7 +123,7 @@ impl FileSystem {
         std::fs::create_dir_all(file_name.parent().unwrap())?;
         f.persist(file_name)?;
         if let Some(ref change_id) = change_id {
-            self.change_cache.borrow_mut().remove(change_id);
+            self.change_cache.lock().remove(change_id);
         }
         Ok(())
     }
@@ -130,7 +133,7 @@ impl ChangeStore for FileSystem {
     type Error = Error;
     fn has_contents(&self, hash: Hash, change_id: Option<ChangeId>) -> bool {
         if let Some(ref change_id) = change_id {
-            if let Some(l) = self.change_cache.borrow_mut().get_mut(change_id) {
+            if let Some(l) = self.change_cache.lock().get_mut(change_id) {
                 return l.has_contents();
             }
         }

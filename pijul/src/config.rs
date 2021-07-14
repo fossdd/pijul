@@ -8,11 +8,19 @@ use serde_derive::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Global {
-    pub author: libpijul::change::Author,
+    pub author: Author,
     pub unrecord_changes: Option<usize>,
     pub colors: Option<Choice>,
     pub pager: Option<Choice>,
     pub template: Option<Templates>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Author {
+    pub key_path: Option<String>,
+    pub name: String,
+    pub email: Option<String>,
+    pub full_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,21 +39,31 @@ pub struct Templates {
     pub description: Option<PathBuf>,
 }
 
+pub const GLOBAL_CONFIG_DIR: &str = ".pijulconfig";
 const CONFIG_DIR: &str = "pijul";
 
+pub fn global_config_dir() -> Option<PathBuf> {
+    if let Some(mut dir) = dirs_next::config_dir() {
+        dir.push(CONFIG_DIR);
+        Some(dir)
+    } else {
+        None
+    }
+}
+
 impl Global {
-    pub fn load() -> Result<Global, anyhow::Error> {
-        if let Some(mut dir) = dirs_next::config_dir() {
-            dir.push(CONFIG_DIR);
+    pub fn load() -> Result<(Global, u64), anyhow::Error> {
+        if let Some(mut dir) = global_config_dir() {
             dir.push("config.toml");
-            let s = std::fs::read(&dir)
+            let (s, meta) = std::fs::read(&dir)
+                .and_then(|x| Ok((x, std::fs::metadata(&dir)?)))
                 .or_else(|e| {
                     // Read from `$HOME/.config/pijul` dir
                     if let Some(mut dir) = dirs_next::home_dir() {
                         dir.push(".config");
                         dir.push(CONFIG_DIR);
                         dir.push("config.toml");
-                        std::fs::read(&dir)
+                        std::fs::read(&dir).and_then(|x| Ok((x, std::fs::metadata(&dir)?)))
                     } else {
                         Err(e.into())
                     }
@@ -53,15 +71,20 @@ impl Global {
                 .or_else(|e| {
                     // Read from `$HOME/.pijulconfig`
                     if let Some(mut dir) = dirs_next::home_dir() {
-                        dir.push(".pijulconfig");
-                        std::fs::read(&dir)
+                        dir.push(GLOBAL_CONFIG_DIR);
+                        std::fs::read(&dir).and_then(|x| Ok((x, std::fs::metadata(&dir)?)))
                     } else {
                         Err(e.into())
                     }
                 })?;
             debug!("s = {:?}", s);
             if let Ok(t) = toml::from_slice(&s) {
-                Ok(t)
+                let ts = meta
+                    .modified()?
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                Ok((t, ts))
             } else {
                 bail!("Could not read configuration file at {:?}", dir)
             }
@@ -73,7 +96,6 @@ impl Global {
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
-    pub current_channel: Option<String>,
     pub default_remote: Option<String>,
     #[serde(default)]
     pub extra_dependencies: Vec<String>,
@@ -142,33 +164,6 @@ impl HookEntry {
             std::process::exit(proc.status.code().unwrap_or(1))
         }
         Ok(())
-    }
-}
-
-impl Config {
-    pub fn save(&self, path: &std::path::Path) -> Result<(), anyhow::Error> {
-        let config = toml::to_string(self)?;
-        let mut file = std::fs::File::create(path)?;
-        file.write_all(config.as_bytes())?;
-        Ok(())
-    }
-
-    pub fn get_current_channel<'a>(&'a self, alt: Option<&'a str>) -> (&'a str, bool) {
-        if let Some(channel) = alt {
-            (channel.as_ref(), alt == self.current_channel.as_deref())
-        } else if let Some(ref channel) = self.current_channel {
-            (channel.as_str(), true)
-        } else {
-            (crate::DEFAULT_CHANNEL, true)
-        }
-    }
-
-    pub fn current_channel(&self) -> Option<&str> {
-        if let Some(ref channel) = self.current_channel {
-            Some(channel.as_str())
-        } else {
-            None
-        }
     }
 }
 

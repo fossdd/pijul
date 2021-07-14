@@ -60,7 +60,7 @@ pub fn unrecord<T: MutTxnT, P: ChangeStore>(
         return Ok(false);
     };
     let unused = unused_in_other_channels(txn, &channel, change_id)?;
-    let mut channel = channel.write().unwrap();
+    let mut channel = channel.write();
 
     del_channel_changes::<T, P>(txn, &mut channel, change_id)?;
 
@@ -118,13 +118,13 @@ fn unused_in_other_channels<T: TxnT>(
     channel: &ChannelRef<T>,
     change_id: ChangeId,
 ) -> Result<bool, TxnErr<T::GraphError>> {
-    let channel = channel.read().unwrap();
+    let channel = channel.read();
     for br in txn.iter_channels("")? {
         let (name, br) = br?;
         if name.as_str() == txn.name(&channel) {
             continue;
         }
-        let br = br.read().unwrap();
+        let br = br.read();
         if txn.get_changeset(txn.changes(&br), &change_id)?.is_some() {
             return Ok(false);
         }
@@ -194,7 +194,9 @@ fn unapply<
             Atom::EdgeMap(ref newedges) if newedges.edges.is_empty() => {}
             Atom::EdgeMap(ref newedges) if newedges.edges[0].flag.contains(EdgeFlags::FOLDER) => {
                 if newedges.edges[0].flag.contains(EdgeFlags::DELETED) {
-                    working_copy::undo_file_deletion(txn, changes, channel, change_id, newedges, salt)?
+                    working_copy::undo_file_deletion(
+                        txn, changes, channel, change_id, newedges, salt,
+                    )?
                 } else {
                     working_copy::undo_file_reinsertion::<C, _>(txn, change_id, newedges)?
                 }
@@ -370,12 +372,30 @@ fn unapply_edges<T: GraphMutTxnT, P: ChangeStore>(
     let ext: Hash = txn.get_external(&change_id)?.unwrap().into();
     ws.must_reintroduce.clear();
     for n in newedges.edges.iter() {
-        let mut source = crate::apply::edge::find_source_vertex(txn, channel, &n.from, change_id, newedges.inode, n.flag, &mut ws.apply)?;
-        let mut target = crate::apply::edge::find_target_vertex(txn, channel, &n.to, change_id, newedges.inode, n.flag, &mut ws.apply)?;
+        let mut source = crate::apply::edge::find_source_vertex(
+            txn,
+            channel,
+            &n.from,
+            change_id,
+            newedges.inode,
+            n.flag,
+            &mut ws.apply,
+        )?;
+        let mut target = crate::apply::edge::find_target_vertex(
+            txn,
+            channel,
+            &n.to,
+            change_id,
+            newedges.inode,
+            n.flag,
+            &mut ws.apply,
+        )?;
         loop {
             let intro_ext = n.introduced_by.unwrap_or(ext);
             let intro = internal(txn, &n.introduced_by, change_id)?.unwrap();
-            if must_reintroduce(txn, channel, changes, source, target, intro_ext, intro, change_id)? {
+            if must_reintroduce(
+                txn, channel, changes, source, target, intro_ext, intro, change_id,
+            )? {
                 ws.must_reintroduce.insert((source, target));
             }
             if target.end >= n.to.end {

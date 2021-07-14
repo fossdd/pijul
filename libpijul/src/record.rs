@@ -1,6 +1,4 @@
 //! Hunk a change from a pristine and a working copy.
-use crate::alive::retrieve;
-use crate::change::*;
 use crate::changestore::ChangeStore;
 use crate::diff;
 pub use crate::diff::Algorithm;
@@ -8,9 +6,12 @@ use crate::path::{components, Components};
 use crate::pristine::*;
 use crate::small_string::SmallString;
 use crate::working_copy::WorkingCopy;
+use crate::{alive::retrieve, text_encoding::Encoding};
+use crate::{change::*, changestore::FileMetadata};
 use crate::{HashMap, HashSet};
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Error)]
 pub enum RecordError<
@@ -55,7 +56,7 @@ impl<
         match e {
             crate::output::FileError::Changestore(e) => RecordError::Changestore(e),
             crate::output::FileError::Io(e) => RecordError::Io(e),
-            crate::output::            FileError::Txn(t) => RecordError::Txn(t),
+            crate::output::FileError::Txn(t) => RecordError::Txn(t),
         }
     }
 }
@@ -75,6 +76,7 @@ pub struct Builder {
 struct Parent {
     basename: String,
     metadata: InodeMetadata,
+    encoding: Option<Encoding>,
     parent: Position<Option<ChangeId>>,
 }
 
@@ -149,13 +151,13 @@ impl Builder {
         }
         let mut it = self.rec.into_iter();
         let mut result = if let Ok(rec) = Arc::try_unwrap(it.next().unwrap()) {
-            rec.into_inner().unwrap()
+            rec.into_inner()
         } else {
             unreachable!()
         };
         for rec in it {
             let rec = if let Ok(rec) = Arc::try_unwrap(rec) {
-                rec.into_inner().unwrap()
+                rec.into_inner()
             } else {
                 unreachable!()
             };
@@ -222,16 +224,14 @@ impl RecordItem {
     }
 }
 
-const CHECK_UTF8: usize = 1000;
-
 /// Ignore inodes that are in another channel
 fn get_inodes_<T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>>(
-    txn: Arc<RwLock<T>>,
-    channel: ChannelRef<T>,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     inode: &Inode,
 ) -> Result<Option<Position<ChangeId>>, TxnErr<T::GraphError>> {
-    let txn = txn.read().unwrap();
-    let channel = channel.r.read().unwrap();
+    let txn = txn.read();
+    let channel = channel.r.read();
     Ok(get_inodes(&*txn, &*channel, inode)?.map(|x| *x))
 }
 
@@ -273,14 +273,14 @@ struct Tasks {
 impl Builder {
     pub fn record<
         T,
-        W: WorkingCopy + Send + Sync + 'static,
+        W: WorkingCopy + Clone + Send + Sync + 'static,
         C: ChangeStore + Clone + Send + 'static,
     >(
         &mut self,
-        txn: Arc<RwLock<T>>,
+        txn: ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
         channel: ChannelRef<T>,
-        working_copy: Arc<W>,
+        working_copy: &W,
         changes: &C,
         prefix: &str,
         _n_workers: usize,
@@ -298,7 +298,7 @@ impl Builder {
             t: VecDeque::new(),
             stop: false,
         }));
-        let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+        let mut workers: Vec<std::thread::JoinHandle<_>> = Vec::new();
         for t in 0..0 {
             // n_workers - 1 {
             let working_copy = working_copy.clone();
@@ -306,34 +306,34 @@ impl Builder {
             let channel = channel.clone();
             let work = work.clone();
             let txn = txn.clone();
-            workers.push(std::thread::spawn(move || loop {
-                let (w, stop) = {
-                    let mut work = work.lock().unwrap();
-                    (work.t.pop_front(), work.stop)
-                };
-                if let Some((item, vertex, rec, new_papa)) = w {
-                    // This parent has changed.
-                    info!("record existing file {:?} on thread {:?}", item, t);
-                    rec.lock()
-                        .unwrap()
-                        .record_existing_file(
-                            txn.clone(),
+            workers.push(std::thread::spawn(move || {
+                loop {
+                    let (w, stop) = {
+                        let mut work = work.lock();
+                        (work.t.pop_front(), work.stop)
+                    };
+                    if let Some((item, vertex, rec, new_papa)) = w {
+                        // This parent has changed.
+                        info!("record existing file {:?} on thread {:?}", item, t);
+                        rec.lock().record_existing_file(
+                            &txn,
                             diff_algorithm,
-                            channel.clone(),
+                            &channel,
                             working_copy.clone(),
                             &changes,
                             &item,
                             new_papa,
                             vertex,
-                        )
-                        .unwrap();
-                } else if stop {
-                    info!("stop {:?}", t);
-                    break;
-                } else {
-                    info!("yield {:?}", t);
-                    std::thread::park_timeout(std::time::Duration::from_secs(1));
+                        )?;
+                    } else if stop {
+                        info!("stop {:?}", t);
+                        break;
+                    } else {
+                        info!("yield {:?}", t);
+                        std::thread::park_timeout(std::time::Duration::from_secs(1));
+                    }
                 }
+                Ok::<_, RecordError<C::Error, W::Error, T::GraphError>>(())
             }))
         }
 
@@ -343,42 +343,37 @@ impl Builder {
             debug!("stack.pop() = Some({:?})", item);
 
             // Check for moves and file conflicts.
-            let vertex: Option<Position<Option<ChangeId>>> = self
-                .recorded_inodes
-                .lock()
-                .unwrap()
-                .get(&item.inode)
-                .cloned();
+            let vertex: Option<Position<Option<ChangeId>>> =
+                self.recorded_inodes.lock().get(&item.inode).cloned();
             let vertex = if let Some(vertex) = vertex {
                 vertex
             } else if item.inode == Inode::ROOT {
                 self.recorded_inodes
                     .lock()
-                    .unwrap()
                     .insert(Inode::ROOT, Position::OPTION_ROOT);
                 debug!("TAKING LOCK {}", line!());
-                let txn = txn.read().unwrap();
+                let txn = txn.read();
                 debug!("TAKEN");
-                let channel = channel.r.read().unwrap();
+                let channel = channel.r.read();
                 debug!("TAKEN 2");
                 self.delete_obsolete_children(
                     &*txn,
                     txn.graph(&channel),
-                    working_copy.as_ref(),
+                    working_copy,
                     changes,
                     &item.full_path,
                     Position::ROOT,
                 )?;
                 Position::OPTION_ROOT
-            } else if let Some(vertex) = get_inodes_(txn.clone(), channel.clone(), &item.inode)? {
+            } else if let Some(vertex) = get_inodes_(&txn, &channel, &item.inode)? {
                 {
-                    let mut txn = txn.write().unwrap();
-                    let mut channel = channel.r.write().unwrap();
+                    let mut txn = txn.write();
+                    let mut channel = channel.r.write();
                     let mut graph = txn.graph(&mut *channel);
                     self.delete_obsolete_children(
                         &mut *txn,
                         &mut graph,
-                        working_copy.as_ref(),
+                        working_copy,
                         changes,
                         &item.full_path,
                         vertex,
@@ -387,11 +382,11 @@ impl Builder {
 
                 let rec = self.recorded();
                 let new_papa = {
-                    let mut recorded = self.recorded_inodes.lock().unwrap();
+                    let mut recorded = self.recorded_inodes.lock();
                     recorded.insert(item.inode, vertex.to_option());
                     recorded.get(&item.papa).cloned()
                 };
-                let mut work = work.lock().unwrap();
+                let mut work = work.lock();
                 work.t.push_back((item.clone(), vertex, rec, new_papa));
                 std::mem::drop(work);
                 for t in workers.iter() {
@@ -402,14 +397,11 @@ impl Builder {
             } else {
                 let rec = self.recorded();
                 debug!("TAKING LOCK {}", line!());
-                let mut rec = rec.lock().unwrap();
-                match rec.add_file(working_copy.as_ref(), item.clone()) {
+                let mut rec = rec.lock();
+                match rec.add_file(working_copy, item.clone()) {
                     Ok(Some(vertex)) => {
                         // Path addition (maybe just a single directory).
-                        self.recorded_inodes
-                            .lock()
-                            .unwrap()
-                            .insert(item.inode, vertex);
+                        self.recorded_inodes.lock().insert(item.inode, vertex);
                         vertex
                     }
                     _ => continue,
@@ -418,54 +410,57 @@ impl Builder {
 
             // Move on to the next step.
             debug!("TAKING LOCK {}", line!());
-            let txn = txn.read().unwrap();
-            let channel = channel.r.read().unwrap();
+            let txn = txn.read();
+            let channel = channel.r.read();
             self.push_children::<_, _, C>(
                 &*txn,
                 &*channel,
-                working_copy.as_ref(),
+                working_copy,
                 &mut item,
                 &mut components,
                 vertex,
                 &mut stack,
                 prefix,
+                changes,
             )?;
         }
 
         info!("stop work");
-        work.lock().unwrap().stop = true;
+        work.lock().stop = true;
         for t in workers.iter() {
             t.thread().unpark()
         }
         loop {
             let w = {
-                let mut work = work.lock().unwrap();
+                let mut work = work.lock();
                 debug!("waiting, stop = {:?}", work.stop);
                 work.t.pop_front()
             };
             if let Some((item, vertex, rec, new_papa)) = w {
                 // This parent has changed.
                 info!("record existing file {:?}", item);
-                rec.lock()
-                    .unwrap()
-                    .record_existing_file(
-                        txn.clone(),
-                        diff_algorithm,
-                        channel.clone(),
-                        working_copy.clone(),
-                        changes,
-                        &item,
-                        new_papa,
-                        vertex,
-                    )
-                    .unwrap();
+                rec.lock().record_existing_file(
+                    &txn,
+                    diff_algorithm,
+                    &channel,
+                    working_copy.clone(),
+                    changes,
+                    &item,
+                    new_papa,
+                    vertex,
+                )?;
             } else {
                 break;
             }
         }
         for (n, t) in workers.into_iter().enumerate() {
             debug!("WAITING {:?}", n);
-            t.join().unwrap()
+            match t.join() {
+                Ok(x) => x?,
+                Err(e) => {
+                    warn!("Thread error {:?}", e);
+                }
+            }
         }
         crate::TIMERS.lock().unwrap().record += now.elapsed();
         info!("record done");
@@ -521,23 +516,21 @@ impl Builder {
                         )
                         .map_err(RecordError::Changestore)?;
                     let mut full_path = full_path.to_string();
-                    if name.len() > 2 {
-                        if let Ok(name) = std::str::from_utf8(&name[2..]) {
-                            if !full_path.is_empty() {
-                                full_path.push('/');
-                            }
-                            full_path.push_str(name);
-                        }
+                    let meta = FileMetadata::read(&name);
+                    if !full_path.is_empty() {
+                        full_path.push('/');
                     }
+                    full_path.push_str(meta.basename);
                     // delete recursively.
                     let rec = self.recorded();
-                    let mut rec = rec.lock().unwrap();
+                    let mut rec = rec.lock();
                     rec.record_deleted_file(
                         txn,
                         &channel,
                         working_copy,
                         &full_path,
                         grandchild.dest(),
+                        changes,
                     )?
                 }
             }
@@ -560,6 +553,7 @@ impl Builder {
         vertex: Position<Option<ChangeId>>,
         stack: &mut Vec<(RecordItem, Components<'a>)>,
         prefix: &str,
+        changes: &C,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
         <W as crate::working_copy::WorkingCopy>::Error: 'static,
@@ -607,8 +601,15 @@ impl Builder {
                 ));
             } else if let Some(vertex) = get_inodes(txn, &channel, child_inode)? {
                 let rec = self.recorded();
-                let mut rec = rec.lock().unwrap();
-                rec.record_deleted_file(txn, txn.graph(channel), working_copy, &full_path, *vertex)?
+                let mut rec = rec.lock();
+                rec.record_deleted_file(
+                    txn,
+                    txn.graph(channel),
+                    working_copy,
+                    &full_path,
+                    *vertex,
+                    changes,
+                )?
             }
         }
         if comp.is_some() && !has_matching_children {
@@ -650,55 +651,51 @@ impl Recorded {
     ) -> Result<Option<Position<Option<ChangeId>>>, W::Error> {
         debug!("record_file_addition {:?}", item);
         let meta = working_copy.file_metadata(&item.full_path)?;
-        let mut contents = self.contents.lock().unwrap();
-        let name_start = ChangePosition(contents.len().into());
-        // Push the metadata, big-endian.
-        contents.push((meta.0 >> 8) as u8);
-        contents.push((meta.0 & 0xff) as u8);
-        //
-        contents.extend(item.basename.as_bytes());
-        let name_end = ChangePosition(contents.len().into());
+        let mut contents = self.contents.lock();
         contents.push(0);
         let inode_pos = ChangePosition(contents.len().into());
         contents.push(0);
-
-        let contents = if meta.is_file() {
+        let (contents_, encoding) = if meta.is_file() {
             let start = ChangePosition(contents.len().into());
-            working_copy.read_file(&item.full_path, &mut contents)?;
+            let encoding = working_copy.decode_file(&item.full_path, &mut contents)?;
+            self.has_binary_files |= encoding.is_none();
             let end = ChangePosition(contents.len().into());
             self.largest_file = self.largest_file.max(end.0.as_u64() - start.0.as_u64());
-            self.has_binary_files |= {
-                let s = start.0.into();
-                let e = end.0.as_usize().min(s + CHECK_UTF8 + 4);
-                let utf8 = std::str::from_utf8(&contents[s..e]);
-                debug!("utf8 = {:?}", utf8);
-                match utf8 {
-                    Err(e) => e.valid_up_to() < CHECK_UTF8,
-                    Ok(_) => false,
-                }
-            };
             contents.push(0);
             if end > start {
-                Some(Atom::NewVertex(NewVertex {
-                    up_context: vec![Position {
-                        change: None,
-                        pos: inode_pos,
-                    }],
-                    down_context: vec![],
-                    start,
-                    end,
-                    flag: EdgeFlags::BLOCK,
-                    inode: Position {
-                        change: None,
-                        pos: inode_pos,
-                    },
-                }))
+                (
+                    Some(Atom::NewVertex(NewVertex {
+                        up_context: vec![Position {
+                            change: None,
+                            pos: inode_pos,
+                        }],
+                        down_context: vec![],
+                        start,
+                        end,
+                        flag: EdgeFlags::BLOCK,
+                        inode: Position {
+                            change: None,
+                            pos: inode_pos,
+                        },
+                    })),
+                    encoding,
+                )
             } else {
-                None
+                (None, encoding)
             }
         } else {
-            None
+            (None, None)
         };
+
+        let name_start = ChangePosition(contents.len().into());
+        let file_meta = FileMetadata {
+            metadata: meta,
+            basename: item.basename.as_str(),
+            encoding: encoding.clone(),
+        };
+        file_meta.write(&mut contents);
+        let name_end = ChangePosition(contents.len().into());
+        contents.push(0);
         self.actions.push(Hunk::FileAdd {
             add_name: Atom::NewVertex(NewVertex {
                 up_context: vec![item.v_papa],
@@ -719,8 +716,9 @@ impl Recorded {
                 flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
                 inode: item.v_papa,
             }),
-            contents,
+            contents: contents_,
             path: item.full_path.clone(),
+            encoding,
         });
         debug!("{:?}", self.actions.last().unwrap());
         self.updatables.insert(
@@ -742,14 +740,14 @@ impl Recorded {
 
     fn record_existing_file<
         T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopy,
+        W: WorkingCopy + Clone,
         C: ChangeStore,
     >(
         &mut self,
-        txn: Arc<RwLock<T>>,
+        txn: &ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
-        channel: ChannelRef<T>,
-        working_copy: Arc<W>,
+        channel: &ChannelRef<T>,
+        working_copy: W,
         changes: &C,
         item: &RecordItem,
         new_papa: Option<Position<Option<ChangeId>>>,
@@ -767,8 +765,8 @@ impl Recorded {
         let f0 = EdgeFlags::FOLDER | EdgeFlags::PARENT;
         let f1 = EdgeFlags::all();
         let mut is_deleted = true;
-        let txn_ = txn.read().unwrap();
-        let channel_ = channel.read().unwrap();
+        let txn_ = txn.read();
+        let channel_ = channel.read();
         for name_ in iter_adjacent(
             &*txn_,
             txn_.graph(&*channel_),
@@ -790,17 +788,18 @@ impl Recorded {
             let name_dest = txn_
                 .find_block_end(txn_.graph(&*channel_), name_.dest())
                 .unwrap();
-            let mut name = Vec::new();
-            changes
-                .get_contents(
+            let mut meta = Vec::new();
+            let FileMetadata {
+                basename,
+                metadata,
+                encoding,
+            } = changes
+                .get_file_meta(
                     |p| txn_.get_external(&p).unwrap().map(From::from),
                     *name_dest,
-                    &mut name,
+                    &mut meta,
                 )
                 .map_err(RecordError::Changestore)?;
-            let (metadata, basename) = name.split_at(2);
-            let metadata = InodeMetadata::from_basename(metadata);
-            let basename = std::str::from_utf8(basename).unwrap().to_string();
             debug!(
                 "former basename of {:?}: {:?} {:?}",
                 vertex, basename, metadata
@@ -811,8 +810,9 @@ impl Recorded {
                 let v_papa = v_papa?;
                 if !v_papa.flag().contains(EdgeFlags::DELETED) {
                     former_parents.push(Parent {
-                        basename,
+                        basename: basename.to_string(),
                         metadata,
+                        encoding,
                         parent: v_papa.dest().to_option(),
                     })
                 }
@@ -839,6 +839,7 @@ impl Recorded {
                     &item,
                     vertex,
                     new_papa.unwrap(),
+                    former_parents[0].encoding.clone(),
                 )?
             }
             if new_meta.is_file()
@@ -846,14 +847,14 @@ impl Recorded {
                     || modified_since_last_commit(
                         &*txn_,
                         &*channel_,
-                        working_copy.as_ref(),
+                        &working_copy,
                         &item.full_path,
                     )?)
             {
                 let mut ret = retrieve(&*txn_, txn_.graph(&*channel_), vertex)?;
                 let mut b = Vec::new();
-                working_copy
-                    .read_file(&item.full_path, &mut b)
+                let encoding = working_copy
+                    .decode_file(&item.full_path, &mut b)
                     .map_err(RecordError::WorkingCopy)?;
                 debug!("diffing…");
                 let len = self.actions.len();
@@ -866,6 +867,7 @@ impl Recorded {
                     vertex.to_option(),
                     &mut ret,
                     &b,
+                    &encoding,
                 )?;
                 if self.actions.len() > len {
                     if let Ok(last_modified) = working_copy.modified_time(&item.full_path) {
@@ -887,9 +889,10 @@ impl Recorded {
             self.record_deleted_file(
                 &*txn_,
                 txn_.graph(&*channel_),
-                working_copy.as_ref(),
+                &working_copy,
                 &item.full_path,
                 vertex,
+                changes,
             )?
         }
         Ok(())
@@ -903,21 +906,22 @@ impl Recorded {
         item: &RecordItem,
         vertex: Position<ChangeId>,
         new_papa: Position<Option<ChangeId>>,
+        encoding: Option<Encoding>,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
         <W as crate::working_copy::WorkingCopy>::Error: 'static,
     {
         debug!("record_moved_file {:?}", item);
-        let mut contents = self.contents.lock().unwrap();
-        let name_start = ChangePosition(contents.len().into());
-        // Push the metadata, big-endian.
-        contents.push((item.metadata.0 >> 8) as u8);
-        contents.push((item.metadata.0 & 0xff) as u8);
-        //
-        contents.extend(item.basename.as_bytes());
-        let name_end = ChangePosition(contents.len().into());
-        contents.push(0);
-        let name = &contents[name_start.0.as_usize()..name_end.0.as_usize()];
+        let mut contents = self.contents.lock();
+        let basename = item.basename.as_str();
+        let meta_start = ChangePosition(contents.len().into());
+        FileMetadata {
+            metadata: item.metadata,
+            basename,
+            encoding: encoding.clone(),
+        }
+        .write(&mut contents);
+        let meta_end = ChangePosition(contents.len().into());
         let mut moved = collect_moved_edges::<_, _, W>(
             txn,
             changes,
@@ -925,7 +929,7 @@ impl Recorded {
             new_papa,
             vertex,
             item.metadata,
-            name,
+            basename,
         )?;
         debug!("moved = {:#?}", moved);
         if !moved.resurrect.is_empty() {
@@ -940,6 +944,7 @@ impl Recorded {
                 }),
                 contents: None,
                 path: item.full_path.clone(),
+                encoding,
             });
         }
         if !moved.edges.is_empty() {
@@ -952,12 +957,14 @@ impl Recorded {
                     add: Atom::NewVertex(NewVertex {
                         up_context: vec![item.v_papa],
                         down_context: vec![vertex.to_option()],
-                        start: name_start,
-                        end: name_end,
+                        start: meta_start,
+                        end: meta_end,
                         flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
                         inode: item.v_papa,
                     }),
-                    path: crate::fs::find_path(changes, txn, channel, true, vertex)?.unwrap().0,
+                    path: crate::fs::find_path(changes, txn, channel, true, vertex)?
+                        .unwrap()
+                        .0,
                 });
             } else {
                 self.actions.push(Hunk::SolveNameConflict {
@@ -967,10 +974,10 @@ impl Recorded {
                     }),
                     path: item.full_path.clone(),
                 });
-                contents.truncate(name_start.0.as_usize())
+                contents.truncate(meta_start.0.as_usize())
             }
         } else {
-            contents.truncate(name_start.0.as_usize())
+            contents.truncate(meta_start.0.as_usize())
         }
         Ok(())
     }
@@ -991,7 +998,7 @@ fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopy>(
     parent_pos: Position<Option<ChangeId>>,
     current_pos: Position<ChangeId>,
     new_meta: InodeMetadata,
-    name: &[u8],
+    name: &str,
 ) -> Result<MovedEdges, RecordError<C::Error, W::Error, T::GraphError>>
 where
     <W as crate::working_copy::WorkingCopy>::Error: 'static,
@@ -1006,6 +1013,7 @@ where
     let mut del_del = HashMap::default();
     let mut alive = HashMap::default();
     let mut previous_name = Vec::new();
+    let mut last_alive_meta = None;
     for parent in iter_adjacent(
         txn,
         channel,
@@ -1045,8 +1053,12 @@ where
         }
         previous_name.clear();
         let parent_dest = txn.find_block_end(channel, parent.dest()).unwrap();
-        changes
-            .get_contents(
+        let FileMetadata {
+            metadata: parent_meta,
+            basename: parent_name,
+            ..
+        } = changes
+            .get_file_meta(
                 |p| txn.get_external(&p).unwrap().map(From::from),
                 *parent_dest,
                 &mut previous_name,
@@ -1054,15 +1066,16 @@ where
             .map_err(RecordError::Changestore)?;
         debug!(
             "parent_dest {:?} {:?} {:?}",
-            parent_dest,
-            &previous_name[..2],
-            std::str::from_utf8(&previous_name[2..])
+            parent_dest, parent_meta, parent_name
         );
-        let (parent_meta, parent_name) = previous_name.split_at(2);
-        let parent_meta = InodeMetadata::from_basename(parent_meta);
         debug!("new_meta = {:?}, parent_meta = {:?}", new_meta, parent_meta);
-        let name_changed =
-            (parent_name != &name[2..]) || (new_meta != parent_meta && cfg!(not(windows)));
+        let name_changed = parent_name != name;
+        let mut meta_changed = new_meta != parent_meta;
+        if cfg!(windows) && !meta_changed {
+            if let Some(m) = last_alive_meta {
+                meta_changed = new_meta != m
+            }
+        }
         for grandparent in iter_adjacent(
             txn,
             channel,
@@ -1087,10 +1100,13 @@ where
                 std::str::from_utf8(&previous_name[2..])
             );
             let grandparent_changed = parent_pos != grandparent.dest().to_option();
-            debug!("change = {:?}", grandparent_changed || name_changed);
+            debug!(
+                "change = {:?} {:?} {:?}",
+                grandparent_changed, name_changed, meta_changed
+            );
 
             if grandparent.flag().contains(EdgeFlags::DELETED) {
-                if !grandparent_changed && !name_changed {
+                if !grandparent_changed && !name_changed && !meta_changed {
                     // We resurrect the name
                     moved.resurrect.push(NewEdge {
                         previous: grandparent.flag() - EdgeFlags::PARENT,
@@ -1117,7 +1133,7 @@ where
                         .or_insert_with(Vec::new);
                     v.push(Some(grandparent.introduced_by()))
                 }
-            } else if grandparent_changed || name_changed {
+            } else if grandparent_changed || name_changed || (meta_changed && cfg!(unix)) {
                 moved.edges.push(NewEdge {
                     previous: parent.flag() - EdgeFlags::PARENT,
                     flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK | EdgeFlags::DELETED,
@@ -1136,6 +1152,7 @@ where
                     })
                 }
             } else {
+                last_alive_meta = Some(new_meta);
                 let v = alive
                     .entry((grandparent.dest(), *parent_dest))
                     .or_insert_with(Vec::new);
@@ -1184,6 +1201,7 @@ impl Recorded {
     fn record_deleted_file<
         T: GraphTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
         W: WorkingCopy,
+        C: ChangeStore,
     >(
         &mut self,
         txn: &T,
@@ -1191,7 +1209,11 @@ impl Recorded {
         working_copy: &W,
         full_path: &str,
         current_vertex: Position<ChangeId>,
-    ) -> Result<(), TxnErr<T::GraphError>> {
+        changes: &C,
+    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    where
+        <W as WorkingCopy>::Error: 'static,
+    {
         debug!("record_deleted_file {:?} {:?}", current_vertex, full_path);
         let mut stack = vec![(current_vertex.inode_vertex(), None)];
         let mut visited = HashSet::default();
@@ -1211,7 +1233,7 @@ impl Recorded {
                 debug!("delete_recursively {:?}", vertex);
                 // Killing an inode.
                 {
-                    let mut deleted_vertices = self.deleted_vertices.lock().unwrap();
+                    let mut deleted_vertices = self.deleted_vertices.lock();
                     if !deleted_vertices.insert(vertex.start_pos()) {
                         continue;
                     }
@@ -1223,12 +1245,18 @@ impl Recorded {
                     );
                     self.recorded_inodes
                         .lock()
-                        .unwrap()
                         .insert(*inode, vertex.start_pos().to_option());
                     self.updatables
                         .insert(self.actions.len(), InodeUpdate::Deleted { inode: *inode });
                 }
-                self.delete_inode_vertex(txn, channel, vertex, vertex.start_pos(), full_path)?
+                self.delete_inode_vertex::<_, _, W>(
+                    changes,
+                    txn,
+                    channel,
+                    vertex,
+                    vertex.start_pos(),
+                    full_path,
+                )?
             }
 
             // Move on to the descendants.
@@ -1261,16 +1289,22 @@ impl Recorded {
         Ok(())
     }
 
-    fn delete_inode_vertex<T: GraphTxnT>(
+    fn delete_inode_vertex<T: GraphTxnT, C: ChangeStore, W: WorkingCopy>(
         &mut self,
+        changes: &C,
         txn: &T,
         channel: &T::Graph,
         vertex: Vertex<ChangeId>,
         inode: Position<ChangeId>,
         path: &str,
-    ) -> Result<(), TxnErr<T::GraphError>> {
+    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    where
+        <W as WorkingCopy>::Error: 'static,
+    {
         debug!("delete_inode_vertex {:?}", path);
         let mut edges = Vec::new();
+        let mut enc = None;
+        let mut previous_name = Vec::new();
         for parent in iter_adjacent(
             txn,
             channel,
@@ -1284,6 +1318,17 @@ impl Recorded {
             }
             assert!(parent.flag().contains(EdgeFlags::FOLDER));
             let parent_dest = txn.find_block_end(channel, parent.dest()).unwrap();
+            if enc.is_none() {
+                let FileMetadata { encoding, .. } = changes
+                    .get_file_meta(
+                        |p| txn.get_external(&p).unwrap().map(From::from),
+                        *parent_dest,
+                        &mut previous_name,
+                    )
+                    .map_err(RecordError::Changestore)?;
+                enc = Some(encoding);
+            }
+
             for grandparent in iter_adjacent(
                 txn,
                 channel,
@@ -1326,6 +1371,7 @@ impl Recorded {
                 }),
                 contents: None,
                 path: path.to_string(),
+                encoding: enc.unwrap(),
             })
         }
         Ok(())

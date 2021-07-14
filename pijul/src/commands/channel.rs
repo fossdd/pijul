@@ -39,12 +39,12 @@ impl Channel {
         let mut stdout = std::io::stdout();
         match self.subcmd {
             None => {
-                let repo = Repository::find_root(self.repo_path).await?;
-                let current = repo.config.current_channel();
+                let repo = Repository::find_root(self.repo_path)?;
                 let txn = repo.pristine.txn_begin()?;
+                let current = txn.current_channel().ok();
                 for channel in txn.iter_channels("")? {
                     let (_, channel) = channel?;
-                    let channel = channel.read()?;
+                    let channel = channel.read();
                     let name = txn.name(&*channel);
                     if current == Some(name) {
                         writeln!(stdout, "* {}", name)?;
@@ -54,12 +54,12 @@ impl Channel {
                 }
             }
             Some(SubCommand::Delete { ref delete }) => {
-                let repo = Repository::find_root(self.repo_path).await?;
-                let current = repo.config.current_channel();
+                let repo = Repository::find_root(self.repo_path)?;
+                let mut txn = repo.pristine.mut_txn_begin()?;
+                let current = txn.current_channel().ok();
                 if Some(delete.as_str()) == current {
                     bail!("Cannot delete current channel")
                 }
-                let mut txn = repo.pristine.mut_txn_begin()?;
                 if !txn.drop_channel(delete)? {
                     return Err(anyhow!("Channel {} not found", delete));
                 }
@@ -76,9 +76,9 @@ impl Channel {
                 .await?;
             }
             Some(SubCommand::Rename { ref from, ref to }) => {
-                let mut repo = Repository::find_root(self.repo_path).await?;
-                let current = repo.config.current_channel();
+                let repo = Repository::find_root(self.repo_path)?;
                 let mut txn = repo.pristine.mut_txn_begin()?;
+                let current = txn.current_channel().ok();
                 let (from, to) = if let Some(to) = to {
                     (from.as_str(), to.as_str())
                 } else if let Some(current) = current {
@@ -92,12 +92,11 @@ impl Channel {
                     bail!("No such channel: {:?}", from)
                 };
                 txn.rename_channel(&mut channel, to)?;
+                txn.set_current_channel(&to)?;
                 txn.commit()?;
-                repo.config.current_channel = Some(to.to_string());
-                repo.save_config()?;
             }
             Some(SubCommand::New { name }) => {
-                let repo = Repository::find_root(self.repo_path).await?;
+                let repo = Repository::find_root(self.repo_path)?;
                 let mut txn = repo.pristine.mut_txn_begin()?;
                 if txn.load_channel(&name)?.is_some() {
                     bail!("Channel {} already exists", name)

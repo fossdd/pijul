@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use anyhow::bail;
 use libpijul::pristine::{Hash, Merkle, MutTxnT, Position, TxnT};
 use libpijul::*;
 use log::debug;
-
-use super::RemoteRef;
 
 #[derive(Clone)]
 pub struct Local {
@@ -25,7 +24,7 @@ pub fn get_state<T: TxnTExt>(
     if let Some(mid) = mid {
         Ok(txn.get_changes(&channel, mid)?.map(|(_, m)| (mid, m)))
     } else {
-        Ok(txn.reverse_log(&*channel.read()?, None)?.next().map(|n| {
+        Ok(txn.reverse_log(&*channel.read(), None)?.next().map(|n| {
             let (n, (_, m)) = n.unwrap();
             (n, m.into())
         }))
@@ -39,10 +38,22 @@ impl Local {
         Ok(get_state(&txn, &channel, mid)?)
     }
 
-    pub fn download_changelist<T: MutTxnT>(
+    pub fn get_id(&self) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+        let txn = self.pristine.txn_begin()?;
+        if let Some(channel) = txn.load_channel(&self.channel)? {
+            Ok(Some(*txn.id(&*channel.read())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn download_changelist<
+        A,
+        F: FnMut(&mut A, u64, Hash, Merkle) -> Result<(), anyhow::Error>,
+    >(
         &mut self,
-        txn: &mut T,
-        remote: &mut RemoteRef<T>,
+        mut f: F,
+        a: &mut A,
         from: u64,
         paths: &[String],
     ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
@@ -51,8 +62,11 @@ impl Local {
         let remote_channel = if let Some(channel) = remote_txn.load_channel(&self.channel)? {
             channel
         } else {
-            debug!("no remote channel named {:?}", self.channel);
-            return Ok(HashSet::new());
+            debug!(
+                "Local::download_changelist found no channel named {:?}",
+                self.channel
+            );
+            bail!("No channel {} found for remote {}", self.name, self.channel)
         };
         let mut paths_ = HashSet::new();
         let mut result = HashSet::new();
@@ -67,7 +81,7 @@ impl Local {
                 paths_.extend(
                     libpijul::fs::iter_graph_descendants(
                         &remote_txn,
-                        &remote_channel.read()?.graph,
+                        &remote_channel.read().graph,
                         p,
                     )?
                     .map(|x| x.unwrap()),
@@ -75,20 +89,21 @@ impl Local {
             }
         }
         debug!("paths_ = {:?}", paths_);
-        for x in remote_txn.log(&*remote_channel.read()?, from)? {
+        debug!("from = {:?}", from);
+        for x in remote_txn.log(&*remote_channel.read(), from)? {
             let (n, (h, m)) = x?;
-            if n >= from {
-                let h_int = remote_txn.get_internal(h)?.unwrap();
-                if paths_.is_empty()
-                    || paths_.iter().any(|x| {
-                        remote_txn
-                            .get_touched_files(x, Some(h_int))
-                            .unwrap()
-                            .is_some()
-                    })
-                {
-                    txn.put_remote(remote, n, (h.into(), m.into()))?;
-                }
+            assert!(n >= from);
+            let h_int = remote_txn.get_internal(h)?.unwrap();
+            if paths_.is_empty()
+                || paths_.iter().any(|x| {
+                    remote_txn
+                        .get_touched_files(x, Some(h_int))
+                        .unwrap()
+                        .is_some()
+                })
+            {
+                debug!("put_remote {:?} {:?} {:?}", n, h, m);
+                f(a, n, h.into(), m.into())?;
             }
         }
         Ok(result)
@@ -101,8 +116,10 @@ impl Local {
         changes: &[Hash],
     ) -> Result<(), anyhow::Error> {
         let store = libpijul::changestore::filesystem::FileSystem::from_root(&self.root);
-        let mut txn = self.pristine.mut_txn_begin()?;
-        let mut channel = txn.open_or_create_channel(to_channel.unwrap_or(&self.channel))?;
+        let txn = self.pristine.arc_txn_begin()?;
+        let channel = txn
+            .write()
+            .open_or_create_channel(to_channel.unwrap_or(&self.channel))?;
         for c in changes {
             libpijul::changestore::filesystem::push_filename(&mut local, &c);
             libpijul::changestore::filesystem::push_filename(&mut self.changes_dir, &c);
@@ -118,25 +135,18 @@ impl Local {
             libpijul::changestore::filesystem::pop_filename(&mut self.changes_dir);
         }
         let repo = libpijul::working_copy::filesystem::FileSystem::from_root(&self.root);
-        upload_changes(&store, &mut txn, &mut channel, changes)?;
-        let txn = Arc::new(RwLock::new(txn));
-        let wc = Arc::new(repo);
+        upload_changes(&store, &mut *txn.write(), &channel, changes)?;
         libpijul::output::output_repository_no_pending(
-            wc,
+            &repo,
             &store,
-            txn.clone(),
-            channel.clone(),
+            &txn,
+            &channel,
             "",
             true,
             None,
             num_cpus::get(),
             0,
         )?;
-        let txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-            txn.into_inner().unwrap()
-        } else {
-            unreachable!()
-        };
         txn.commit()?;
         Ok(())
     }
@@ -169,6 +179,39 @@ impl Local {
         }
         Ok(())
     }
+
+    pub async fn update_identities(
+        &mut self,
+        _rev: Option<u64>,
+        mut path: PathBuf,
+    ) -> Result<u64, anyhow::Error> {
+        let mut other_path = self.root.join(DOT_DIR);
+        other_path.push("identities");
+        let r = if let Ok(r) = std::fs::read_dir(&other_path) {
+            r
+        } else {
+            return Ok(0);
+        };
+        std::fs::create_dir_all(&path)?;
+        for id in r {
+            let id = id?;
+            let m = id.metadata()?;
+            let p = id.path();
+            path.push(p.file_name().unwrap());
+            if let Ok(ml) = std::fs::metadata(&path) {
+                if ml.modified()? < m.modified()? {
+                    std::fs::remove_file(&path)?;
+                } else {
+                    continue;
+                }
+            }
+            if std::fs::hard_link(&p, &path).is_err() {
+                std::fs::copy(&p, &path)?;
+            }
+            path.pop();
+        }
+        Ok(0)
+    }
 }
 
 pub fn upload_changes<T: MutTxnTExt, C: libpijul::changestore::ChangeStore>(
@@ -178,7 +221,7 @@ pub fn upload_changes<T: MutTxnTExt, C: libpijul::changestore::ChangeStore>(
     changes: &[Hash],
 ) -> Result<(), anyhow::Error> {
     let mut ws = libpijul::ApplyWorkspace::new();
-    let mut channel = channel.write().unwrap();
+    let mut channel = channel.write();
     for c in changes {
         txn.apply_change_ws(store, &mut *channel, c, &mut ws)?;
     }

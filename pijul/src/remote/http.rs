@@ -3,9 +3,11 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::bail;
-use libpijul::pristine::{Base32, MutTxnT, Position};
-use libpijul::{Hash, RemoteRef};
-use log::{debug, error};
+use libpijul::pristine::{Base32, Position};
+use libpijul::Hash;
+use log::{debug, error, trace};
+
+const USER_AGENT: &str = concat!("pijul-", clap::crate_version!());
 
 pub struct Http {
     pub url: url::Url,
@@ -23,45 +25,72 @@ async fn download_change(
     libpijul::changestore::filesystem::push_filename(&mut path, &c);
     std::fs::create_dir_all(&path.parent().unwrap())?;
     let path_ = path.with_extension("tmp");
-    let mut f = std::fs::File::create(&path_)?;
+    let mut f = tokio::fs::File::create(&path_).await?;
     libpijul::changestore::filesystem::pop_filename(&mut path);
     let c32 = c.to_base32();
     let url = format!("{}/{}", url, super::DOT_DIR);
     let mut delay = 1f64;
-    loop {
-        let mut res = if let Ok(res) = client.get(&url).query(&[("change", &c32)]).send().await {
+
+    let (send, mut recv) = tokio::sync::mpsc::channel::<Option<bytes::Bytes>>(100);
+    let t = tokio::spawn(async move {
+        while let Some(chunk) = recv.recv().await {
+            match chunk {
+                Some(chunk) => {
+                    trace!("writing {:?}", chunk.len());
+                    use tokio::io::AsyncWriteExt;
+                    f.write_all(&chunk).await?;
+                }
+                None => {
+                    f.set_len(0).await?;
+                }
+            }
+        }
+        Ok::<_, std::io::Error>(())
+    });
+    let mut done = false;
+    while !done {
+        let mut res = if let Ok(res) = client
+            .get(&url)
+            .query(&[("change", &c32)])
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await
+        {
             delay = 1f64;
             res
         } else {
             debug!("HTTP error, retrying in {} seconds", delay.round());
             tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
-            f.set_len(0)?;
+            send.send(None).await?;
             delay *= 2.;
             continue;
         };
         debug!("response {:?}", res);
         if !res.status().is_success() {
-            bail!("HTTP error {:?}", res.status())
+            tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+            send.send(None).await?;
+            delay *= 2.;
+            continue;
         }
-        let done = loop {
+        while !done {
             match res.chunk().await {
-                Ok(Some(chunk)) => {
-                    debug!("writing {:?}", chunk.len());
-                    f.write_all(&chunk)?;
-                }
-                Ok(None) => break true,
-                Err(_) => {
-                    error!("Error while downloading {:?}, retrying", url);
+                Ok(Some(chunk)) => send.send(Some(chunk)).await?,
+                Ok(None) => done = true,
+                Err(e) => {
+                    debug!("error {:?}", e);
+                    error!("Error while downloading {:?} from {:?}, retrying", c32, url);
+                    send.send(None).await?;
                     tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
                     delay *= 2.;
-                    break false;
+                    break;
                 }
             }
-        };
-        if done {
-            std::fs::rename(&path_, &path_.with_extension("change"))?;
-            break;
         }
+    }
+    std::mem::drop(send);
+    t.await??;
+    if done {
+        std::fs::rename(&path_, &path_.with_extension("change"))?;
     }
     Ok(c)
 }
@@ -148,6 +177,7 @@ impl Http {
             self.client
                 .post(url)
                 .query(&to_channel)
+                .header(reqwest::header::USER_AGENT, USER_AGENT)
                 .body(change)
                 .send()
                 .await?;
@@ -156,10 +186,13 @@ impl Http {
         Ok(())
     }
 
-    pub async fn download_changelist<T: MutTxnT>(
+    pub async fn download_changelist<
+        A,
+        F: FnMut(&mut A, u64, Hash, libpijul::Merkle) -> Result<(), anyhow::Error>,
+    >(
         &self,
-        txn: &mut T,
-        remote: &mut RemoteRef<T>,
+        mut f: F,
+        a: &mut A,
         from: u64,
         paths: &[String],
     ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
@@ -178,9 +211,22 @@ impl Http {
         for p in paths.iter() {
             query.push(("path", p));
         }
-        let res = self.client.get(url).query(&query).send().await?;
-        if !res.status().is_success() {
-            bail!("HTTP error {:?}", res.status())
+        let res = self
+            .client
+            .get(url)
+            .query(&query)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            match serde_json::from_slice::<libpijul::RemoteError>(&*res.bytes().await?) {
+                Ok(remote_err) => return Err(remote_err.into()),
+                Err(_) if status.as_u16() == 404 => {
+                    bail!("Repository `{}` not found (404)", self.url)
+                }
+                Err(_) => bail!("Http request failed with status code: {}", status),
+            }
         }
         let resp = res.bytes().await?;
         let mut result = HashSet::new();
@@ -188,9 +234,7 @@ impl Http {
             for l in data.lines() {
                 if !l.is_empty() {
                     match super::parse_line(l)? {
-                        super::ListLine::Change { n, m, h } => {
-                            txn.put_remote(remote, n, (h, m))?;
-                        }
+                        super::ListLine::Change { n, m, h } => f(a, n, h, m)?,
                         super::ListLine::Position(pos) => {
                             result.insert(pos);
                         }
@@ -221,14 +265,20 @@ impl Http {
         } else {
             [("state", String::new()), ("channel", self.channel.clone())]
         };
-        let res = self.client.get(&url).query(&q).send().await?;
+        let res = self
+            .client
+            .get(&url)
+            .query(&q)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
         if !res.status().is_success() {
             bail!("HTTP error {:?}", res.status())
         }
         let resp = res.bytes().await?;
         let resp = std::str::from_utf8(&resp)?;
         debug!("resp = {:?}", resp);
-        let mut s = resp.split(' ');
+        let mut s = resp.split_whitespace();
         if let (Some(n), Some(m)) = (
             s.next().and_then(|s| s.parse().ok()),
             s.next()
@@ -238,6 +288,25 @@ impl Http {
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn get_id(&self) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+        debug!("get_state {:?}", self.url);
+        let url = format!("{}/{}", self.url, super::DOT_DIR);
+        let q = [("channel", self.channel.clone()), ("id", String::new())];
+        let res = self
+            .client
+            .get(&url)
+            .query(&q)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            bail!("HTTP error {:?}", res.status())
+        }
+        let resp = res.bytes().await?;
+        debug!("resp = {:?}", resp);
+        Ok(libpijul::pristine::RemoteId::from_bytes(&resp))
     }
 
     pub async fn archive<W: std::io::Write + Send + 'static>(
@@ -269,7 +338,10 @@ impl Http {
         } else {
             res
         };
-        let res = res.send().await?;
+        let res = res
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
         if !res.status().is_success() {
             bail!("HTTP error {:?}", res.status())
         }
@@ -288,5 +360,56 @@ impl Http {
             w.write_all(&item[off..])?;
         }
         Ok(conflicts as u64)
+    }
+
+    pub async fn update_identities(
+        &mut self,
+        rev: Option<u64>,
+        mut path: PathBuf,
+    ) -> Result<u64, anyhow::Error> {
+        let url = {
+            let mut p = self.url.path().to_string();
+            if !p.ends_with("/") {
+                p.push('/')
+            }
+            p.push_str(super::DOT_DIR);
+            let mut u = self.url.clone();
+            u.set_path(&p);
+            u
+        };
+        let res = self
+            .client
+            .get(url)
+            .query(&[(
+                "identities",
+                if let Some(rev) = rev {
+                    format!("{}", rev)
+                } else {
+                    String::new()
+                },
+            )])
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            bail!("HTTP error {:?}", res.status())
+        }
+        use serde_derive::*;
+        #[derive(Debug, Deserialize)]
+        struct Identities {
+            id: Vec<crate::Identity>,
+            rev: u64,
+        }
+        let resp: Identities = res.json().await?;
+
+        std::fs::create_dir_all(&path)?;
+        for id in resp.id.iter() {
+            path.push(&id.public_key.key);
+            debug!("recv identity: {:?} {:?}", id, path);
+            let mut id_file = std::fs::File::create(&path)?;
+            serde_json::to_writer_pretty(&mut id_file, &id)?;
+            path.pop();
+        }
+        Ok(resp.rev)
     }
 }

@@ -1,6 +1,5 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
 
 use canonical_path::CanonicalPathBuf;
 use clap::{ArgSettings, Clap};
@@ -11,10 +10,6 @@ use crate::repository::Repository;
 
 #[derive(Clap, Debug)]
 pub struct Move {
-    /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
-    #[clap(long = "repository")]
-    repo_path: Option<PathBuf>,
-
     #[clap(setting = ArgSettings::Hidden, long = "salt")]
     salt: Option<u64>,
     /// Paths which need to be moved
@@ -26,13 +21,12 @@ pub struct Move {
 
 impl Move {
     pub async fn run(mut self) -> Result<(), anyhow::Error> {
-        let repo = Repository::find_root(self.repo_path.clone()).await?;
+        let repo = Repository::find_root(None)?;
         let to = if let Some(to) = self.paths.pop() {
             to
         } else {
             return Ok(());
         };
-        let to = path(&self.repo_path, to);
         let is_dir = if let Ok(m) = std::fs::metadata(&to) {
             m.is_dir()
         } else {
@@ -46,8 +40,13 @@ impl Move {
         let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
         for p in self.paths {
             debug!("p = {:?}", p);
-            let source = std::fs::canonicalize(&path(&self.repo_path, p.clone()))?;
-            let target = if is_dir { to.join(p) } else { to.clone() };
+            let source = std::fs::canonicalize(&p.clone())?;
+            debug!("source = {:?}", source);
+            let target = if is_dir {
+                to.join(source.file_name().unwrap())
+            } else {
+                to.clone()
+            };
             debug!("target = {:?}", target);
 
             let r = Rename {
@@ -56,6 +55,7 @@ impl Move {
             };
             std::fs::rename(r.source, r.target)?;
             let target = std::fs::canonicalize(r.target)?;
+            debug!("target = {:?}", target);
             {
                 let source = source.strip_prefix(&repo_path)?;
                 use path_slash::PathExt;
@@ -83,14 +83,6 @@ impl<'a> Drop for Rename<'a> {
     }
 }
 
-fn path(root: &Option<PathBuf>, path: PathBuf) -> PathBuf {
-    if let Some(ref p) = root {
-        p.join(path)
-    } else {
-        path
-    }
-}
-
 #[derive(Clap, Debug)]
 pub struct List {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
@@ -100,7 +92,7 @@ pub struct List {
 
 impl List {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = unsafe { Repository::find_root(self.repo_path).await? };
+        let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;
         let mut stdout = std::io::stdout();
         for p in txn.iter_working_copy() {
@@ -113,9 +105,6 @@ impl List {
 
 #[derive(Clap, Debug)]
 pub struct Add {
-    /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
-    #[clap(long = "repository")]
-    repo_path: Option<PathBuf>,
     #[clap(short = 'r', long = "recursive")]
     recursive: bool,
     #[clap(short = 'f', long = "force")]
@@ -128,12 +117,11 @@ pub struct Add {
 
 impl Add {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = Repository::find_root(self.repo_path.clone()).await?;
-        let txn = repo.pristine.mut_txn_begin()?;
+        let repo = Repository::find_root(None)?;
+        let txn = repo.pristine.arc_txn_begin()?;
         let threads = num_cpus::get();
         let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
         let mut stderr = std::io::stderr();
-        let txn = Arc::new(RwLock::new(txn));
         for path in self.paths.iter() {
             info!("Adding {:?}", path);
             let path = CanonicalPathBuf::canonicalize(&path)?;
@@ -153,14 +141,14 @@ impl Add {
                 use libpijul::working_copy::filesystem::*;
                 let (full, _) = get_prefix(Some(repo_path.as_ref()), path.as_path())?;
                 repo.working_copy.add_prefix_rec(
-                    txn.clone(),
+                    &txn,
                     repo_path.clone(),
                     full.clone(),
                     threads,
                     self.salt.unwrap_or(0),
                 )?
             } else {
-                let mut txn = txn.write().unwrap();
+                let mut txn = txn.write();
                 let path = if let Ok(path) = path.as_path().strip_prefix(&repo_path.as_path()) {
                     path
                 } else {
@@ -175,27 +163,20 @@ impl Add {
                 }
             }
         }
-        if let Ok(txn) = Arc::try_unwrap(txn) {
-            txn.into_inner().unwrap().commit()?;
-        } else {
-            unreachable!()
-        }
+        txn.commit()?;
         Ok(())
     }
 }
 
 #[derive(Clap, Debug)]
 pub struct Remove {
-    #[clap(long = "repository")]
-    /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
-    repo_path: Option<PathBuf>,
     /// The paths need to be removed
     paths: Vec<PathBuf>,
 }
 
 impl Remove {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = Repository::find_root(self.repo_path.clone()).await?;
+        let repo = Repository::find_root(None)?;
         let mut txn = repo.pristine.mut_txn_begin()?;
         let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
         for path in self.paths.iter() {

@@ -1,7 +1,7 @@
 [package]
 name = "libpijul"
 description = "Core library of Pijul, a distributed version control system based on a sound theory of collaborative work."
-version = "1.0.0-alpha.39"
+version = "1.0.0-alpha.45"
 
 repository = "https://nest.pijul.com/pijul/libpijul"
 documentation = "https://docs.rs/libpijul"
@@ -10,23 +10,22 @@ edition = "2018"
 license = "GPL-2.0-or-later"
 include = [
 "Cargo.toml",
-"src",
 "src/apply.rs",
 "src/missing_context.rs",
 "src/vector2.rs",
 "src/path.rs",
-"src/working_copy",
+"src/chardetng/mod.rs",
+"src/chardetng/data.rs",
+"src/chardetng/tld.rs",
 "src/working_copy/filesystem.rs",
 "src/working_copy/mod.rs",
 "src/working_copy/memory.rs",
-"src/unrecord",
 "src/unrecord/mod.rs",
 "src/unrecord/working_copy.rs",
 "src/record.rs",
 "src/change.rs",
 "src/change/change_file.rs",
 "src/change/text_changes.rs",
-"src/alive",
 "src/alive/tarjan.rs",
 "src/alive/debug.rs",
 "src/alive/retrieve.rs",
@@ -35,12 +34,10 @@ include = [
 "src/alive/output.rs",
 "src/fs.rs",
 "src/vertex_buffer.rs",
-"src/changestore",
 "src/changestore/filesystem.rs",
 "src/changestore/mod.rs",
 "src/changestore/memory.rs",
 "src/small_string.rs",
-"src/pristine",
 "src/pristine/path_id.rs",
 "src/pristine/block.rs",
 "src/pristine/edge.rs",
@@ -56,7 +53,6 @@ include = [
 "src/pristine/inode_vertex.rs",
 "src/find_alive.rs",
 "src/tag.rs",
-"src/tests",
 "src/tests/performance.rs",
 "src/tests/file_conflicts.rs",
 "src/tests/filesystem.rs",
@@ -70,17 +66,18 @@ include = [
 "src/tests/mod.rs",
 "src/tests/add_file.rs",
 "src/tests/patch.rs",
-"src/output",
+"src/tests/text.rs",
+"src/tests/diff.rs",
 "src/output/mod.rs",
 "src/output/archive.rs",
 "src/output/output.rs",
-"src/diff",
 "src/diff/replace.rs",
 "src/diff/split.rs",
 "src/diff/diff.rs",
 "src/diff/mod.rs",
 "src/diff/delete.rs",
 "src/diff/vertex_buffer.rs",
+"src/diff/bin.rs",
 "src/lib.rs"
 ]
 
@@ -94,7 +91,7 @@ default = [ "ondisk-repos", "text-changes", "dump" ]
 tarball = [ "tar", "flate2" ]
 
 [dependencies]
-sanakirja = { version = "1.2", features = [ "crc32" ] }
+sanakirja = { version = "1.2.4", features = [ "crc32" ] }
 byteorder = "1.3"
 log = "0.4"
 serde = "1.0"
@@ -108,15 +105,21 @@ bincode = "1.3"
 data-encoding = "2.3"
 diffs = "0.4"
 toml = "0.5"
+serde_json = "1.0"
 lazy_static = "1.4"
-twox-hash = "*"
-crossbeam-deque = "*"
-crossbeam-utils = "*"
+twox-hash = "1.6"
+crossbeam-deque = "0.8"
+crossbeam-utils = "0.8"
 
 zstd-seekable = { version = "0.1.7", optional = true }
+cfg-if = "1.0"
+memchr = "2.4"
+
+encoding_rs = "0.8.26"
 regex = { version = "1.4", optional = true }
 tokio = { version = "1.0", optional = true, features = ["io-util"] }
 curve25519-dalek = { version = "3", features = [ "serde" ] }
+ed25519-dalek = { version = "1.0", features = [ "serde" ] }
 ignore = { version = "0.4", optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1.0", optional = true }
@@ -124,8 +127,21 @@ canonical-path = { version = "2.0", optional = true }
 lru-cache = { version = "0.1", optional = true }
 tempfile = { version = "3.1", optional = true }
 path-slash = { version = "0.1", optional = true }
+pbkdf2 = { version = "0.8", default-features = false }
+aes = { version = "0.7", features = [ "ctr" ] }
+generic-array = "0.14"
+hmac = "0.11"
+sha2 = "0.9"
+rand = "0.7"
+rand_core = { version = "0.6", features = ["getrandom"] }
+bs58 = "0.4"
+adler32 = "1.2"
 
+parking_lot = "0.11"
 
 [dev-dependencies]
 env_logger = "0.8"
 anyhow = "1.0"
+detone = "1.0"
+rand = "0.7"
+rand_chacha = "0.2"

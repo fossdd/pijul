@@ -1,19 +1,11 @@
 /// Metadata about an inode, including unix-style permissions and
 /// whether this inode is a directory.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[doc(hidden)]
 pub struct InodeMetadata(pub u16);
 const DIR_BIT: u16 = 0x200;
 
-use byteorder::{BigEndian, ByteOrder};
 impl InodeMetadata {
-    /// Read the file metadata from the file name encoded in the
-    /// repository.
-    pub fn from_basename(p: &[u8]) -> Self {
-        debug_assert!(p.len() == 2);
-        InodeMetadata(BigEndian::read_u16(p))
-    }
-
     /// Create a new file metadata with the given Unix permissions,
     /// and "is directory" bit.
     pub fn new(perm: usize, is_dir: bool) -> Self {
@@ -25,6 +17,11 @@ impl InodeMetadata {
             m.unset_dir()
         }
         m
+    }
+
+    pub fn from_basename(b: &[u8]) -> Self {
+        use byteorder::ByteOrder;
+        InodeMetadata(byteorder::BigEndian::read_u16(b))
     }
 
     /// Permissions of this inode (as in Unix).

@@ -1,11 +1,11 @@
 use super::*;
-use crate::pristine::InodeMetadata;
+use crate::pristine::{ArcTxn, InodeMetadata};
 use canonical_path::{CanonicalPath, CanonicalPathBuf};
 use ignore::WalkBuilder;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
 
+#[derive(Clone)]
 pub struct FileSystem {
     root: PathBuf,
 }
@@ -84,6 +84,27 @@ pub enum Error<C: std::error::Error + 'static, T: std::error::Error + 'static> {
     Add(#[from] AddError<T>),
     #[error(transparent)]
     Record(#[from] crate::record::RecordError<C, std::io::Error, T>),
+    #[error(transparent)]
+    Txn(#[from] T),
+}
+
+pub struct Untracked {
+    join: Option<std::thread::JoinHandle<Result<(), std::io::Error>>>,
+    receiver: std::sync::mpsc::Receiver<(PathBuf, bool)>,
+}
+
+impl Iterator for Untracked {
+    type Item = Result<(PathBuf, bool), std::io::Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Ok(x) = self.receiver.recv() {
+            return Some(Ok(x));
+        } else if let Some(j) = self.join.take() {
+            if let Ok(Err(e)) = j.join() {
+                return Some(Err(e));
+            }
+        }
+        None
+    }
 }
 
 impl FileSystem {
@@ -98,8 +119,8 @@ impl FileSystem {
         C: crate::changestore::ChangeStore + Clone + Send + 'static,
         P: AsRef<Path>,
     >(
-        self: Arc<Self>,
-        txn: Arc<RwLock<T>>,
+        &self,
+        txn: ArcTxn<T>,
         channel: crate::pristine::ChannelRef<T>,
         changes: &C,
         state: &mut crate::RecordBuilder,
@@ -140,12 +161,33 @@ impl FileSystem {
 
     pub fn add_prefix_rec<T: crate::MutTxnTExt + crate::TxnTExt>(
         &self,
-        txn: Arc<RwLock<T>>,
+        txn: &ArcTxn<T>,
         repo_path: CanonicalPathBuf,
         full: CanonicalPathBuf,
         threads: usize,
         salt: u64,
     ) -> Result<(), AddError<T::GraphError>> {
+        let mut txn = txn.write();
+        for p in self.iterate_prefix_rec(repo_path.clone(), full.clone(), threads)? {
+            let (path, is_dir) = p?;
+            info!("Adding {:?}", path);
+            use path_slash::PathExt;
+            let path_str = path.to_slash_lossy();
+            match txn.add(&path_str, is_dir, salt) {
+                Ok(()) => {}
+                Err(crate::fs::FsError::AlreadyInRepo(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn iterate_prefix_rec(
+        &self,
+        repo_path: CanonicalPathBuf,
+        full: CanonicalPathBuf,
+        threads: usize,
+    ) -> Result<Untracked, std::io::Error> {
         debug!("full = {:?}", full);
         let meta = std::fs::metadata(&full)?;
         debug!("meta = {:?}", meta);
@@ -157,9 +199,12 @@ impl FileSystem {
             &full.as_canonical_path(),
             meta.is_dir(),
         ) {
-            return Ok(());
+            return Ok(Untracked {
+                join: None,
+                receiver,
+            });
         }
-        let t = std::thread::spawn(move || -> Result<(), AddError<T::GraphError>> {
+        let t = std::thread::spawn(move || -> Result<(), std::io::Error> {
             if meta.is_dir() {
                 let mut walk = WalkBuilder::new(&full);
                 walk.ignore(true)
@@ -206,31 +251,18 @@ impl FileSystem {
             }
             Ok(())
         });
-
-        let mut txn = txn.write().unwrap();
-        while let Ok((path, is_dir)) = receiver.recv() {
-            info!("Adding {:?}", path);
-            use path_slash::PathExt;
-            let path_str = path.to_slash_lossy();
-            match txn.add(&path_str, is_dir, salt) {
-                Ok(()) => {}
-                Err(crate::fs::FsError::AlreadyInRepo(_)) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        if let Ok(t) = t.join() {
-            t?
-        }
-        Ok(())
+        Ok(Untracked {
+            join: Some(t),
+            receiver,
+        })
     }
 
     pub fn record_prefix<
         T: crate::MutTxnTExt + crate::TxnTExt + Send + Sync + 'static,
         C: crate::changestore::ChangeStore + Clone + Send + 'static,
     >(
-        self: Arc<Self>,
-        txn: Arc<RwLock<T>>,
+        &self,
+        txn: ArcTxn<T>,
         channel: crate::pristine::ChannelRef<T>,
         changes: &C,
         state: &mut crate::RecordBuilder,
@@ -243,7 +275,18 @@ impl FileSystem {
         T::Channel: Send + Sync,
     {
         let (full, prefix) = get_prefix(Some(repo_path.as_ref()), prefix).map_err(AddError::Io)?;
-        self.add_prefix_rec(txn.clone(), repo_path, full, threads, salt)?;
+        {
+            let path = if let Ok(path) = full.as_path().strip_prefix(&repo_path.as_path()) {
+                path
+            } else {
+                return Ok(());
+            };
+            use path_slash::PathExt;
+            let path_str = path.to_slash_lossy();
+            if !txn.read().is_tracked(&path_str)? {
+                self.add_prefix_rec(&txn, repo_path, full, threads, salt)?;
+            }
+        }
         debug!("recording from prefix {:?}", prefix);
         state.record(
             txn.clone(),
@@ -337,7 +380,7 @@ impl WorkingCopy for FileSystem {
         Ok(())
     }
     #[cfg(windows)]
-    fn set_permissions(&mut self, _name: &str, _permissions: u16) -> Result<(), Self::Error> {
+    fn set_permissions(&self, _name: &str, _permissions: u16) -> Result<(), Self::Error> {
         Ok(())
     }
 

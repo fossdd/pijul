@@ -1,9 +1,11 @@
-use super::*;
-
-use crate::changestore::*;
 use crate::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::BufRead;
+
+use regex::Captures;
+
+use super::*;
+use crate::changestore::*;
 
 #[derive(Debug, Error)]
 pub enum TextDeError {
@@ -33,7 +35,7 @@ pub enum TextSerError<C: std::error::Error + 'static> {
     InvalidChange,
 }
 
-impl LocalChange<Local> {
+impl LocalChange<Hunk<Option<Hash>, Local>, Author> {
     const DEPS_LINE: &'static str = "# Dependencies\n";
     const HUNKS_LINE: &'static str = "# Hunks\n";
 
@@ -106,8 +108,8 @@ impl LocalChange<Local> {
         }
 
         if write_header {
-            w.write_all(toml::ser::to_string_pretty(&self.header)?.as_bytes())?;
-            w.write_all(b"\n")?;
+            let s = toml::ser::to_string_pretty(&self.header)?;
+            writeln!(w, "{}", s)?;
         }
         let mut hashes = HashMap::default();
         let mut i = 2;
@@ -169,7 +171,7 @@ impl Change {
     ) -> Result<Self, TextDeError> {
         let (mut change, extra_dependencies) = Self::read_(r, updatables)?;
         let (mut deps, extra) =
-            dependencies(txn, &channel.read().unwrap(), change.hashed.changes.iter()).unwrap();
+            dependencies(txn, &channel.read(), change.hashed.changes.iter()).unwrap();
         deps.extend(extra_dependencies.into_iter());
         change.hashed.dependencies = deps;
         change.hashed.extra_known = extra;
@@ -305,6 +307,8 @@ impl Change {
     }
 }
 
+const BINARY_LABEL: &str = "binary";
+
 impl Hunk<Option<Hash>, Local> {
     fn write<
         W: WriteChangeLine,
@@ -322,13 +326,11 @@ impl Hunk<Option<Hash>, Local> {
         match self {
             Hunk::FileMove { del, add, path } => match add {
                 Atom::NewVertex(ref add) => {
-                    let name =
-                        std::str::from_utf8(&change_contents[add.start.us() + 2..add.end.us()])
-                            .unwrap();
-                    let perms = crate::pristine::InodeMetadata::from_basename(
-                        &change_contents[add.start.us()..add.start.us() + 2],
-                    );
-
+                    let FileMetadata {
+                        basename: name,
+                        metadata: perms,
+                        ..
+                    } = FileMetadata::read(&change_contents[add.start.0.into()..add.end.0.into()]);
                     write!(
                         w,
                         "Moved: {:?} {:?} {}",
@@ -370,16 +372,18 @@ impl Hunk<Option<Hash>, Local> {
                 del,
                 contents,
                 path,
+                encoding,
             } => {
                 debug!("file del");
-                write!(w, "File deletion: {:?} ", path)?;
+                write!(w, "File deletion: {:?} ", path,)?;
                 write_pos(&mut w, hashes, del.inode())?;
-                writeln!(w)?;
+                writeln!(w, " {:?}", encoding_label(encoding))?;
+
                 write_atom(&mut w, hashes, &del)?;
                 if let Some(ref contents) = contents {
                     write_atom(&mut w, hashes, &contents)?;
                     writeln!(w)?;
-                    print_change_contents(w, changes, contents, change_contents)?;
+                    print_change_contents(w, changes, contents, change_contents, encoding)?;
                 } else {
                     writeln!(w)?;
                 }
@@ -388,15 +392,16 @@ impl Hunk<Option<Hash>, Local> {
                 undel,
                 contents,
                 path,
+                encoding,
             } => {
                 debug!("file undel");
-                write!(w, "File un-deletion: {:?} ", path)?;
+                write!(w, "File un-deletion: {:?} ", path,)?;
                 write_pos(&mut w, hashes, undel.inode())?;
-                writeln!(w)?;
+                writeln!(w, " {:?}", encoding_label(encoding))?;
                 write_atom(&mut w, hashes, &undel)?;
                 if let Some(ref contents) = contents {
                     write_atom(&mut w, hashes, &contents)?;
-                    print_change_contents(w, changes, contents, change_contents)?;
+                    print_change_contents(w, changes, contents, change_contents, encoding)?;
                 } else {
                     writeln!(w)?;
                 }
@@ -405,14 +410,16 @@ impl Hunk<Option<Hash>, Local> {
                 add_name,
                 contents,
                 path,
+                encoding,
                 ..
             } => {
                 if let Atom::NewVertex(ref n) = add_name {
-                    let name = std::str::from_utf8(&change_contents[n.start.us() + 2..n.end.us()])
-                        .unwrap();
-                    let perms = crate::pristine::InodeMetadata::from_basename(
-                        &change_contents[n.start.us()..n.start.us() + 2],
-                    );
+                    debug!("add_name {:?}", n);
+                    let FileMetadata {
+                        basename: name,
+                        metadata: perms,
+                        ..
+                    } = FileMetadata::read(&change_contents[n.start.0.into()..n.end.0.into()]);
                     let parent = if let Some(p) = crate::path::parent(&path) {
                         if p.is_empty() {
                             "/"
@@ -424,7 +431,7 @@ impl Hunk<Option<Hash>, Local> {
                     };
                     write!(
                         w,
-                        "File addition: {:?} in {:?}{}\n  up",
+                        "File addition: {:?} in {:?}{} {:?}\n  up",
                         name,
                         parent,
                         if perms.0 & 0o1000 == 0o1000 {
@@ -433,7 +440,8 @@ impl Hunk<Option<Hash>, Local> {
                             " +x"
                         } else {
                             ""
-                        }
+                        },
+                        encoding_label(encoding)
                     )?;
                     assert!(n.down_context.is_empty());
                     for c in n.up_context.iter() {
@@ -444,33 +452,40 @@ impl Hunk<Option<Hash>, Local> {
                 }
                 if let Some(Atom::NewVertex(ref n)) = contents {
                     let c = &change_contents[n.start.us()..n.end.us()];
-                    print_contents(w, "+", c)?;
+                    print_contents(w, "+", c, encoding)?;
                     if !c.ends_with(b"\n") {
                         writeln!(w, "\n\\")?
                     }
                 }
             }
-            Hunk::Edit { change, local } => {
+            Hunk::Edit {
+                change,
+                local,
+                encoding,
+            } => {
                 debug!("edit");
                 write!(w, "Edit in {} ", file_name(&local, change.inode()))?;
                 write_pos(&mut w, hashes, change.inode())?;
+                write!(w, " {:?}", encoding_label(encoding))?;
                 writeln!(w)?;
                 write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents)?;
+                print_change_contents(w, changes, change, change_contents, encoding)?;
             }
             Hunk::Replacement {
                 change,
                 replacement,
                 local,
+                encoding,
             } => {
                 debug!("replacement");
                 write!(w, "Replacement in {} ", file_name(&local, change.inode()))?;
                 write_pos(&mut w, hashes, change.inode())?;
+                write!(w, " {:?}", encoding_label(encoding))?;
                 writeln!(w)?;
                 write_atom(&mut w, hashes, &change)?;
                 write_atom(&mut w, hashes, &replacement)?;
-                print_change_contents(w, changes, change, change_contents)?;
-                print_change_contents(w, changes, replacement, change_contents)?;
+                print_change_contents(w, changes, change, change_contents, encoding)?;
+                print_change_contents(w, changes, replacement, change_contents, encoding)?;
             }
             Hunk::SolveNameConflict { name, path } => {
                 write!(w, "Solving a name conflict in {:?} ", path)?;
@@ -498,7 +513,7 @@ impl Hunk<Option<Hash>, Local> {
                 write_pos(&mut w, hashes, change.inode())?;
                 writeln!(w)?;
                 write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents)?;
+                print_change_contents(w, changes, change, change_contents, &None)?;
             }
             Hunk::UnsolveOrderConflict { change, local } => {
                 debug!("unsolve order conflict");
@@ -510,9 +525,13 @@ impl Hunk<Option<Hash>, Local> {
                 write_pos(&mut w, hashes, change.inode())?;
                 writeln!(w)?;
                 write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents)?;
+                print_change_contents(w, changes, change, change_contents, &None)?;
             }
-            Hunk::ResurrectZombies { change, local } => {
+            Hunk::ResurrectZombies {
+                change,
+                local,
+                encoding,
+            } => {
                 debug!("resurrect zombies");
                 write!(
                     w,
@@ -520,12 +539,20 @@ impl Hunk<Option<Hash>, Local> {
                     local.path, local.line
                 )?;
                 write_pos(&mut w, hashes, change.inode())?;
+                write!(w, " {:?}", encoding_label(encoding))?;
                 writeln!(w)?;
                 write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents)?;
+                print_change_contents(w, changes, change, change_contents, encoding)?;
             }
         }
         Ok(())
+    }
+}
+
+fn encoding_label(encoding: &Option<Encoding>) -> &str {
+    match encoding {
+        Some(encoding) => encoding.label(),
+        _ => BINARY_LABEL,
     }
 }
 
@@ -542,15 +569,15 @@ impl Hunk<Option<Hash>, Local> {
         use regex::Regex;
         lazy_static! {
             static ref FILE_ADDITION: Regex =
-                Regex::new(r#"^(?P<n>\d+)\. File addition: "(?P<name>[^"]*)" in "(?P<parent>[^"]*)"(?P<perm> \S+)?"#).unwrap();
+                Regex::new(r#"^(?P<n>\d+)\. File addition: "(?P<name>[^"]*)" in "(?P<parent>[^"]*)"(?P<perm> \S+)? "(?P<encoding>[^"]*)""#).unwrap();
             static ref EDIT: Regex =
-                Regex::new(r#"^([0-9]+)\. Edit in ([^:]+):(\d+) (\d+\.\d+)"#).unwrap();
+                Regex::new(r#"^([0-9]+)\. Edit in ([^:]+):(\d+) (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
             static ref REPLACEMENT: Regex =
-                Regex::new(r#"^([0-9]+)\. Replacement in ([^:]+):(\d+) (\d+\.\d+)"#).unwrap();
+                Regex::new(r#"^([0-9]+)\. Replacement in ([^:]+):(\d+) (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
             static ref FILE_DELETION: Regex =
-                Regex::new(r#"^([0-9]+)\. File deletion: "([^"]*)" (\d+\.\d+)"#).unwrap();
+                Regex::new(r#"^([0-9]+)\. File deletion: "([^"]*)" (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
             static ref FILE_UNDELETION: Regex =
-                Regex::new(r#"^([0-9]+)\. File un-deletion: "([^"]*)" (\d+\.\d+)"#).unwrap();
+                Regex::new(r#"^([0-9]+)\. File un-deletion: "([^"]*)" (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
             static ref MOVE: Regex =
                 Regex::new(r#"^([0-9]+)\. Moved: "(?P<former>[^"]*)" "(?P<new>[^"]*)" (?P<perm>[^ ]+ )?(?P<inode>.*)"#).unwrap();
             static ref MOVE_: Regex = Regex::new(r#"^([0-9]+)\. Moved: "([^"]*)" (.*)"#).unwrap();
@@ -563,7 +590,7 @@ impl Hunk<Option<Hash>, Local> {
             )
             .unwrap();
             static ref ZOMBIE: Regex =
-                Regex::new(r#"^([0-9]+)\. Resurrecting zombie lines in (?P<path>"[^"]+"):(?P<line>\d+) (?P<inode>\d+\.\d+)"#)
+                Regex::new(r#"^([0-9]+)\. Resurrecting zombie lines in (?P<path>"[^"]+"):(?P<line>\d+) (?P<inode>\d+\.\d+) "(?P<encoding>[^"]*)""#)
                     .unwrap();
             static ref CONTEXT: Regex = Regex::new(
                 r#"up ((\d+\.\d+ )*\d+\.\d+)(, new (\d+):(\d+))?(, down ((\d+\.\d+ )*\d+\.\d+))?"#
@@ -598,10 +625,14 @@ impl Hunk<Option<Hash>, Local> {
             } else {
                 0
             };
-            let meta = InodeMetadata(meta);
-            contents_.push((meta.0 >> 8) as u8);
-            contents_.push((meta.0 & 0xff) as u8);
-            contents_.extend(name.as_bytes());
+            let n = cap.name("n").unwrap().as_str().parse().unwrap();
+            let encoding = encoding_from_label(cap);
+            let meta = FileMetadata {
+                metadata: InodeMetadata(meta),
+                basename: name,
+                encoding: encoding.clone(),
+            };
+            meta.write(contents_);
             add_name.end = ChangePosition(contents_.len().into());
 
             let mut add_inode = default_newvertex();
@@ -615,9 +646,10 @@ impl Hunk<Option<Hash>, Local> {
             add_inode.start = ChangePosition(contents_.len().into());
             add_inode.end = ChangePosition(contents_.len().into());
             contents_.push(0);
-            let n = cap.name("n").unwrap().as_str().parse().unwrap();
             if let Entry::Occupied(mut e) = updatables.entry(n) {
                 if let crate::InodeUpdate::Add { ref mut pos, .. } = e.get_mut() {
+                    offsets.insert(pos.0.into(), add_inode.start);
+
                     *pos = add_inode.start
                 }
             }
@@ -628,6 +660,7 @@ impl Hunk<Option<Hash>, Local> {
                     add_inode: Atom::NewVertex(add_inode),
                     contents: None,
                     path,
+                    encoding,
                 }),
             ))
         } else if let Some(cap) = EDIT.captures(h) {
@@ -646,6 +679,7 @@ impl Hunk<Option<Hash>, Local> {
                         path: cap[2].to_string(),
                         line: cap[3].parse().unwrap(),
                     },
+                    encoding: encoding_from_label(cap),
                 }),
             ))
         } else if let Some(cap) = REPLACEMENT.captures(h) {
@@ -664,6 +698,7 @@ impl Hunk<Option<Hash>, Local> {
                         path: cap[2].to_string(),
                         line: cap[3].parse().unwrap(),
                     },
+                    encoding: encoding_from_label(cap),
                 }),
             ))
         } else if let Some(cap) = FILE_DELETION.captures(h) {
@@ -678,6 +713,7 @@ impl Hunk<Option<Hash>, Local> {
                     del: Atom::EdgeMap(del),
                     contents: None,
                     path: cap[2].to_string(),
+                    encoding: encoding_from_label(cap),
                 }),
             ))
         } else if let Some(cap) = FILE_UNDELETION.captures(h) {
@@ -692,6 +728,7 @@ impl Hunk<Option<Hash>, Local> {
                     undel: Atom::EdgeMap(undel),
                     contents: None,
                     path: cap[2].to_string(),
+                    encoding: encoding_from_label(cap),
                 }),
             ))
         } else if let Some(cap) = NAME_CONFLICT.captures(h) {
@@ -735,10 +772,12 @@ impl Hunk<Option<Hash>, Local> {
             } else {
                 0
             };
-            let meta = InodeMetadata(meta);
-            contents_.push((meta.0 >> 8) as u8);
-            contents_.push((meta.0 & 0xff) as u8);
-            contents_.extend(name.as_bytes());
+            let meta = FileMetadata {
+                metadata: InodeMetadata(meta),
+                basename: name,
+                encoding: None,
+            };
+            meta.write(contents_);
             add.end = ChangePosition(contents_.len().into());
 
             let mut del = default_edgemap();
@@ -810,6 +849,7 @@ impl Hunk<Option<Hash>, Local> {
                         path: cap.name("path").unwrap().as_str().parse().unwrap(),
                         line: cap.name("line").unwrap().as_str().parse().unwrap(),
                     },
+                    encoding: encoding_from_label(cap),
                 }),
             ))
         } else {
@@ -817,6 +857,7 @@ impl Hunk<Option<Hash>, Local> {
                 Some(Hunk::FileAdd {
                     ref mut contents,
                     ref mut add_name,
+                    encoding,
                     ..
                 }) => {
                     if h.starts_with('+') {
@@ -836,7 +877,7 @@ impl Hunk<Option<Hash>, Local> {
                         }
                         if let Some(Atom::NewVertex(ref mut contents)) = contents {
                             if h.starts_with('+') {
-                                text_changes::parse_line_add(h, contents, contents_)
+                                text_changes::parse_line_add(h, contents, contents_, encoding)
                             }
                         }
                     } else if h.starts_with('\\') {
@@ -941,14 +982,18 @@ impl Hunk<Option<Hash>, Local> {
                     }
                     Ok(None)
                 }
-                Some(Hunk::Edit { ref mut change, .. }) => {
+                Some(Hunk::Edit {
+                    ref mut change,
+                    encoding,
+                    ..
+                }) => {
                     debug!("edit {:?}", h);
                     if h.starts_with("+ ") {
                         if let Atom::NewVertex(ref mut change) = change {
                             if change.start == change.end {
                                 change.start = ChangePosition(contents_.len().into());
                             }
-                            text_changes::parse_line_add(h, change, contents_)
+                            text_changes::parse_line_add(h, change, contents_, encoding)
                         }
                     } else if h.starts_with('\\') {
                         if let Atom::NewVertex(ref mut change) = change {
@@ -978,6 +1023,7 @@ impl Hunk<Option<Hash>, Local> {
                 Some(Hunk::Replacement {
                     ref mut change,
                     ref mut replacement,
+                    encoding,
                     ..
                 }) => {
                     if h.starts_with("+ ") {
@@ -985,7 +1031,7 @@ impl Hunk<Option<Hash>, Local> {
                             if repl.start == repl.end {
                                 repl.start = ChangePosition(contents_.len().into());
                             }
-                            text_changes::parse_line_add(h, repl, contents_)
+                            text_changes::parse_line_add(h, repl, contents_, encoding)
                         }
                     } else if h.starts_with('\\') {
                         if let Atom::NewVertex(ref mut repl) = replacement {
@@ -1027,7 +1073,8 @@ impl Hunk<Option<Hash>, Local> {
                             if change.start == change.end {
                                 change.start = ChangePosition(contents_.len().into());
                             }
-                            text_changes::parse_line_add(h, change, contents_)
+                            // TODO encoding
+                            text_changes::parse_line_add(h, change, contents_, &None)
                         }
                     } else if let Some(cap) = CONTEXT.captures(h) {
                         debug!("cap = {:?}", cap);
@@ -1073,6 +1120,15 @@ impl Hunk<Option<Hash>, Local> {
                 }
             }
         }
+    }
+}
+
+fn encoding_from_label(cap: Captures) -> Option<Encoding> {
+    let encoding_label = cap.name("encoding").unwrap().as_str();
+    if encoding_label != BINARY_LABEL {
+        Some(Encoding::for_label(encoding_label))
+    } else {
+        None
     }
 }
 
@@ -1205,8 +1261,16 @@ pub fn parse_edges(
     Ok(Some(result))
 }
 
-pub fn parse_line_add(h: &str, change: &mut NewVertex<Option<Hash>>, contents_: &mut Vec<u8>) {
-    let h = h.as_bytes();
+pub fn parse_line_add(
+    h: &str,
+    change: &mut NewVertex<Option<Hash>>,
+    contents_: &mut Vec<u8>,
+    encoding: &Option<Encoding>,
+) {
+    let h = match encoding {
+        Some(encoding) => encoding.encode(h),
+        None => std::borrow::Cow::Borrowed(h.as_bytes()),
+    };
     debug!("parse_line_add {:?} {:?}", change.end, change.start);
     debug!("parse_line_add {:?}", h);
     if h.len() > 2 {
@@ -1222,7 +1286,7 @@ pub fn parse_line_add(h: &str, change: &mut NewVertex<Option<Hash>>, contents_: 
 
 pub trait WriteChangeLine: std::io::Write {
     fn write_change_line(&mut self, pref: &str, contents: &str) -> Result<(), std::io::Error> {
-        write!(self, "{} {}", pref, contents)
+        writeln!(self, "{} {}", pref, contents)
     }
     fn write_change_line_binary(
         &mut self,
@@ -1241,15 +1305,17 @@ pub fn print_contents<W: WriteChangeLine>(
     w: &mut W,
     pref: &str,
     contents: &[u8],
+    encoding: &Option<Encoding>,
 ) -> Result<(), std::io::Error> {
-    if let Ok(mut contents) = std::str::from_utf8(&contents) {
-        while let Some(n) = contents.as_bytes().iter().position(|&c| c == b'\n') {
-            let (a, b) = contents.split_at(n + 1);
-            contents = b;
+    if let Some(encoding) = encoding {
+        let dec = encoding.decode(&contents);
+        let dec = if dec.ends_with("\n") {
+            &dec[..dec.len() - 1]
+        } else {
+            &dec
+        };
+        for a in dec.split('\n') {
             w.write_change_line(pref, a)?
-        }
-        if !contents.is_empty() {
-            w.write_change_line(pref, contents)?
         }
     } else {
         writeln!(w, "{}b{}", pref, data_encoding::BASE64.encode(contents))?
@@ -1262,12 +1328,15 @@ pub fn print_change_contents<W: WriteChangeLine, C: ChangeStore>(
     changes: &C,
     change: &Atom<Option<Hash>>,
     change_contents: &[u8],
+    encoding: &Option<Encoding>,
 ) -> Result<(), TextSerError<C::Error>> {
+    debug!("print_change_contents {:?}", change);
     match change {
         Atom::NewVertex(ref n) => {
             let c = &change_contents[n.start.us()..n.end.us()];
-            print_contents(w, "+", c)?;
+            print_contents(w, "+", c, encoding)?;
             if !c.ends_with(b"\n") {
+                debug!("print_change_contents {:?}", c);
                 writeln!(w, "\n\\")?
             }
             Ok(())
@@ -1284,8 +1353,9 @@ pub fn print_change_contents<W: WriteChangeLine, C: ChangeStore>(
                 changes
                     .get_contents_ext(e.to, &mut buf)
                     .map_err(TextSerError::C)?;
-                print_contents(w, "-", &buf[..])?;
+                print_contents(w, "-", &buf[..], &encoding)?;
                 if !buf.ends_with(b"\n") {
+                    debug!("print_change_contents {:?}", buf);
                     writeln!(w)?;
                 }
                 current = Some(e.to)
@@ -1310,7 +1380,7 @@ pub fn write_deleted_names<W: std::io::Write, C: ChangeStore>(
                 .get_contents_ext(d.to, &mut buf)
                 .map_err(TextSerError::C)?;
             if !buf.is_empty() {
-                let name = std::str::from_utf8(buf.split_at(2).1).unwrap();
+                let FileMetadata { basename: name, .. } = FileMetadata::read(&buf);
                 write!(w, "{}{:?}", if is_first { "" } else { ", " }, name)?;
                 is_first = false;
             }

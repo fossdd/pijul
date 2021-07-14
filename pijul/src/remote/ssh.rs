@@ -9,13 +9,13 @@ use anyhow::bail;
 use byteorder::{BigEndian, ReadBytesExt};
 use lazy_static::lazy_static;
 use libpijul::pristine::Position;
-use libpijul::{Base32, Hash, Merkle, MutTxnT};
+use libpijul::{Base32, Hash, Merkle};
 use log::{debug, error, trace};
 use regex::Regex;
 use thrussh::client::Session;
 use tokio::sync::Mutex;
 
-use super::{parse_line, RemoteRef};
+use super::parse_line;
 
 pub struct Ssh {
     pub h: thrussh::client::Handle<SshClient>,
@@ -34,6 +34,11 @@ lazy_static! {
         r#"(ssh://)?((?P<user>[^@]+)@)?((?P<host>(\[([^\]]+)\])|([^:/]+)))((:(?P<port>\d+)(?P<path0>(/.+)))|(:(?P<path1>.+))|(?P<path2>(/.+)))"#
     )
         .unwrap();
+
+    static ref ADDRESS_NOPATH: Regex = Regex::new(
+        r#"(ssh://)?((?P<user>[^@]+)@)?((?P<host>(\[([^\]]+)\])|([^:/]+)))(:(?P<port>\d+))?"#
+    )
+        .unwrap();
 }
 
 #[derive(Debug)]
@@ -44,8 +49,12 @@ pub struct Remote<'a> {
     config: thrussh_config::Config,
 }
 
-pub fn ssh_remote(addr: &str) -> Option<Remote> {
-    let cap = ADDRESS.captures(addr)?;
+pub fn ssh_remote(addr: &str, with_path: bool) -> Option<Remote> {
+    let cap = if with_path {
+        ADDRESS.captures(addr)?
+    } else {
+        ADDRESS_NOPATH.captures(addr)?
+    };
     debug!("ssh_remote: {:?}", cap);
     let host = cap.name("host").unwrap().as_str();
 
@@ -58,17 +67,21 @@ pub fn ssh_remote(addr: &str) -> Option<Remote> {
         config.user.clear();
         config.user.push_str(u.as_str());
     }
-    let path = {
-        let p =  cap.name("path0").unwrap_or_else(
-              || cap.name("path1").unwrap_or_else(
-              || cap.name("path2").unwrap()
-              )).as_str();
+    let path = if with_path {
+        let p = cap
+            .name("path0")
+            .unwrap_or_else(|| {
+                cap.name("path1")
+                    .unwrap_or_else(|| cap.name("path2").unwrap())
+            })
+            .as_str();
         if p.starts_with("/~") {
             p.split_at(1).1
-        }
-        else {
+        } else {
             p
         }
+    } else {
+        ""
     };
     Some(Remote {
         addr,
@@ -242,8 +255,8 @@ impl<'a> Remote<'a> {
     }
 }
 
-pub fn load_secret_key(key_path: &Path, k: &str) -> Option<thrussh_keys::key::KeyPair> {
-    match thrussh_keys::load_secret_key(&key_path, None) {
+pub fn load_secret_key<P: AsRef<Path>>(key_path: P, k: &str) -> Option<thrussh_keys::key::KeyPair> {
+    match thrussh_keys::load_secret_key(key_path.as_ref(), None) {
         Ok(k) => Some(k),
         Err(e) => {
             if let thrussh_keys::Error::KeyIsEncrypted = e {
@@ -257,7 +270,7 @@ pub fn load_secret_key(key_path: &Path, k: &str) -> Option<thrussh_keys::key::Ke
                 if pass.is_empty() {
                     return None;
                 }
-                if let Ok(k) = thrussh_keys::load_secret_key(&key_path, Some(pass.as_bytes())) {
+                if let Ok(k) = thrussh_keys::load_secret_key(&key_path, Some(&pass)) {
                     return Some(k);
                 }
             }
@@ -280,6 +293,9 @@ enum State {
     State {
         sender: Option<tokio::sync::oneshot::Sender<Option<(u64, Merkle)>>>,
     },
+    Id {
+        sender: Option<tokio::sync::oneshot::Sender<Option<libpijul::pristine::RemoteId>>>,
+    },
     Changes {
         sender: Option<tokio::sync::mpsc::Sender<Hash>>,
         remaining_len: usize,
@@ -299,6 +315,15 @@ enum State {
         conflicts: u64,
         len_n: u64,
         w: Box<dyn Write + Send>,
+    },
+    Prove {
+        key: libpijul::key::SKey,
+        sender: Option<tokio::sync::oneshot::Sender<()>>,
+        signed: bool,
+    },
+    Identities {
+        sender: Option<tokio::sync::mpsc::Sender<crate::Identity>>,
+        buf: Vec<u8>,
     },
 }
 
@@ -410,7 +435,7 @@ impl thrussh::client::Handler for SshClient {
         self,
         channel: thrussh::ChannelId,
         data: &[u8],
-        session: thrussh::client::Session,
+        mut session: thrussh::client::Session,
     ) -> Self::FutureUnit {
         trace!("data {:?} {:?}", channel, data.len());
         let data = data.to_vec();
@@ -429,6 +454,21 @@ impl thrussh::client::Handler for SshClient {
                             sender
                                 .send(Some((n, Merkle::from_base32(m.trim().as_bytes()).unwrap())))
                                 .unwrap_or(());
+                        } else {
+                            sender.send(None).unwrap_or(());
+                        }
+                    }
+                }
+                State::Id { ref mut sender } => {
+                    debug!("state: Id {:?}", data);
+                    if let Some(sender) = sender.take() {
+                        let line = if data.len() >= 16 && data.last() == Some(&10) {
+                            libpijul::pristine::RemoteId::from_base32(&data[..data.len() - 1])
+                        } else {
+                            None
+                        };
+                        if let Some(b) = line {
+                            sender.send(Some(b)).unwrap_or(());
                         } else {
                             sender.send(None).unwrap_or(());
                         }
@@ -491,6 +531,13 @@ impl thrussh::client::Handler for SshClient {
                             }
                         } else {
                             // not enough data, we need more.
+                            trace!(
+                                "writing to {:?} {:?} {:?}",
+                                path,
+                                final_path,
+                                hashes[*current]
+                            );
+
                             file.write_all(&data[p..])?;
                             file.flush()?;
                             *remaining_len -= data.len() - p;
@@ -557,6 +604,57 @@ impl thrussh::client::Handler for SshClient {
                                 sender.send(*conflicts).unwrap_or(())
                             }
                         }
+                    }
+                }
+                State::Prove {
+                    ref mut key,
+                    ref mut sender,
+                    ref mut signed,
+                } => {
+                    if let Ok(data) = std::str::from_utf8(&data) {
+                        if *signed && !data.trim().is_empty() {
+                            std::io::stderr().write_all(data.as_bytes())?;
+                        } else {
+                            let data = data.trim();
+                            debug!("signing {:?}", data);
+                            let s = key.sign_raw(data.as_bytes())?;
+                            session.data(
+                                channel,
+                                thrussh::CryptoVec::from_slice(format!("prove {}\n", s).as_bytes()),
+                            );
+                            if let Some(sender) = sender.take() {
+                                sender.send(()).unwrap_or(());
+                            }
+                            *signed = true;
+                        }
+                    }
+                }
+                State::Identities {
+                    ref mut sender,
+                    ref mut buf,
+                } => {
+                    debug!("data = {:?}", data);
+                    if data.ends_with(&[10]) {
+                        let buf = if buf.is_empty() {
+                            &data
+                        } else {
+                            buf.extend(&data);
+                            &buf
+                        };
+                        for data in data.split(|c| *c == 10) {
+                            if let Ok(p) = serde_json::from_slice(&buf) {
+                                debug!("p = {:?}", p);
+                                if let Some(ref mut sender) = sender {
+                                    sender.send(p).await?;
+                                }
+                            } else {
+                                debug!("could not parse {:?}", std::str::from_utf8(&data));
+                                *sender = None;
+                                break;
+                            }
+                        }
+                    } else {
+                        buf.extend(&data);
                     }
                 }
                 State::None => {
@@ -633,6 +731,32 @@ impl Ssh {
                 .data(format!("state {}\n", self.channel).as_bytes())
                 .await?;
         }
+        Ok(receiver.await?)
+    }
+
+    pub async fn get_id(&mut self) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *self.state.lock().await = State::Id {
+            sender: Some(sender),
+        };
+        self.run_protocol().await?;
+        self.c
+            .data(format!("id {}\n", self.channel).as_bytes())
+            .await?;
+        Ok(receiver.await?)
+    }
+
+    pub async fn prove(&mut self, key: libpijul::key::SKey) -> Result<(), anyhow::Error> {
+        debug!("get_state");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let k = serde_json::to_string(&key.public_key())?;
+        *self.state.lock().await = State::Prove {
+            key,
+            sender: Some(sender),
+            signed: false,
+        };
+        self.run_protocol().await?;
+        self.c.data(format!("challenge {}\n", k).as_bytes()).await?;
         Ok(receiver.await?)
     }
 
@@ -715,10 +839,13 @@ impl Ssh {
         Ok(())
     }
 
-    pub async fn download_changelist<T: MutTxnT>(
+    pub async fn download_changelist<
+        A,
+        F: FnMut(&mut A, u64, Hash, libpijul::Merkle) -> Result<(), anyhow::Error>,
+    >(
         &mut self,
-        txn: &mut T,
-        remote: &mut RemoteRef<T>,
+        mut f: F,
+        a: &mut A,
         from: u64,
         paths: &[String],
     ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
@@ -740,9 +867,7 @@ impl Ssh {
         let mut result = HashSet::new();
         while let Some(Some(m)) = receiver.recv().await {
             match m {
-                super::ListLine::Change { n, h, m } => {
-                    txn.put_remote(remote, n, (h, m))?;
-                }
+                super::ListLine::Change { n, h, m } => f(a, n, h, m)?,
                 super::ListLine::Position(pos) => {
                     result.insert(pos);
                 }
@@ -856,5 +981,37 @@ impl Ssh {
         t.await?;
         debug!("done downloading {:?}", changes_dir);
         Ok(())
+    }
+
+    pub async fn update_identities(
+        &mut self,
+        rev: Option<u64>,
+        mut path: PathBuf,
+    ) -> Result<u64, anyhow::Error> {
+        let (sender_, mut recv) = tokio::sync::mpsc::channel(100);
+        *self.state.lock().await = State::Identities {
+            sender: Some(sender_),
+            buf: Vec::new(),
+        };
+        self.run_protocol().await?;
+        if let Some(rev) = rev {
+            self.c
+                .data(format!("identities {}\n", rev).as_bytes())
+                .await?;
+        } else {
+            self.c.data("identities\n".as_bytes()).await?;
+        }
+        let mut revision = 0;
+        std::fs::create_dir_all(&path)?;
+        while let Some(id) = recv.recv().await {
+            path.push(&id.public_key.key);
+            debug!("recv identity: {:?} {:?}", id, path);
+            let mut id_file = std::fs::File::create(&path)?;
+            serde_json::to_writer_pretty(&mut id_file, &id)?;
+            path.pop();
+            revision = revision.max(id.last_modified);
+        }
+        debug!("done receiving");
+        Ok(revision)
     }
 }

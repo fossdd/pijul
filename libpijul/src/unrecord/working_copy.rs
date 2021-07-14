@@ -65,7 +65,7 @@ fn restore<
                 continue;
             }
         } else {
-            continue
+            continue;
         }
         let mut source_parent = None;
         for e in iter_adjacent(
@@ -108,8 +108,10 @@ fn restore_inode<
     salt: u64,
 ) -> Result<Option<Inode>, super::UnrecordError<P::Error, T::TreeError>> {
     let mut name = Vec::new();
-    let (meta, basename) = changes
-        .get_file_name(
+    let FileMetadata {
+        basename, metadata, ..
+    } = changes
+        .get_file_meta(
             |h| txn.get_external(&h).unwrap().map(From::from),
             source,
             &mut name,
@@ -127,7 +129,7 @@ fn restore_inode<
             let inode = crate::fs::create_new_inode(txn, &file_id, salt)?;
             put_tree_with_rev(txn, &file_id, &inode)?;
             put_inodes_with_rev(txn, &inode, &dest)?;
-            if meta.is_dir() {
+            if metadata.is_dir() {
                 let id = OwnedPathId {
                     parent_inode: inode,
                     basename: SmallString::new(),

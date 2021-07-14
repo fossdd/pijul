@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use super::{make_changelist, parse_changelist};
 use anyhow::{anyhow, bail};
@@ -33,17 +32,25 @@ pub struct Unrecord {
 
 impl Unrecord {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let mut repo = Repository::find_root(self.repo_path).await?;
+        let mut repo = Repository::find_root(self.repo_path)?;
         debug!("{:?}", repo.config);
-        let (channel_name, is_current_channel) =
-            repo.config.get_current_channel(self.channel.as_deref());
-        let txn = repo.pristine.mut_txn_begin()?;
-        let channel = if let Some(channel) = txn.load_channel(channel_name)? {
+        let txn = repo.pristine.arc_txn_begin()?;
+        let cur = txn
+            .read()
+            .current_channel()
+            .unwrap_or(crate::DEFAULT_CHANNEL)
+            .to_string();
+        let channel_name = if let Some(ref c) = self.channel {
+            c
+        } else {
+            cur.as_str()
+        };
+        let is_current_channel = cur == channel_name;
+        let channel = if let Some(channel) = txn.read().load_channel(&channel_name)? {
             channel
         } else {
             bail!("No such channel: {:?}", channel_name);
         };
-        let txn = Arc::new(RwLock::new(txn));
         let mut hashes = Vec::new();
 
         if self.change_id.is_empty() {
@@ -52,7 +59,7 @@ impl Unrecord {
             let number_of_changes = if let Some(n) = self.show_changes {
                 n
             } else {
-                let cfg = crate::config::Global::load()?;
+                let (cfg, _) = crate::config::Global::load()?;
                 cfg.unrecord_changes.ok_or_else(|| {
                     anyhow!(
                         "Can't determine how many changes to show. \
@@ -62,9 +69,9 @@ impl Unrecord {
                     )
                 })?
             };
-            let txn = txn.read().unwrap();
+            let txn = txn.read();
             let hashes_ = txn
-                .reverse_log(&*channel.read()?, None)?
+                .reverse_log(&*channel.read(), None)?
                 .map(|h| (h.unwrap().1).0.into())
                 .take(number_of_changes)
                 .collect::<Vec<_>>();
@@ -73,16 +80,16 @@ impl Unrecord {
                 hashes.push((*h, *txn.get_internal(&h.into())?.unwrap()))
             }
         } else {
-            let txn = txn.read().unwrap();
+            let txn = txn.read();
             for c in self.change_id.iter() {
                 let (hash, cid) = txn.hash_from_prefix(c)?;
                 hashes.push((hash, cid))
             }
         };
-        let channel_ = channel.read()?;
+        let channel_ = channel.read();
         let mut changes: Vec<(Hash, ChangeId, Option<u64>)> = Vec::new();
         {
-            let txn = txn.read().unwrap();
+            let txn = txn.read();
             for (hash, change_id) in hashes {
                 let n = txn
                     .get_changeset(txn.changes(&channel_), &change_id)
@@ -102,8 +109,8 @@ impl Unrecord {
         };
         changes.sort_by(|a, b| b.2.cmp(&a.2));
         for (hash, change_id, _) in changes {
-            let channel_ = channel.read()?;
-            let txn_ = txn.read().unwrap();
+            let channel_ = channel.read();
+            let txn_ = txn.read();
             for p in txn_.iter_revdep(&change_id)? {
                 let (p, d) = p?;
                 if p < &change_id {
@@ -129,17 +136,15 @@ impl Unrecord {
             }
             std::mem::drop(channel_);
             std::mem::drop(txn_);
-            txn.write()
-                .unwrap()
-                .unrecord(&repo.changes, &channel, &hash, 0)?;
+            txn.write().unrecord(&repo.changes, &channel, &hash, 0)?;
         }
 
         if self.reset && is_current_channel {
             libpijul::output::output_repository_no_pending(
-                repo.working_copy.clone(),
+                &repo.working_copy,
                 &repo.changes,
-                txn.clone(),
-                channel.clone(),
+                &txn,
+                &channel,
                 "",
                 true,
                 None,
@@ -148,18 +153,11 @@ impl Unrecord {
             )?;
         }
         if let Some(h) = pending_hash {
-            txn.write()
-                .unwrap()
-                .unrecord(&repo.changes, &channel, &h, 0)?;
+            txn.write().unrecord(&repo.changes, &channel, &h, 0)?;
             if cfg!(feature = "keep-changes") {
                 repo.changes.del_change(&h)?;
             }
         }
-        let txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-            txn.into_inner().unwrap()
-        } else {
-            unreachable!()
-        };
         txn.commit()?;
         Ok(())
     }

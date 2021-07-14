@@ -114,12 +114,7 @@ pub fn apply_change_ws<T: MutTxnT, P: ChangeStore>(
     };
     debug!("internal = {:?}", internal);
     Ok(apply_change_to_channel(
-        txn,
-        channel,
-        internal,
-        &hash,
-        &change,
-        workspace,
+        txn, channel, internal, &hash, &change, workspace,
     )?)
 }
 
@@ -189,6 +184,22 @@ pub fn apply_change<T: MutTxnT, P: ChangeStore>(
     hash: &Hash,
 ) -> Result<(u64, Merkle), ApplyError<P::Error, T::GraphError>> {
     apply_change_ws(changes, txn, channel, hash, &mut Workspace::new())
+}
+
+/// Same as [apply_change], but with a wrapped `txn` and `channel`.
+pub fn apply_change_arc<T: MutTxnT, P: ChangeStore>(
+    changes: &P,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
+    hash: &Hash,
+) -> Result<(u64, Merkle), ApplyError<P::Error, T::GraphError>> {
+    apply_change_ws(
+        changes,
+        &mut *txn.write(),
+        &mut *channel.write(),
+        hash,
+        &mut Workspace::new(),
+    )
 }
 
 /// Same as [apply_change_ws], but allocates its own workspace.
@@ -303,7 +314,7 @@ pub fn apply_local_change_ws<
     inode_updates: &HashMap<usize, InodeUpdate>,
     workspace: &mut Workspace,
 ) -> Result<(u64, Merkle), LocalApplyError<T::GraphError>> {
-    let mut channel = channel.write().unwrap();
+    let mut channel = channel.write();
     let internal: ChangeId = make_changeid(txn, hash)?;
     debug!("make_changeid {:?} {:?}", hash, internal);
 
@@ -349,7 +360,6 @@ pub fn apply_local_change<
         &mut Workspace::new(),
     )
 }
-
 
 fn update_inode<T: ChannelTxnT + TreeMutTxnT<TreeError = <T as GraphTxnT>::GraphError>>(
     txn: &mut T,

@@ -1,7 +1,9 @@
-use crate::pristine::*;
 use crate::HashSet;
-use chrono::{DateTime, Utc};
 use std::collections::BTreeSet;
+
+use crate::pristine::*;
+use crate::text_encoding::Encoding;
+use chrono::{DateTime, Utc};
 
 #[cfg(feature = "zstd")]
 use std::io::Write;
@@ -13,10 +15,12 @@ pub use text_changes::{TextDeError, TextSerError, WriteChangeLine};
 mod change_file;
 pub use change_file::*;
 
+mod noenc;
+
 #[derive(Debug, Error)]
 pub enum ChangeError {
-    #[error("Version mismatch")]
-    VersionMismatch,
+    #[error("Version mismatch: got {}", got)]
+    VersionMismatch { got: u64 },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -27,6 +31,8 @@ pub enum ChangeError {
     TomlDe(#[from] toml::de::Error),
     #[error(transparent)]
     TomlSer(#[from] toml::ser::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
     #[error("Missing contents for change {:?}", hash)]
     MissingContents { hash: crate::pristine::Hash },
     #[error("Change hash mismatch, claimed {:?}, computed {:?}", claimed, computed)]
@@ -100,38 +106,16 @@ impl<T: Clone> NewEdge<T> {
 /// The header of a change contains all the metadata about a change
 /// (but not the actual contents of a change).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct ChangeHeader {
+pub struct ChangeHeader_<Author> {
     pub message: String,
     pub description: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub authors: Vec<Author>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct Author {
-    pub name: String,
-    #[serde(default)]
-    pub full_name: Option<String>,
-    #[serde(default)]
-    pub email: Option<String>,
-}
-
-impl std::fmt::Display for Author {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if self.full_name.is_none() && self.email.is_none() {
-            write!(fmt, "{:?}", self.name)
-        } else {
-            write!(fmt, "{{ name = {:?}", self.name)?;
-            if let Some(ref f) = self.full_name {
-                write!(fmt, ", full_name = {:?}", f)?;
-            }
-            if let Some(ref f) = self.email {
-                write!(fmt, ", email = {:?}", f)?;
-            }
-            write!(fmt, " }}")
-        }
-    }
-}
+/// The header of a change contains all the metadata about a change
+/// (but not the actual contents of a change).
+pub type ChangeHeader = ChangeHeader_<Author>;
 
 impl Default for ChangeHeader {
     fn default() -> Self {
@@ -145,37 +129,41 @@ impl Default for ChangeHeader {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct LocalChange<Local> {
+pub struct LocalChange<Hunk, Author> {
     pub offsets: Offsets,
-    pub hashed: Hashed<Local>,
+    pub hashed: Hashed<Hunk, Author>,
     /// unhashed TOML extra contents.
-    pub unhashed: Option<toml::Value>,
+    pub unhashed: Option<serde_json::Value>,
     /// The contents.
     pub contents: Vec<u8>,
 }
 
-impl std::ops::Deref for LocalChange<Local> {
-    type Target = Hashed<Local>;
+impl std::ops::Deref for LocalChange<Hunk<Option<Hash>, Local>, Author> {
+    type Target = Hashed<Hunk<Option<Hash>, Local>, Author>;
     fn deref(&self) -> &Self::Target {
         &self.hashed
     }
 }
 
-impl std::ops::DerefMut for LocalChange<Local> {
+impl std::ops::DerefMut for LocalChange<Hunk<Option<Hash>, Local>, Author> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.hashed
     }
 }
 
-// Beware of change the version, tags also use that.
-pub const VERSION: u64 = 4;
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct Author(pub std::collections::BTreeMap<String, String>);
+
+// Beware of changes in the version, tags also use that.
+pub const VERSION: u64 = 6;
+pub const VERSION_NOENC: u64 = 4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Hashed<Local> {
+pub struct Hashed<Hunk, Author> {
     /// Version, again (in order to hash it).
     pub version: u64,
     /// Header part, containing the metadata.
-    pub header: ChangeHeader,
+    pub header: ChangeHeader_<Author>,
     /// The dependencies of this change.
     pub dependencies: Vec<Hash>,
     /// Extra known "context" changes to recover from deleted contexts.
@@ -183,13 +171,13 @@ pub struct Hashed<Local> {
     /// Some space to write application-specific data.
     pub metadata: Vec<u8>,
     /// The changes, without the contents.
-    pub changes: Vec<Hunk<Option<Hash>, Local>>,
+    pub changes: Vec<Hunk>,
     /// Hash of the contents, so that the "contents" field is
     /// verifiable independently from the actions in this change.
     pub contents_hash: Hash,
 }
 
-pub type Change = LocalChange<Local>;
+pub type Change = LocalChange<Hunk<Option<Hash>, Local>, Author>;
 
 pub fn dependencies<
     'a,
@@ -266,7 +254,7 @@ pub fn full_dependencies<T: ChannelTxnT + DepsTxnT<DepsError = <T as GraphTxnT>:
     channel: &ChannelRef<T>,
 ) -> Result<(Vec<Hash>, Vec<Hash>), TxnErr<T::DepsError>> {
     let mut deps = BTreeSet::new();
-    let channel = channel.read().unwrap();
+    let channel = channel.read();
     for x in changeid_log(txn, &channel, L64(0))? {
         let (_, p) = x?;
         let h = txn.get_external(&p.a)?.unwrap();
@@ -569,25 +557,30 @@ impl<L: Clone> Hunk<Option<Hash>, L> {
                 del,
                 contents,
                 path,
+                encoding,
             } => Hunk::FileUndel {
                 undel: del.inverse(hash),
                 contents: contents.as_ref().map(|c| c.inverse(hash)),
                 path: path.clone(),
+                encoding: encoding.clone(),
             },
             Hunk::FileUndel {
                 undel,
                 contents,
                 path,
+                encoding,
             } => Hunk::FileDel {
                 del: undel.inverse(hash),
                 contents: contents.as_ref().map(|c| c.inverse(hash)),
                 path: path.clone(),
+                encoding: encoding.clone(),
             },
             Hunk::FileAdd {
                 add_name,
                 add_inode,
                 contents,
                 path,
+                encoding,
             } => {
                 let del = match (add_name.inverse(hash), add_inode.inverse(hash)) {
                     (Atom::EdgeMap(e0), Atom::EdgeMap(e1)) => Atom::EdgeMap(e0.concat(e1)),
@@ -597,6 +590,7 @@ impl<L: Clone> Hunk<Option<Hash>, L> {
                     del,
                     contents: contents.as_ref().map(|c| c.inverse(hash)),
                     path: path.clone(),
+                    encoding: encoding.clone(),
                 }
             }
             Hunk::SolveNameConflict { name, path } => Hunk::UnsolveNameConflict {
@@ -607,18 +601,25 @@ impl<L: Clone> Hunk<Option<Hash>, L> {
                 name: name.inverse(hash),
                 path: path.clone(),
             },
-            Hunk::Edit { change, local } => Hunk::Edit {
+            Hunk::Edit {
+                change,
+                local,
+                encoding,
+            } => Hunk::Edit {
                 change: change.inverse(hash),
                 local: local.clone(),
+                encoding: encoding.clone(),
             },
             Hunk::Replacement {
                 change,
                 replacement,
                 local,
+                encoding,
             } => Hunk::Replacement {
                 change: replacement.inverse(hash),
                 replacement: change.inverse(hash),
                 local: local.clone(),
+                encoding: encoding.clone(),
             },
             Hunk::SolveOrderConflict { change, local } => Hunk::UnsolveOrderConflict {
                 change: change.inverse(hash),
@@ -628,9 +629,14 @@ impl<L: Clone> Hunk<Option<Hash>, L> {
                 change: change.inverse(hash),
                 local: local.clone(),
             },
-            Hunk::ResurrectZombies { change, local } => Hunk::Edit {
+            Hunk::ResurrectZombies {
+                change,
+                local,
+                encoding,
+            } => Hunk::Edit {
                 change: change.inverse(hash),
                 local: local.clone(),
+                encoding: encoding.clone(),
             },
         }
     }
@@ -674,17 +680,20 @@ pub enum Hunk<Hash, Local> {
         del: Atom<Hash>,
         contents: Option<Atom<Hash>>,
         path: String,
+        encoding: Option<Encoding>,
     },
     FileUndel {
         undel: Atom<Hash>,
         contents: Option<Atom<Hash>>,
         path: String,
+        encoding: Option<Encoding>,
     },
     FileAdd {
         add_name: Atom<Hash>,
         add_inode: Atom<Hash>,
         contents: Option<Atom<Hash>>,
         path: String,
+        encoding: Option<Encoding>,
     },
     SolveNameConflict {
         name: Atom<Hash>,
@@ -697,11 +706,13 @@ pub enum Hunk<Hash, Local> {
     Edit {
         change: Atom<Hash>,
         local: Local,
+        encoding: Option<Encoding>,
     },
     Replacement {
         change: Atom<Hash>,
         replacement: Atom<Hash>,
         local: Local,
+        encoding: Option<Encoding>,
     },
     SolveOrderConflict {
         change: Atom<Hash>,
@@ -714,6 +725,7 @@ pub enum Hunk<Hash, Local> {
     ResurrectZombies {
         change: Atom<Hash>,
         local: Local,
+        encoding: Option<Encoding>,
     },
 }
 
@@ -1085,19 +1097,23 @@ impl<Local> Hunk<Option<ChangeId>, Local> {
                 del,
                 contents,
                 path,
+                encoding,
             } => Hunk::FileDel {
                 del: del.globalize(txn)?,
                 contents: contents.as_ref().map(|del| del.globalize(txn).unwrap()),
                 path,
+                encoding,
             },
             Hunk::FileUndel {
                 undel,
                 contents,
                 path,
+                encoding,
             } => Hunk::FileUndel {
                 undel: undel.globalize(txn)?,
                 contents: contents.as_ref().map(|del| del.globalize(txn).unwrap()),
                 path,
+                encoding,
             },
             Hunk::SolveNameConflict { name, path } => Hunk::SolveNameConflict {
                 name: name.globalize(txn)?,
@@ -1112,24 +1128,33 @@ impl<Local> Hunk<Option<ChangeId>, Local> {
                 add_name,
                 contents,
                 path,
+                encoding,
             } => Hunk::FileAdd {
                 add_name: add_name.globalize(txn)?,
                 add_inode: add_inode.globalize(txn)?,
                 contents: contents.as_ref().map(|add| add.globalize(txn).unwrap()),
                 path,
+                encoding,
             },
-            Hunk::Edit { change, local } => Hunk::Edit {
+            Hunk::Edit {
+                change,
+                local,
+                encoding,
+            } => Hunk::Edit {
                 change: change.globalize(txn)?,
                 local,
+                encoding,
             },
             Hunk::Replacement {
                 change,
                 replacement,
                 local,
+                encoding,
             } => Hunk::Replacement {
                 change: change.globalize(txn)?,
                 replacement: replacement.globalize(txn)?,
                 local,
+                encoding,
             },
             Hunk::SolveOrderConflict { change, local } => Hunk::SolveOrderConflict {
                 change: change.globalize(txn)?,
@@ -1139,9 +1164,14 @@ impl<Local> Hunk<Option<ChangeId>, Local> {
                 change: change.globalize(txn)?,
                 local,
             },
-            Hunk::ResurrectZombies { change, local } => Hunk::ResurrectZombies {
+            Hunk::ResurrectZombies {
+                change,
+                local,
+                encoding,
+            } => Hunk::ResurrectZombies {
                 change: change.globalize(txn)?,
                 local,
+                encoding,
             },
         })
     }
@@ -1151,29 +1181,28 @@ impl<Local> Hunk<Option<ChangeId>, Local> {
 /// to allow seeking inside a change file.
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct Offsets {
-    version: u64,
-    hashed_len: u64, // length of the hashed contents
-    unhashed_off: u64,
-    unhashed_len: u64, // length of the unhashed contents
-    contents_off: u64,
-    contents_len: u64,
-    total: u64,
+    pub version: u64,
+    pub hashed_len: u64, // length of the hashed contents
+    pub unhashed_off: u64,
+    pub unhashed_len: u64, // length of the unhashed contents
+    pub contents_off: u64,
+    pub contents_len: u64,
+    pub total: u64,
 }
 
-impl<L> LocalChange<L> {
+impl LocalChange<Hunk<Option<Hash>, Local>, Author> {
     #[cfg(feature = "zstd")]
-    const OFFSETS_SIZE: u64 = 56;
+    pub const OFFSETS_SIZE: u64 = 56;
 
     pub fn make_change<T: ChannelTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>>(
         txn: &T,
         channel: &ChannelRef<T>,
-        changes: Vec<Hunk<Option<Hash>, L>>,
+        changes: Vec<Hunk<Option<Hash>, Local>>,
         contents: Vec<u8>,
         header: ChangeHeader,
         metadata: Vec<u8>,
     ) -> Result<Self, TxnErr<T::DepsError>> {
-        let (dependencies, extra_known) =
-            dependencies(txn, &channel.read().unwrap(), changes.iter())?;
+        let (dependencies, extra_known) = dependencies(txn, &channel.read(), changes.iter())?;
         trace!("make_change, contents = {:?}", contents);
         let contents_hash = {
             let mut hasher = Hasher::default();
@@ -1246,8 +1275,8 @@ impl Change {
         let mut off = [0u8; Self::OFFSETS_SIZE as usize];
         r.read_exact(&mut off)?;
         let off: Offsets = bincode::deserialize(&off)?;
-        if off.version != VERSION {
-            return Err(ChangeError::VersionMismatch);
+        if off.version != VERSION && off.version != VERSION_NOENC {
+            return Err(ChangeError::VersionMismatch { got: off.version });
         }
         r.seek(std::io::SeekFrom::Start(pos))?;
         Ok(off.contents_off)
@@ -1269,7 +1298,7 @@ impl Change {
 
         // Unhashed part.
         let unhashed = if let Some(ref un) = self.unhashed {
-            let s = toml::ser::to_string(un).unwrap();
+            let s = serde_json::to_string(un).unwrap();
             s.into()
         } else {
             Vec::new()
@@ -1277,13 +1306,19 @@ impl Change {
 
         // Compress the change.
         let mut hashed_comp = Vec::new();
+        let now = std::time::Instant::now();
         compress(&hashed, &mut hashed_comp)?;
+        debug!("compressed hashed in {:?}", now.elapsed());
+        let now = std::time::Instant::now();
         let unhashed_off = Self::OFFSETS_SIZE + hashed_comp.len() as u64;
         let mut unhashed_comp = Vec::new();
         compress(&unhashed, &mut unhashed_comp)?;
+        debug!("compressed unhashed in {:?}", now.elapsed());
         let contents_off = unhashed_off + unhashed_comp.len() as u64;
         let mut contents_comp = Vec::new();
+        let now = std::time::Instant::now();
         compress(&self.contents, &mut contents_comp)?;
+        debug!("compressed contents in {:?}", now.elapsed());
 
         let offsets = Offsets {
             version: VERSION,
@@ -1307,8 +1342,10 @@ impl Change {
     #[cfg(feature = "zstd")]
     pub fn check_from_buffer(buf: &[u8], hash: &Hash) -> Result<(), ChangeError> {
         let offsets: Offsets = bincode::deserialize_from(&buf[..Self::OFFSETS_SIZE as usize])?;
-        if offsets.version != VERSION {
-            return Err(ChangeError::VersionMismatch);
+        if offsets.version != VERSION && offsets.version != VERSION_NOENC {
+            return Err(ChangeError::VersionMismatch {
+                got: offsets.version,
+            });
         }
 
         debug!("check_from_buffer, offsets = {:?}", offsets);
@@ -1318,7 +1355,7 @@ impl Change {
         let mut buf_ = Vec::new();
         buf_.resize(offsets.hashed_len as usize, 0);
         s.decompress(&mut buf_[..], 0)?;
-        debug!("check_from_buffer, buf_ = {:?}", buf_);
+        trace!("check_from_buffer, buf_ = {:?}", buf_);
         let mut hasher = Hasher::default();
         hasher.update(&buf_);
         let computed_hash = hasher.finish();
@@ -1331,14 +1368,20 @@ impl Change {
             .into());
         }
 
-        let hashed: Hashed<Local> = bincode::deserialize(&buf_)?;
+        let hashed: Hashed<Hunk<Option<Hash>, Local>, Author> = if offsets.version == VERSION {
+            bincode::deserialize(&buf_)?
+        } else {
+            let h: Hashed<noenc::Hunk<Option<Hash>, Local>, noenc::Author> =
+                bincode::deserialize(&buf_)?;
+            h.into()
+        };
         buf_.clear();
         buf_.resize(offsets.contents_len as usize, 0);
         let mut s = zstd_seekable::Seekable::init_buf(&buf[offsets.contents_off as usize..])?;
         buf_.resize(offsets.contents_len as usize, 0);
         s.decompress(&mut buf_[..], 0)?;
         let mut hasher = Hasher::default();
-        debug!("contents = {:?}", buf_);
+        trace!("contents = {:?}", buf_);
         hasher.update(&buf_);
         let computed_hash = hasher.finish();
         debug!(
@@ -1362,15 +1405,19 @@ impl Change {
         let mut buf = vec![0u8; Self::OFFSETS_SIZE as usize];
         r.read_exact(&mut buf)?;
         let offsets: Offsets = bincode::deserialize(&buf)?;
-        if offsets.version != VERSION {
-            return Err(ChangeError::VersionMismatch);
+        if offsets.version == VERSION_NOENC {
+            return Self::deserialize_noenc(offsets, r, hash);
+        } else if offsets.version != VERSION {
+            return Err(ChangeError::VersionMismatch {
+                got: offsets.version,
+            });
         }
         debug!("offsets = {:?}", offsets);
         buf.clear();
         buf.resize((offsets.unhashed_off - Self::OFFSETS_SIZE) as usize, 0);
         r.read_exact(&mut buf)?;
 
-        let hashed: Hashed<Local> = {
+        let hashed: Hashed<Hunk<Option<Hash>, Local>, Author> = {
             let mut s = zstd_seekable::Seekable::init_buf(&buf[..])?;
             let mut out = vec![0u8; offsets.hashed_len as usize];
             s.decompress(&mut out[..], 0)?;
@@ -1396,7 +1443,8 @@ impl Change {
             let mut s = zstd_seekable::Seekable::init_buf(&buf[..])?;
             let mut out = vec![0u8; offsets.unhashed_len as usize];
             s.decompress(&mut out[..], 0)?;
-            Some(toml::de::from_slice(&out)?)
+            debug!("parsing unhashed: {:?}", std::str::from_utf8(&out));
+            serde_json::from_slice(&out).ok()
         };
         debug!("unhashed = {:?}", unhashed);
 

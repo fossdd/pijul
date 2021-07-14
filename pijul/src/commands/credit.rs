@@ -25,18 +25,18 @@ pub struct Credit {
 impl Credit {
     pub async fn run(self) -> Result<(), anyhow::Error> {
         let has_repo_path = self.repo_path.is_some();
-        let mut repo = Repository::find_root(self.repo_path).await?;
+        let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;
-        let (channel_name, _) = repo.config.get_current_channel(self.channel.as_deref());
+        let channel_name = if let Some(ref c) = self.channel {
+            c
+        } else {
+            txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+        };
         let channel = if let Some(channel) = txn.load_channel(&channel_name)? {
             channel
         } else {
             bail!("No such channel: {:?}", channel_name)
         };
-        if self.channel.is_some() {
-            repo.config.current_channel = self.channel;
-            repo.save_config()?;
-        }
         let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
         let (pos, _ambiguous) = if has_repo_path {
             let root = std::fs::canonicalize(repo.path.join(&self.file))?;
@@ -50,7 +50,7 @@ impl Credit {
             txn.follow_oldest_path(&repo.changes, &channel, &path)?
         };
         super::pager();
-        let channel = channel.read().unwrap();
+        let channel = channel.read();
         match libpijul::output::output_file(
             &repo.changes,
             &txn,
@@ -75,7 +75,7 @@ pub struct Creditor<'a, W: std::io::Write, T: ChannelTxnT> {
     w: W,
     buf: Vec<u8>,
     new_line: bool,
-    changes: HashSet<ChangeId>,
+    changes: HashSet<Hash>,
     txn: &'a T,
     channel: &'a T::Channel,
 }
@@ -117,7 +117,9 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
                 if e.introduced_by().is_root() {
                     continue;
                 }
-                self.changes.insert(e.introduced_by());
+                if let Ok(Some(intro)) = self.txn.get_external(&e.introduced_by()) {
+                    self.changes.insert(intro.into());
+                }
             }
             if !self.new_line {
                 writeln!(self.w)?;
@@ -125,11 +127,12 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
             writeln!(self.w)?;
             let mut is_first = true;
             for c in self.changes.drain() {
+                let c = c.to_base32();
                 write!(
                     self.w,
                     "{}{}",
                     if is_first { "" } else { ", " },
-                    c.to_base32()
+                    c.split_at(12).0,
                 )?;
                 is_first = false;
             }
@@ -137,8 +140,6 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
         }
         let ends_with_newline = self.buf.ends_with(b"\n");
         if let Ok(s) = std::str::from_utf8(&self.buf[..]) {
-            let st: u64 = v.start.into();
-            write!(self.w, "{}.{} > ", v.change.to_base32(), st)?;
             for l in s.lines() {
                 self.w.write_all(b"> ")?;
                 self.w.write_all(l.as_bytes())?;

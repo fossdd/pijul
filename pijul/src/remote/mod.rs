@@ -37,11 +37,12 @@ impl Repository {
         name: &str,
         channel: &str,
         no_cert_check: bool,
+        with_path: bool,
     ) -> Result<RemoteRepo, anyhow::Error> {
         if let Some(name) = self.config.remotes.get(name) {
-            unknown_remote(self_path, name, channel, no_cert_check).await
+            unknown_remote(self_path, name, channel, no_cert_check, with_path).await
         } else {
-            unknown_remote(self_path, name, channel, no_cert_check).await
+            unknown_remote(self_path, name, channel, no_cert_check, with_path).await
         }
     }
 }
@@ -51,6 +52,7 @@ pub async fn unknown_remote(
     name: &str,
     channel: &str,
     no_cert_check: bool,
+    with_path: bool,
 ) -> Result<RemoteRepo, anyhow::Error> {
     if let Ok(url) = url::Url::parse(name) {
         let scheme = url.scheme();
@@ -65,7 +67,7 @@ pub async fn unknown_remote(
                 name: name.to_string(),
             }));
         } else if scheme == "ssh" {
-            return if let Some(mut ssh) = ssh_remote(name) {
+            return if let Some(mut ssh) = ssh_remote(name, with_path) {
                 debug!("unknown_remote, ssh = {:?}", ssh);
                 Ok(RemoteRepo::Ssh(ssh.connect(name, channel).await?))
             } else {
@@ -99,7 +101,7 @@ pub async fn unknown_remote(
             }));
         }
     }
-    if let Some(mut ssh) = ssh_remote(name) {
+    if let Some(mut ssh) = ssh_remote(name, with_path) {
         debug!("unknown_remote, ssh = {:?}", ssh);
         Ok(RemoteRepo::Ssh(ssh.connect(name, channel).await?))
     } else {
@@ -164,18 +166,18 @@ impl RemoteRepo {
         path: &[String],
     ) -> Result<Option<(HashSet<Position<Hash>>, RemoteRef<T>)>, anyhow::Error> {
         debug!("update_changelist");
-        let name = if let Some(name) = self.name() {
-            name
+        let id = if let Some(id) = self.get_id(txn).await? {
+            id
         } else {
             return Ok(None);
         };
-        let mut remote = txn.open_or_create_remote(name).unwrap();
+        let mut remote = txn.open_or_create_remote(id, self.name().unwrap()).unwrap();
         let n = self
-            .dichotomy_changelist(txn, &remote.lock()?.remote)
+            .dichotomy_changelist(txn, &remote.lock().remote)
             .await?;
         debug!("update changelist {:?}", n);
         let v: Vec<_> = txn
-            .iter_remote(&remote.lock()?.remote, n)?
+            .iter_remote(&remote.lock().remote, n)?
             .filter_map(|k| {
                 debug!("filter_map {:?}", k);
                 let k = (*k.unwrap().0).into();
@@ -261,6 +263,25 @@ impl RemoteRepo {
         }
     }
 
+    async fn get_id<T: libpijul::TxnTExt>(
+        &mut self,
+        txn: &T,
+    ) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+        match *self {
+            RemoteRepo::Local(ref l) => l.get_id(),
+            RemoteRepo::Ssh(ref mut s) => s.get_id().await,
+            RemoteRepo::Http(ref h) => h.get_id().await,
+            RemoteRepo::LocalChannel(ref channel) => {
+                if let Some(channel) = txn.load_channel(&channel)? {
+                    Ok(Some(*txn.id(&*channel.read())))
+                } else {
+                    Ok(None)
+                }
+            }
+            RemoteRepo::None => unreachable!(),
+        }
+    }
+
     pub async fn archive<W: std::io::Write + Send + 'static>(
         &mut self,
         prefix: Option<String>,
@@ -298,13 +319,46 @@ impl RemoteRepo {
         from: u64,
         paths: &[String],
     ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
+        let f = |a: &mut (&mut T, &mut RemoteRef<T>), n, h, m| {
+            let (ref mut txn, ref mut remote) = *a;
+            txn.put_remote(remote, n, (h, m))?;
+            Ok(())
+        };
         match *self {
-            RemoteRepo::Local(ref mut l) => l.download_changelist(txn, remote, from, paths),
-            RemoteRepo::Ssh(ref mut s) => s.download_changelist(txn, remote, from, paths).await,
-            RemoteRepo::Http(ref h) => h.download_changelist(txn, remote, from, paths).await,
+            RemoteRepo::Local(ref mut l) => {
+                l.download_changelist(f, &mut (txn, remote), from, paths)
+            }
+            RemoteRepo::Ssh(ref mut s) => {
+                s.download_changelist(f, &mut (txn, remote), from, paths)
+                    .await
+            }
+            RemoteRepo::Http(ref h) => {
+                h.download_changelist(f, &mut (txn, remote), from, paths)
+                    .await
+            }
             RemoteRepo::LocalChannel(_) => Ok(HashSet::new()),
             RemoteRepo::None => unreachable!(),
         }
+    }
+
+    pub async fn download_changelist_nocache(
+        &mut self,
+        from: u64,
+        paths: &[String],
+        v: &mut Vec<Hash>,
+    ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
+        let f = |v: &mut Vec<Hash>, _n, h, _m| {
+            debug!("no cache: {:?}", h);
+            Ok(v.push(h))
+        };
+        let r = match *self {
+            RemoteRepo::Local(ref mut l) => l.download_changelist(f, v, from, paths)?,
+            RemoteRepo::Ssh(ref mut s) => s.download_changelist(f, v, from, paths).await?,
+            RemoteRepo::Http(ref h) => h.download_changelist(f, v, from, paths).await?,
+            RemoteRepo::LocalChannel(_) => HashSet::new(),
+            RemoteRepo::None => unreachable!(),
+        };
+        Ok(r)
     }
 
     pub async fn upload_changes<T: MutTxnTExt>(
@@ -349,6 +403,26 @@ impl RemoteRepo {
             RemoteRepo::None => unreachable!(),
         }
         Ok(true)
+    }
+
+    pub async fn update_identities<T: MutTxnTExt + TxnTExt + GraphIter>(
+        &mut self,
+        repo: &mut Repository,
+        remote: &RemoteRef<T>,
+    ) -> Result<(), anyhow::Error> {
+        let mut id_path = repo.path.clone();
+        id_path.push(DOT_DIR);
+        id_path.push("identities");
+        let rev = None;
+        let r = match *self {
+            RemoteRepo::Local(ref mut l) => l.update_identities(rev, id_path).await?,
+            RemoteRepo::Ssh(ref mut s) => s.update_identities(rev, id_path).await?,
+            RemoteRepo::Http(ref mut h) => h.update_identities(rev, id_path).await?,
+            RemoteRepo::LocalChannel(_) => 0,
+            RemoteRepo::None => unreachable!(),
+        };
+        remote.set_id_revision(r);
+        Ok(())
     }
 
     pub async fn pull<T: MutTxnTExt + TxnTExt + GraphIter>(
@@ -448,17 +522,19 @@ impl RemoteRepo {
                 info!("Applying {:?}", h);
                 PROGRESS.inner.lock().unwrap()[pro_b].incr();
                 debug!("apply");
-                let mut channel = channel.write().unwrap();
+                let mut channel = channel.write();
                 txn.apply_change_ws(&repo.changes, &mut channel, h, &mut ws)?;
                 debug!("applied");
             } else {
                 debug!("not applying {:?}", h)
             }
         }
+
         debug!("finished");
         std::mem::drop(recv);
         debug!("waiting for spawned process");
         *self = t.await??;
+        debug!("Downloading identities");
         debug!("join");
         PROGRESS.join();
         Ok(to_apply_inodes)
@@ -519,7 +595,7 @@ impl RemoteRepo {
         std::mem::drop(send_hash);
         let mut ws = libpijul::ApplyWorkspace::new();
         {
-            let mut channel_ = channel.write().unwrap();
+            let mut channel_ = channel.write();
             for hash in hashes.iter() {
                 txn.apply_change_ws(&repo.changes, &mut channel_, hash, &mut ws)?;
             }
@@ -538,12 +614,12 @@ impl RemoteRepo {
         channel: &mut ChannelRef<T>,
         state: Merkle,
     ) -> Result<(), anyhow::Error> {
+        let id = self.get_id(txn).await?.unwrap();
         self.update_changelist(txn, &[]).await?;
-        let name = self.name().unwrap();
-        let remote = txn.open_or_create_remote(name).unwrap();
+        let remote = txn.open_or_create_remote(id, self.name().unwrap()).unwrap();
         let mut to_pull = Vec::new();
         let mut found = false;
-        for x in txn.iter_remote(&remote.lock()?.remote, 0)? {
+        for x in txn.iter_remote(&remote.lock().remote, 0)? {
             let (n, p) = x?;
             debug!("{:?} {:?}", n, p);
             to_pull.push(p.a.into());
@@ -557,6 +633,8 @@ impl RemoteRepo {
         }
         self.pull(repo, txn, channel, &to_pull, &HashSet::new(), true)
             .await?;
+        self.update_identities(repo, &remote).await?;
+
         self.complete_changes(repo, txn, channel, &to_pull, false)
             .await?;
         Ok(())
@@ -620,7 +698,7 @@ impl RemoteRepo {
                 start: libpijul::pristine::ChangePosition(0u64.into()),
                 end: libpijul::pristine::ChangePosition(0u64.into()),
             };
-            let channel = local_channel.read()?;
+            let channel = local_channel.read();
             let graph = txn.graph(&channel);
             let mut it = txn.iter_graph(graph, Some(&v))?;
             while let Some(x) = txn.next_graph(&graph, &mut it) {
@@ -649,17 +727,23 @@ impl RemoteRepo {
         local_channel: &mut ChannelRef<T>,
         path: &[String],
     ) -> Result<(), anyhow::Error> {
-        let (inodes, remote_changes) = self
-            .update_changelist(txn, path)
-            .await?
-            .expect("Remote is not self");
+        let (inodes, remote_changes) = if let Some(x) = self.update_changelist(txn, path).await? {
+            x
+        } else {
+            bail!("Channel not found")
+        };
         let mut pullable = Vec::new();
-        for x in txn.iter_remote(&remote_changes.lock()?.remote, 0)? {
-            let (_, p) = x?;
-            pullable.push(p.a.into())
+        {
+            let rem = remote_changes.lock();
+            for x in txn.iter_remote(&rem.remote, 0)? {
+                let (_, p) = x?;
+                pullable.push(p.a.into())
+            }
         }
         self.pull(repo, txn, local_channel, &pullable, &inodes, true)
             .await?;
+        self.update_identities(repo, &remote_changes).await?;
+
         self.complete_changes(repo, txn, local_channel, &pullable, false)
             .await?;
         Ok(())

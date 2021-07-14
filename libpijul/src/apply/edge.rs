@@ -217,7 +217,7 @@ fn collect_pseudo_edges<T: GraphMutTxnT>(
             } else {
                 let p = txn.find_block(channel, e.dest())?;
                 if e.flag().contains(EdgeFlags::BLOCK)
-                    || p.is_empty()
+                    || (p.is_empty() && !e.flag().contains(EdgeFlags::PSEUDO))
                     || is_alive(txn, channel, p).unwrap()
                 {
                     apply.children.insert(*p);

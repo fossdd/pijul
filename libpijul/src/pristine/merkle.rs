@@ -90,7 +90,7 @@ impl std::str::FromStr for Merkle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SerializedMerkle(pub [u8; 33]);
 
 impl PartialEq<Merkle> for SerializedMerkle {

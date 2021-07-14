@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
 
 use crate::repository::*;
 
@@ -42,7 +41,7 @@ use ::sanakirja::{Storable, UnsizedStorable};
 
 impl Git {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = if let Ok(repo) = Repository::find_root(self.repo_path.clone()).await {
+        let repo = if let Ok(repo) = Repository::find_root(self.repo_path.clone()) {
             repo
         } else {
             Repository::init(self.repo_path.clone()).await?
@@ -162,7 +161,7 @@ impl Dag {
         &self,
         oid: &git2::Oid,
         todo: &mut Todo,
-        txn: Arc<RwLock<T>>,
+        txn: &ArcTxn<T>,
     ) -> Result<(), anyhow::Error> {
         if let Some(parents) = self.parents.get(oid) {
             debug!("parents {:?}", parents);
@@ -172,7 +171,7 @@ impl Dag {
                 if *rc == 0 {
                     let p_name = format!("{}", p);
                     debug!("dropping channel {:?}", p_name);
-                    let mut txn = txn.write().unwrap();
+                    let mut txn = txn.write();
                     txn.drop_channel(&p_name)?;
                 }
             }
@@ -250,17 +249,18 @@ async fn import(
     let mut ws = libpijul::ApplyWorkspace::new();
     let mut todo = Todo::new();
 
-    let txn = repo.repo.pristine.mut_txn_begin()?;
+    let txn = repo.repo.pristine.arc_txn_begin()?;
     for &(oid, merkle) in dag.root.iter() {
         if let Some(merkle) = merkle {
             let oid_ = format!("{}", oid);
-            let channel = if let Some(c) = txn.load_channel(&oid_)? {
+            let channel = if let Some(c) = txn.read().load_channel(&oid_)? {
                 c
             } else {
                 bail!("Channel not found: {:?}", oid);
             };
-            let (_, p) = txn
-                .changeid_reverse_log(&*channel.read()?, None)?
+            let (_, &p) = txn
+                .read()
+                .changeid_reverse_log(&*channel.read(), None)?
                 .next()
                 .unwrap()?;
             let merkle_: libpijul::Merkle = (&p.b).into();
@@ -290,8 +290,7 @@ async fn import(
         let mut todo_ = std::mem::replace(&mut todo.todo, Vec::new());
         {
             let mut draining = todo_.drain(..);
-            let txn = repo.repo.pristine.mut_txn_begin()?;
-            let txn = Arc::new(RwLock::new(txn));
+            let txn = repo.repo.pristine.arc_txn_begin()?;
             while let Some(oid) = draining.next() {
                 let channel = if let Some(parents) = dag.parents.get(&oid) {
                     // If we don't have all the parents, continue.
@@ -301,7 +300,7 @@ async fn import(
                     }
                     let first_parent = parents.iter().next().unwrap();
                     let parent_name = format!("{}", first_parent);
-                    let mut txn = txn.write().unwrap();
+                    let mut txn = txn.write();
                     let parent_channel = txn.load_channel(&parent_name)?.unwrap();
 
                     let name = format!("{}", oid);
@@ -311,25 +310,16 @@ async fn import(
                 } else {
                     // Create a new channel for this commit.
                     let name = format!("{}", oid);
-                    let mut txn = txn.write().unwrap();
+                    let mut txn = txn.write();
                     let channel = txn.open_or_create_channel(&name)?;
                     channel
                 };
 
                 let mut stats = Stats::new(oid);
-                import_commit_parents(
-                    repo,
-                    dag,
-                    txn.clone(),
-                    channel.clone(),
-                    &oid,
-                    &mut ws,
-                    &mut stats,
-                )?;
-                let state =
-                    import_commit(git, repo, txn.clone(), channel.clone(), &oid, &mut stats)?;
+                import_commit_parents(repo, dag, &txn, &channel, &oid, &mut ws, &mut stats)?;
+                let state = import_commit(git, repo, &txn, &channel, &oid, &mut stats)?;
                 save_state(env_git, &oid, state)?;
-                dag.collect_dead_parents(&oid, &mut todo, txn.clone())?;
+                dag.collect_dead_parents(&oid, &mut todo, &txn)?;
                 dag.insert_children_in_todo(&oid, &mut todo);
 
                 if let Some(ref mut f) = repo.stats {
@@ -342,11 +332,6 @@ async fn import(
                     todo.insert_next(oid)
                 }
             }
-            let txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-                txn.into_inner().unwrap()
-            } else {
-                unreachable!()
-            };
             txn.commit()?;
         }
         todo.swap_next(todo_)
@@ -375,8 +360,8 @@ fn save_state(
 
 fn make_apply_plan<T: TxnTExt>(
     repo: &OpenRepo,
-    txn: Arc<RwLock<T>>,
-    channel: ChannelRef<T>,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     dag: &Dag,
     oid: &git2::Oid,
 ) -> Result<(bool, Vec<(libpijul::Hash, u64)>), anyhow::Error> {
@@ -384,7 +369,7 @@ fn make_apply_plan<T: TxnTExt>(
     let mut to_apply_set = BTreeSet::new();
     let mut needs_output = false;
     if let Some(parents) = dag.parents.get(&oid) {
-        let txn = txn.read().unwrap();
+        let txn = txn.read();
         for p in parents {
             // If one of the parents is not the repo's current commit,
             // then we're doing either a merge or a checkout of
@@ -398,7 +383,7 @@ fn make_apply_plan<T: TxnTExt>(
             }
             let p_name = format!("{}", p);
             let p_channel = txn.load_channel(&p_name)?.unwrap();
-            for x in txn.log(&*p_channel.read()?, 0)? {
+            for x in txn.log(&*p_channel.read(), 0)? {
                 let (n, (h, _)) = x?;
                 let h: libpijul::Hash = h.into();
                 if txn.has_change(&channel, &h)?.is_none() {
@@ -424,21 +409,21 @@ fn make_apply_plan<T: TxnTExt>(
 fn import_commit_parents<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
     repo: &mut OpenRepo,
     dag: &Dag,
-    txn: Arc<RwLock<T>>,
-    channel: ChannelRef<T>,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     oid: &git2::Oid,
     ws: &mut libpijul::ApplyWorkspace,
     stats: &mut Stats,
 ) -> Result<(), anyhow::Error> {
     // Apply all the parent's logs to `channel`
-    let (needs_output, to_apply) = make_apply_plan(repo, txn.clone(), channel.clone(), dag, oid)?;
+    let (needs_output, to_apply) = make_apply_plan(repo, &txn, &channel, dag, oid)?;
     let parent_application_time = std::time::Instant::now();
     for h in to_apply.iter() {
         debug!("to_apply {:?}", h)
     }
-    let mut txn_ = txn.write().unwrap();
+    let mut txn_ = txn.write();
     for (h, _) in to_apply.iter() {
-        let mut channel_ = channel.write().unwrap();
+        let mut channel_ = channel.write();
         info!("applying {:?} to {:?}", h, txn_.name(&channel_));
 
         txn_.apply_change_ws(&repo.repo.changes, &mut channel_, h, ws)?;
@@ -447,27 +432,22 @@ fn import_commit_parents<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'st
         }
     }
     if repo.check > 0 && repo.n % repo.check == 0 {
-        check_alive_debug(&repo.repo.changes, &*txn_, &*channel.read()?, line!())?;
+        check_alive_debug(&repo.repo.changes, &*txn_, &*channel.read(), line!())?;
     }
     stats.parent_application_time = if to_apply.is_empty() {
         std::time::Duration::from_secs(0)
     } else {
         parent_application_time.elapsed()
     };
-    debug!(
-        "last_recorded {:?}, name {:?}",
-        repo.repo.config.current_channel,
-        txn_.name(&*channel.read()?),
-    );
     std::mem::drop(txn_);
     stats.output_time = if !to_apply.is_empty() || needs_output {
         debug!("outputting");
         let output_time = std::time::Instant::now();
         libpijul::output::output_repository_no_pending(
-            repo.repo.working_copy.clone(),
+            &repo.repo.working_copy,
             &repo.repo.changes,
-            txn.clone(),
-            channel.clone(),
+            &txn,
+            &channel,
             "",
             false,
             None,
@@ -476,16 +456,16 @@ fn import_commit_parents<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'st
         )?;
         let t = output_time.elapsed();
         if repo.check > 0 && repo.n % repo.check == 0 {
-            let txn = txn.read().unwrap();
-            check_alive_debug(&repo.repo.changes, &*txn, &channel.read().unwrap(), line!())?;
+            let txn = txn.read();
+            check_alive_debug(&repo.repo.changes, &*txn, &channel.read(), line!())?;
         }
         t
     } else {
         std::time::Duration::from_secs(0)
     };
     if repo.check > 0 && repo.n % repo.check == 0 {
-        let txn = txn.read().unwrap();
-        check_tree_inodes(&*txn, txn.graph(&*channel.read().unwrap()));
+        let txn = txn.read();
+        check_tree_inodes(&*txn, txn.graph(&*channel.read()));
     }
     Ok(())
 }
@@ -496,8 +476,8 @@ fn git_reset<'a, T: TxnTExt + MutTxnTExt>(
     git: &'a git2::Repository,
     repo: &mut OpenRepo,
 
-    txn: Arc<RwLock<T>>,
-    channel: ChannelRef<T>,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
 
     child: &git2::Oid,
 
@@ -551,7 +531,7 @@ fn git_reset<'a, T: TxnTExt + MutTxnTExt>(
                 .unwrap();
             diff.find_similar(None).unwrap();
             let mut moves = Vec::new();
-            let mut txn = txn.write().unwrap();
+            let mut txn = txn.write();
             for delta in diff.deltas() {
                 let old_path = delta.old_file().path().unwrap();
                 let new_path = delta.new_file().path().unwrap();
@@ -638,14 +618,14 @@ fn git_reset<'a, T: TxnTExt + MutTxnTExt>(
 fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
     git: &git2::Repository,
     repo: &mut OpenRepo,
-    txn: Arc<RwLock<T>>,
-    channel: ChannelRef<T>,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     child: &git2::Oid,
     stats: &mut Stats,
 ) -> Result<libpijul::Merkle, anyhow::Error> {
-    let (object, prefixes) = git_reset(git, repo, txn.clone(), channel.clone(), child, stats)?;
+    let (object, prefixes) = git_reset(git, repo, &txn, &channel, child, stats)?;
     debug!("prefixes = {:?}", prefixes);
-    let mut txn_ = txn.write().unwrap();
+    let mut txn_ = txn.write();
     for p in prefixes.iter() {
         if let Ok(m) = std::fs::metadata(&p) {
             use path_slash::PathExt;
@@ -660,10 +640,7 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
     let commit = object.as_commit().unwrap();
     let signature = commit.author();
     // Record+Apply
-    debug!(
-        "recording on channel {:?}",
-        txn_.name(&channel.read().unwrap())
-    );
+    debug!("recording on channel {:?}", txn_.name(&channel.read()));
     let record_time = std::time::Instant::now();
 
     let prefix_vec: Vec<_> = prefixes.into_iter().collect();
@@ -686,20 +663,19 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
         }
         description.push_str(m);
     }
+    let mut author = BTreeMap::new();
+    author.insert("name".to_string(), signature.name().unwrap().to_string());
+    author.insert("email".to_string(), signature.email().unwrap().to_string());
     let rec = record_apply(
-        txn.clone(),
-        channel.clone(),
-        repo.repo.working_copy.clone(),
+        &txn,
+        &channel,
+        &repo.repo.working_copy,
         &repo.repo.changes,
         &CanonicalPathBuf::canonicalize(&repo.repo.path)?,
         &prefix_vec,
         libpijul::change::ChangeHeader {
             message,
-            authors: vec![libpijul::change::Author {
-                name: signature.name().unwrap().to_string(),
-                email: signature.email().map(|e| e.to_string()),
-                full_name: None,
-            }],
+            authors: vec![libpijul::change::Author(author)],
             description: if description.is_empty() {
                 None
             } else {
@@ -711,34 +687,31 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
             ),
         },
     );
-    let txn = txn.read().unwrap();
+    {
+        let mut txn = txn.write();
+        let name = txn.name(&channel.read()).to_string();
+        txn.set_current_channel(&name)?;
+    }
+    let txn = txn.read();
     let (n_actions, hash, state) = match rec {
         Ok(x) => x,
         Err(libpijul::LocalApplyError::ChangeAlreadyOnChannel { hash }) => {
             error!("change already on channel: {:?}", hash);
-            return Ok(txn.current_state(&channel.read().unwrap())?);
+            return Ok(txn.current_state(&channel.read())?);
         }
         Err(e) => return Err(e.into()),
     };
     stats.record_time = record_time.elapsed();
 
     if repo.check > 0 && repo.n % repo.check == 0 {
-        check_alive_debug(&repo.repo.changes, &*txn, &channel.read().unwrap(), line!())?;
+        check_alive_debug(&repo.repo.changes, &*txn, &channel.read(), line!())?;
     }
 
     stats.n_actions = n_actions;
     stats.hash = hash;
 
-    if let Some(ref mut cur) = repo.repo.config.current_channel {
-        cur.clear();
-        cur.push_str(txn.name(&channel.read().unwrap()));
-    } else {
-        repo.repo.config.current_channel = Some(txn.name(&channel.read().unwrap()).to_string())
-    }
-    repo.repo.save_config()?;
-
     if repo.check > 0 && repo.n % repo.check == 0 {
-        check_tree_inodes(&*txn, txn.graph(&channel.read().unwrap()));
+        check_tree_inodes(&*txn, txn.graph(&channel.read()));
     }
     repo.n += 1;
     Ok(state)
@@ -748,9 +721,9 @@ fn record_apply<
     T: TxnT + TxnTExt + MutTxnTExt + Send + Sync + 'static,
     C: libpijul::changestore::ChangeStore + Clone + Send + 'static,
 >(
-    txn: Arc<RwLock<T>>,
-    channel: ChannelRef<T>,
-    working_copy: Arc<libpijul::working_copy::FileSystem>,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
+    working_copy: &libpijul::working_copy::FileSystem,
     changes: &C,
     repo_path: &CanonicalPathBuf,
     prefixes: &[PathBuf],
@@ -781,14 +754,9 @@ fn record_apply<
         }
     }
     let rec = state.finish();
-    let mut txn = txn.write().unwrap();
+    let mut txn = txn.write();
     if rec.actions.is_empty() {
-        return Ok((
-            0,
-            None,
-            txn.current_state(&channel.read().unwrap())
-                .map_err(TxnErr)?,
-        ));
+        return Ok((0, None, txn.current_state(&channel.read()).map_err(TxnErr)?));
     }
     let actions: Vec<_> = rec
         .actions
@@ -797,12 +765,12 @@ fn record_apply<
         .collect();
     let n = actions.len();
     let (dependencies, extra_known) =
-        libpijul::change::dependencies(&*txn, &channel.read().unwrap(), actions.iter())?;
+        libpijul::change::dependencies(&*txn, &channel.read(), actions.iter())?;
     let mut change = libpijul::change::LocalChange::make_change(
         &*txn,
         &channel,
         actions,
-        std::mem::replace(&mut *rec.contents.lock().unwrap(), Vec::new()),
+        std::mem::replace(&mut *rec.contents.lock(), Vec::new()),
         header,
         Vec::new(),
     )?;

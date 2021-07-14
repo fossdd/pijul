@@ -1,7 +1,7 @@
 [package]
 name = "pijul"
 description = "The sound distributed version control system."
-version = "1.0.0-alpha.48"
+version = "1.0.0-alpha.52"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 edition = "2018"
 repository = "https://nest.pijul.com/pijul/pijul"
@@ -9,16 +9,16 @@ license = "GPL-2.0-or-later"
 include = [
 "README.md",
 "Cargo.toml",
-"src",
-"src/commands",
 "src/commands/log.rs",
 "src/commands/protocol.rs",
 "src/commands/apply.rs",
+"src/commands/credit.rs",
 "src/commands/debug.rs",
 "src/commands/checkout.rs",
 "src/commands/file_operations.rs",
 "src/commands/clone.rs",
 "src/commands/git.rs",
+"src/commands/key.rs",
 "src/commands/record.rs",
 "src/commands/change.rs",
 "src/commands/diff.rs",
@@ -34,23 +34,25 @@ include = [
 "src/commands/tag.rs",
 "src/config.rs",
 "src/repository.rs",
+"src/progress.rs",
 "src/main.rs",
-"src/remote",
 "src/remote/local.rs",
 "src/remote/ssh.rs",
 "src/remote/mod.rs",
+"src/remote/http.rs",
 ]
 
 [features]
 git = [ "git2" ]
 keep-changes = []
-default = [ "keep-changes" ]
+default = [ "keep-changes", "openssl" ]
+openssl = [ "thrussh/openssl", "thrussh-keys/openssl" ]
 
 [dependencies]
 human-panic = "1.0"
 clap = "3.0.0-beta.2"
 anyhow = "1.0"
-libpijul = { path = "../libpijul", version = "1.0.0-alpha.39", features = [ "tarball" ] }
+libpijul = { path = "../libpijul", version = "1.0.0-alpha.45", features = [ "tarball" ] }
 chrono = { version = "0.4" }
 ignore = "0.4"
 env_logger = "0.8"
@@ -59,11 +61,11 @@ serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
 toml = "0.5"
-tokio = { version = "1.0", features = [ "rt-multi-thread", "macros", "sync" ] }
-thrussh = "0.32.7"
-thrussh-keys = "0.20.3"
+tokio = { version = "1.0", features = [ "rt-multi-thread", "macros", "sync", "fs" ] }
+thrussh = "0.33.2"
+thrussh-keys = "0.21"
 thrussh-config = "0.5"
-reqwest = { version = "0.11", features = [ "stream" ] }
+reqwest = { version = "0.11", features = [ "stream", "json" ] }
 byteorder = "1.3"
 sanakirja = { version="1.2", features = [ "crc32" ] }
 futures = "0.3"
@@ -86,6 +88,7 @@ ctrlc = "3.1"
 url = "2.2"
 fs2 = "0.4"
 path-slash = "0.1"
+bytes = "1.0"
 
 [target.'cfg(unix)'.dependencies]
 pager = "0.16.0"

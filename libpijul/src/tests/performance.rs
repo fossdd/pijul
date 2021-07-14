@@ -1,5 +1,6 @@
 use super::*;
 use crate::working_copy::WorkingCopy;
+use std::io::Write;
 
 // Avoiding quadratic reconnects when possible.
 #[test]
@@ -13,46 +14,39 @@ fn quadratic_pseudo_edges() -> Result<(), anyhow::Error> {
     repo.add_file("file", contents.to_vec());
 
     let env = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    let mut channel = txn.open_or_create_channel("main").unwrap();
+    let txn = env.arc_txn_begin().unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
 
-    txn.add_file("file")?;
-    record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
-    debug_to_file(&txn, &channel.borrow(), "debug").unwrap();
+    txn.write().add_file("file", 0)?;
+    record_all(&mut repo, &changes, &txn, &channel, "").unwrap();
     let n = 100;
     for i in 0..=n {
-        repo.write_file::<_, std::io::Error, _>("file", |w| {
-            for j in 0..i {
-                writeln!(w, "{}", j)?;
-            }
-            w.write_all(&contents[..])?;
-            for j in (0..i).rev() {
-                writeln!(w, "{}", j)?;
-            }
-            Ok(())
-        })
-        .unwrap();
-        record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
-        debug_to_file(&txn, &channel.borrow(), &format!("debug{}", i)).unwrap();
+        let mut w = repo.write_file("file").unwrap();
+        for j in 0..i {
+            writeln!(w, "{}", j)?;
+        }
+        w.write_all(&contents[..])?;
+        for j in (0..i).rev() {
+            writeln!(w, "{}", j)?;
+        }
+        record_all(&repo, &changes, &txn, &channel, "").unwrap();
     }
-    repo.write_file::<_, std::io::Error, _>("file", |w| {
+    {
+        let mut w = repo.write_file("file").unwrap();
         for j in 0..n {
             writeln!(w, "{}", j)?;
         }
         for j in (0..n).rev() {
             writeln!(w, "{}", j)?;
         }
-        Ok(())
-    })
-    .unwrap();
-    record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
-    debug_to_file(&txn, &channel.borrow(), "debug_final").unwrap();
+    }
+    record_all(&repo, &changes, &txn, &channel, "").unwrap();
     // Test that not too many edges have been inserted.
     {
-        let channel = channel.borrow();
+        let channel = channel.read();
         let mut m = 0;
-        let mut it = txn.iter_graph(&channel.graph, None).unwrap();
-        while let Some(Ok(_)) = txn.next_graph(&channel.graph, &mut it) {
+        let mut it = txn.read().iter_graph(&channel.graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(&channel.graph, &mut it) {
             m += 1
         }
         let m0 = n * 8 + 6;
@@ -78,30 +72,26 @@ fn linear_context_repair() {
     repo.add_file("file", contents.to_vec());
 
     let env = pristine::sanakirja::Pristine::new_anon().unwrap();
-    let mut txn = env.mut_txn_begin().unwrap();
-    let mut channel = txn.open_or_create_channel("main").unwrap();
+    let mut txn = env.arc_txn_begin().unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
 
-    txn.add_file("file").unwrap();
-    record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
-    debug_to_file(&txn, &channel.borrow(), "debug").unwrap();
+    txn.write().add_file("file", 0).unwrap();
+    record_all(&mut repo, &changes, &txn, &channel, "").unwrap();
     let n = 20;
     for i in 0..=n {
-        repo.write_file::<_, std::io::Error, _>("file", |w| {
-            for j in 0..i {
-                writeln!(w, "{}", j).unwrap();
-            }
-            w.write_all(&contents[..]).unwrap();
-            for j in (0..i).rev() {
-                writeln!(w, "{}", j).unwrap();
-            }
-            Ok(())
-        })
-        .unwrap();
-        record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
-        debug_to_file(&txn, &channel.borrow(), &format!("debug{}", i)).unwrap();
+        let mut w = repo.write_file("file").unwrap();
+        for j in 0..i {
+            writeln!(w, "{}", j).unwrap();
+        }
+        w.write_all(&contents[..]).unwrap();
+        for j in (0..i).rev() {
+            writeln!(w, "{}", j).unwrap();
+        }
+        record_all(&repo, &changes, &txn, &channel, "").unwrap();
     }
-    let mut channel2 = txn.fork(&channel, "fork").unwrap();
-    repo.write_file::<_, std::io::Error, _>("file", |w| {
+    let mut channel2 = txn.write().fork(&channel, "fork").unwrap();
+    {
+        let mut w = repo.write_file("file").unwrap();
         for j in 0..n {
             writeln!(w, "{}", j).unwrap();
         }
@@ -109,46 +99,46 @@ fn linear_context_repair() {
         for j in (0..n).rev() {
             writeln!(w, "{}", j).unwrap();
         }
-        Ok(())
-    })
-    .unwrap();
+    }
 
     let p1 = record_all(&mut repo, &changes, &mut txn, &mut channel2, "").unwrap();
 
     ::sanakirja::debug::debug(
-        &txn.txn,
-        &[txn.graph(&channel.borrow()), txn.graph(&channel2.borrow())],
+        &txn.read().txn,
+        &[
+            txn.read().graph(&channel.read()),
+            txn.read().graph(&channel2.read()),
+        ],
         "debug_sanakirja",
         true,
     );
 
-    debug_to_file(&txn, &channel2.borrow(), "debug_bob0").unwrap();
-    repo.write_file::<_, std::io::Error, _>("file", |w| {
+    {
+        let mut w = repo.write_file("file").unwrap();
         for j in 0..n {
             writeln!(w, "{}", j).unwrap();
         }
         for j in (0..n).rev() {
             writeln!(w, "{}", j).unwrap();
         }
-        Ok(())
-    })
-    .unwrap();
-    let p2 = record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
+    }
+    let p2 = record_all(&repo, &changes, &txn, &channel, "").unwrap();
 
-    debug_to_file(&txn, &channel.borrow(), "debug_alice0").unwrap();
     debug!("Applying P1");
-    txn.apply_change(&changes, &mut channel, &p1).unwrap();
-    debug_to_file(&txn, &channel.borrow(), "debug_alice").unwrap();
+    txn.write()
+        .apply_change(&changes, &mut *channel.write(), &p1)
+        .unwrap();
     debug!("Applying P2");
-    txn.apply_change(&changes, &mut channel2, &p2).unwrap();
-    debug_to_file(&txn, &channel2.borrow(), "debug_bob").unwrap();
+    txn.write()
+        .apply_change(&changes, &mut *channel2.write(), &p2)
+        .unwrap();
 
     // Test that not too many edges have been inserted.
     {
-        let channel = channel.borrow();
+        let channel = channel.read();
         let mut m = 0;
-        let mut it = txn.iter_graph(&channel.graph, None).unwrap();
-        while let Some(Ok(_)) = txn.next_graph(&channel.graph, &mut it) {
+        let mut it = txn.read().iter_graph(&channel.graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(&channel.graph, &mut it) {
             m += 1
         }
         debug!("m (channel, alice) = {:?}", m);
@@ -158,10 +148,10 @@ fn linear_context_repair() {
         }
     }
     {
-        let channel = channel2.borrow();
+        let channel = channel2.read();
         let mut m = 0;
-        let mut it = txn.iter_graph(&channel.graph, None).unwrap();
-        while let Some(Ok(_)) = txn.next_graph(&channel.graph, &mut it) {
+        let mut it = txn.read().iter_graph(&channel.graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(&channel.graph, &mut it) {
             m += 1
         }
         debug!("m (channel2, bob) = {:?}", m);

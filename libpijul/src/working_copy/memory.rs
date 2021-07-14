@@ -1,11 +1,12 @@
 use super::*;
 use crate::pristine::InodeMetadata;
 use crate::HashMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::SystemTime;
 
-#[derive(Debug)]
-pub struct Memory(Mutex<Memory_>);
+#[derive(Debug, Clone)]
+pub struct Memory(Arc<Mutex<Memory_>>);
 
 #[derive(Debug)]
 struct Memory_ {
@@ -33,10 +34,10 @@ enum Inode {
 
 impl Default for Memory {
     fn default() -> Self {
-        Memory(Mutex::new(Memory_ {
+        Memory(Arc::new(Mutex::new(Memory_ {
             files: FileTree::default(),
             last_modified: SystemTime::now(),
-        }))
+        })))
     }
 }
 
@@ -45,7 +46,7 @@ impl Memory {
         Self::default()
     }
     pub fn list_files(&self) -> Vec<String> {
-        let m = self.0.lock().unwrap();
+        let m = self.0.lock();
         let mut result = Vec::new();
         let mut current_files = vec![(String::new(), &m.files)];
         let mut next_files = Vec::new();
@@ -103,7 +104,7 @@ impl Memory {
     }
 
     fn add_inode(&self, file: &str, inode: Inode) {
-        let mut m = self.0.lock().unwrap();
+        let mut m = self.0.lock();
         let last = SystemTime::now();
         m.last_modified = last;
         let mut file_tree = &mut m.files;
@@ -216,7 +217,7 @@ impl WorkingCopy for Memory {
     type Error = Error;
     fn create_dir_all(&self, file: &str) -> Result<(), Self::Error> {
         let not_already_exists = {
-            let m = self.0.lock().unwrap();
+            let m = self.0.lock();
             m.get_file(file).is_none()
         };
         if not_already_exists {
@@ -235,7 +236,7 @@ impl WorkingCopy for Memory {
         Ok(())
     }
     fn file_metadata(&self, file: &str) -> Result<InodeMetadata, Self::Error> {
-        let m = self.0.lock().unwrap();
+        let m = self.0.lock();
         match m.get_file(file) {
             Some(Inode::Directory { meta, .. }) => Ok(*meta),
             Some(Inode::File { meta, .. }) => Ok(*meta),
@@ -245,11 +246,11 @@ impl WorkingCopy for Memory {
         }
     }
     fn read_file(&self, file: &str, buffer: &mut Vec<u8>) -> Result<(), Self::Error> {
-        let m = self.0.lock().unwrap();
+        let m = self.0.lock();
         match m.get_file(file) {
             Some(Inode::Directory { .. }) => panic!("Not a file: {:?}", file),
             Some(Inode::File { ref contents, .. }) => {
-                buffer.extend(&contents.lock().unwrap()[..]);
+                buffer.extend(&contents.lock()[..]);
                 Ok(())
             }
             None => Err(Error::NotFound {
@@ -258,19 +259,19 @@ impl WorkingCopy for Memory {
         }
     }
     fn modified_time(&self, _file: &str) -> Result<std::time::SystemTime, Self::Error> {
-        let m = self.0.lock().unwrap();
+        let m = self.0.lock();
         Ok(m.last_modified)
     }
 
     fn remove_path(&self, path: &str) -> Result<(), Self::Error> {
-        self.0.lock().unwrap().remove_path_(path);
+        self.0.lock().remove_path_(path);
         Ok(())
     }
 
     fn rename(&self, old: &str, new: &str) -> Result<(), Self::Error> {
         debug!("rename {:?} to {:?}", old, new);
         let inode = {
-            let mut m = self.0.lock().unwrap();
+            let mut m = self.0.lock();
             m.remove_path_(old)
         };
         if let Some(inode) = inode {
@@ -280,7 +281,7 @@ impl WorkingCopy for Memory {
     }
     fn set_permissions(&self, file: &str, permissions: u16) -> Result<(), Self::Error> {
         debug!("set_permissions {:?}", file);
-        let mut m = self.0.lock().unwrap();
+        let mut m = self.0.lock();
         match m.get_file_mut(file) {
             Some(Inode::File { ref mut meta, .. }) => {
                 *meta = InodeMetadata::new(permissions as usize & 0o100, false);
@@ -295,13 +296,16 @@ impl WorkingCopy for Memory {
 
     type Writer = Writer;
     fn write_file(&self, file: &str) -> Result<Self::Writer, Self::Error> {
-        let mut m = self.0.lock().unwrap();
+        let mut m = self.0.lock();
         if let Some(f) = m.get_file_mut(file) {
-            if let Inode::File { ref mut contents, .. } = f {
-                contents.lock().unwrap().clear();
+            if let Inode::File {
+                ref mut contents, ..
+            } = f
+            {
+                contents.lock().clear();
                 return Ok(Writer {
                     w: contents.clone(),
-                })
+                });
             } else {
                 unreachable!()
             }
@@ -327,7 +331,7 @@ pub struct Writer {
 
 impl std::io::Write for Writer {
     fn write(&mut self, b: &[u8]) -> Result<usize, std::io::Error> {
-        self.w.lock().unwrap().write(b)
+        self.w.lock().write(b)
     }
     fn flush(&mut self) -> Result<(), std::io::Error> {
         Ok(())

@@ -3,7 +3,7 @@ use super::L64;
 /// file system, to map "files from the graph" to real files.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
 pub struct Inode(pub(in crate) super::L64);
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{BigEndian, ByteOrder};
 
 impl std::fmt::Debug for Inode {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {

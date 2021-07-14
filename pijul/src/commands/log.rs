@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -29,9 +31,13 @@ pub struct Log {
 
 impl Log {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = unsafe { Repository::find_root(self.repo_path).await? };
+        let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;
-        let (channel_name, _) = repo.config.get_current_channel(self.channel.as_deref());
+        let channel_name = if let Some(ref c) = self.channel {
+            c
+        } else {
+            txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+        };
         let channel = if let Some(channel) = txn.load_channel(channel_name)? {
             channel
         } else {
@@ -41,19 +47,58 @@ impl Log {
         let changes = repo.changes;
         let mut stdout = std::io::stdout();
         if self.hash_only {
-            for h in txn.reverse_log(&*channel.read()?, None)? {
+            for h in txn.reverse_log(&*channel.read(), None)? {
                 let h: libpijul::Hash = (h?.1).0.into();
                 writeln!(stdout, "{}", h.to_base32())?
             }
         } else {
             let states = self.states;
-            for h in txn.reverse_log(&*channel.read()?, None)? {
+            let mut authors = HashMap::new();
+            let mut id_path = repo.path.join(libpijul::DOT_DIR);
+            id_path.push("identities");
+
+            for h in txn.reverse_log(&*channel.read(), None)? {
                 let (h, mrk) = h?.1;
                 let h: libpijul::Hash = h.into();
                 let mrk: libpijul::Merkle = mrk.into();
                 let header = changes.get_header(&h.into())?;
                 writeln!(stdout, "Change {}", h.to_base32())?;
-                writeln!(stdout, "Author: {:?}", header.authors)?;
+                write!(stdout, "Author: ")?;
+                let mut is_first = true;
+                for mut auth in header.authors.into_iter() {
+                    let auth = if let Some(k) = auth.0.remove("key") {
+                        match authors.entry(k) {
+                            Entry::Occupied(e) => e.into_mut(),
+                            Entry::Vacant(e) => {
+                                let mut id = None;
+                                id_path.push(e.key());
+                                if let Ok(f) = std::fs::File::open(&id_path) {
+                                    if let Ok(id_) =
+                                        serde_json::from_reader::<_, super::Identity>(f)
+                                    {
+                                        id = Some(id_)
+                                    }
+                                }
+                                id_path.pop();
+                                if let Some(id) = id {
+                                    e.insert(id.login)
+                                } else {
+                                    let k = e.key().to_string();
+                                    e.insert(k)
+                                }
+                            }
+                        }
+                    } else {
+                        auth.0.get("name").unwrap()
+                    };
+                    if is_first {
+                        is_first = false;
+                        write!(stdout, "{}", auth)?;
+                    } else {
+                        write!(stdout, ", {}", auth)?;
+                    }
+                }
+                writeln!(stdout)?;
                 writeln!(stdout, "Date: {}", header.timestamp)?;
                 if states {
                     writeln!(stdout, "State: {}", mrk.to_base32())?;

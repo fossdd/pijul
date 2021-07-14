@@ -1,4 +1,7 @@
+use crate::chardetng::EncodingDetector;
+
 use crate::pristine::InodeMetadata;
+use crate::text_encoding::Encoding;
 
 #[cfg(feature = "ondisk-repos")]
 pub mod filesystem;
@@ -20,4 +23,23 @@ pub trait WorkingCopy {
 
     type Writer: std::io::Write;
     fn write_file(&self, file: &str) -> Result<Self::Writer, Self::Error>;
+    /// Read the file into the buffer
+    ///
+    /// Returns the file's text encoding or None if it was a binary file
+    fn decode_file(
+        &self,
+        file: &str,
+        buffer: &mut Vec<u8>,
+    ) -> Result<Option<Encoding>, Self::Error> {
+        let init = buffer.len();
+        self.read_file(&file, buffer)?;
+        let mut detector = EncodingDetector::new();
+        detector.feed(&buffer[init..], true);
+        let (encoding, score) = detector.guess_assess(None, true);
+        if score {
+            Ok(Some(Encoding(encoding)))
+        } else {
+            Ok(None)
+        }
+    }
 }

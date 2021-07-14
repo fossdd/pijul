@@ -4,6 +4,9 @@ use crate::pristine::*;
 use crate::record::*;
 use crate::working_copy::*;
 use crate::*;
+use std::io::Write;
+
+use super::*;
 
 fn hash_mismatch(change: &Change) -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
@@ -29,40 +32,41 @@ fn hash_mism() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
-    let mut repo = working_copy::memory::Memory::new();
+    let repo = working_copy::memory::Memory::new();
     let store = changestore::memory::Memory::new();
     repo.add_file("file", contents.to_vec());
     repo.add_file("file2", contents.to_vec());
 
     let env = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    let mut channel = txn.open_or_create_channel("main")?;
-    txn.add_file("file")?;
-    txn.add_file("file2")?;
+    let txn = env.arc_txn_begin().unwrap();
+    let mut channel = txn.write().open_or_create_channel("main")?;
+    txn.write().add_file("file", 0)?;
+    txn.write().add_file("file2", 0)?;
 
     let mut state = Builder::new();
     state
         .record(
-            &mut txn,
+            txn.clone(),
             Algorithm::Myers,
-            &mut channel.borrow_mut(),
-            &mut repo,
+            channel.clone(),
+            &repo,
             &store,
             "",
+            0,
         )
         .unwrap();
     let rec = state.finish();
     let changes: Vec<_> = rec
         .actions
         .into_iter()
-        .map(|rec| rec.globalize(&txn).unwrap())
+        .map(|rec| rec.globalize(&*txn.read()).unwrap())
         .collect();
     info!("changes = {:?}", changes);
     let change0 = crate::change::Change::make_change(
-        &txn,
+        &*txn.read(),
         &channel,
         changes,
-        rec.contents,
+        std::mem::take(&mut *rec.contents.lock()),
         crate::change::ChangeHeader {
             message: "test".to_string(),
             authors: vec![],
@@ -73,132 +77,74 @@ fn hash_mism() -> Result<(), anyhow::Error> {
     )
     .unwrap();
     let hash0 = store.save_change(&change0)?;
-    apply::apply_local_change(&mut txn, &mut channel, &change0, &hash0, &rec.updatables)?;
+    apply::apply_local_change(
+        &mut *txn.write(),
+        &mut channel,
+        &change0,
+        &hash0,
+        &rec.updatables,
+    )?;
 
     hash_mismatch(&change0)?;
-
-    debug_to_file(&txn, &channel.borrow(), "debug")?;
 
     Ok(())
 }
 
-fn record_all<T: MutTxnT, R: WorkingCopy, P: ChangeStore>(
-    repo: &mut R,
-    store: &P,
-    txn: &mut T,
-    channel: &mut ChannelRef<T>,
-    prefix: &str,
-) -> Result<(Hash, Change), anyhow::Error>
-where
-    R::Error: Send + Sync + 'static,
-{
-    let mut state = Builder::new();
-    state.record(
-        txn,
-        Algorithm::default(),
-        &mut channel.borrow_mut(),
-        repo,
-        store,
-        prefix,
-    )?;
-
-    let rec = state.finish();
-    let changes = rec
-        .actions
-        .into_iter()
-        .map(|rec| rec.globalize(txn).unwrap())
-        .collect();
-    let change0 = crate::change::Change::make_change(
-        txn,
-        &channel,
-        changes,
-        rec.contents,
-        crate::change::ChangeHeader {
-            message: "test".to_string(),
-            authors: vec![],
-            description: None,
-            // Beware of changing the following line: two changes
-            // doing the same thing will be equal. Sometimes we don't
-            // want that, as in tests::unrecord::unrecord_double.
-            timestamp: chrono::Utc::now(),
-        },
-        Vec::new(),
-    )
-    .unwrap();
-    let hash = store.save_change(&change0)?;
-    apply::apply_local_change(txn, channel, &change0, &hash, &rec.updatables)?;
-    Ok((hash, change0))
-}
-
 #[cfg(feature = "text-changes")]
 #[test]
+#[ignore]
 fn text() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
-    let mut repo = working_copy::memory::Memory::new();
+    let repo = working_copy::memory::Memory::new();
     let store = changestore::memory::Memory::new();
     repo.add_file("file", contents.to_vec());
     repo.add_file("file2", contents.to_vec());
 
     let env = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    let mut channel = txn.open_or_create_channel("main")?;
-    txn.add_file("file")?;
-    txn.add_file("file2")?;
-    let (h0, change0) = record_all(&mut repo, &store, &mut txn, &mut channel, "")?;
+    let txn = env.arc_txn_begin().unwrap();
+    let channel = txn.write().open_or_create_channel("main")?;
+    txn.write().add_file("file", 0)?;
+    txn.write().add_file("file2", 0)?;
+    let h0 = record_all(&repo, &store, &txn, &channel, "")?;
+    let change0 = store.get_change(&h0).unwrap();
     text_test(&store, &change0, h0);
 
-    repo.write_file::<_, std::io::Error, _>("file", |w| {
-        write!(w, "a\nx\nc\ne\ny\nf\n")?;
-        Ok(())
-    })?;
-    let (h1, change1) = record_all(&mut repo, &store, &mut txn, &mut channel, "")?;
+    write!(repo.write_file("file")?, "a\nx\nc\ne\ny\nf\n")?;
+
+    let h1 = record_all(&repo, &store, &txn, &channel, "")?;
+    let change1 = store.get_change(&h1).unwrap();
     text_test(&store, &change1, h1);
 
     repo.remove_path("file2")?;
-    let (h2, change2) = record_all(&mut repo, &store, &mut txn, &mut channel, "")?;
+    let h2 = record_all(&repo, &store, &txn, &channel, "")?;
+    let change2 = store.get_change(&h2).unwrap();
     text_test(&store, &change2, h2);
 
     repo.rename("file", "file3")?;
-    txn.move_file("file", "file3")?;
-    let (h3, change3) = record_all(&mut repo, &store, &mut txn, &mut channel, "")?;
+    txn.write().move_file("file", "file3", 0)?;
+    let h3 = record_all(&repo, &store, &txn, &channel, "")?;
+    let change3 = store.get_change(&h3).unwrap();
     text_test(&store, &change3, h3);
 
     // name conflicts
     let env2 = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn2 = env2.mut_txn_begin().unwrap();
-    let mut channel2 = txn2.open_or_create_channel("main")?;
-    let mut repo2 = working_copy::memory::Memory::new();
-
-    apply::apply_change(&store, &mut txn2, &mut channel2, &h0)?;
-    apply::apply_change(&store, &mut txn2, &mut channel2, &h1)?;
-    apply::apply_change(&store, &mut txn2, &mut channel2, &h2)?;
-    output::output_repository_no_pending(
-        &mut repo2,
-        &store,
-        &mut txn2,
-        &mut channel2,
-        "",
-        true,
-        None,
-    )?;
+    let txn2 = env2.arc_txn_begin().unwrap();
+    let channel2 = txn2.write().open_or_create_channel("main")?;
+    let repo2 = working_copy::memory::Memory::new();
+    apply::apply_change(&store, &mut *txn2.write(), &mut *channel2.write(), &h0)?;
+    apply::apply_change(&store, &mut *txn2.write(), &mut *channel2.write(), &h1)?;
+    apply::apply_change(&store, &mut *txn2.write(), &mut *channel2.write(), &h2)?;
+    output::output_repository_no_pending(&repo2, &store, &txn2, &channel2, "", true, None, 1, 0)?;
     repo2.rename("file", "file4")?;
-    txn2.move_file("file", "file4")?;
-    let (_, _) = record_all(&mut repo2, &store, &mut txn2, &mut channel2, "")?;
+    txn2.write().move_file("file", "file4", 0)?;
+    record_all(&repo2, &store, &txn2, &channel2, "")?;
 
-    apply::apply_change(&store, &mut txn2, &mut channel2, &h3)?;
-    output::output_repository_no_pending(
-        &mut repo2,
-        &store,
-        &mut txn2,
-        &mut channel2,
-        "",
-        true,
-        None,
-    )?;
-    let (h, solution) = record_all(&mut repo2, &store, &mut txn2, &mut channel2, "")?;
-
+    apply::apply_change(&store, &mut *txn2.write(), &mut *channel2.write(), &h3)?;
+    output::output_repository_no_pending(&repo2, &store, &txn2, &channel2, "", true, None, 1, 0)?;
+    let h = record_all(&repo2, &store, &txn2, &channel2, "")?;
+    let solution = store.get_change(&h).unwrap();
     text_test(&store, &solution, h);
 
     Ok(())

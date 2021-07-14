@@ -1316,4 +1316,3 @@ pub const WINDOWS_1257_INDEX: usize = 16;
 pub const ISO_8859_13_INDEX: usize = 17;
 pub const ISO_8859_4_INDEX: usize = 18;
 pub const WINDOWS_874_INDEX: usize = 19;
-

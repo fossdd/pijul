@@ -143,7 +143,7 @@ pub(crate) fn archive<
     prefix: &mut I,
     arch: &mut A,
 ) -> Result<Vec<Conflict>, ArchiveError<P::Error, T::GraphError, A::Error>> {
-    let channel = channel.read().unwrap();
+    let channel = channel.read();
     let mut conflicts = Vec::new();
     let mut files = HashMap::default();
     let mut next_files = HashMap::default();

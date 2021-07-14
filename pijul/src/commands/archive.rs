@@ -84,6 +84,7 @@ impl Archive {
                     crate::DEFAULT_CHANNEL
                 },
                 self.no_cert_check,
+                true,
             )
             .await?;
             if let crate::remote::RemoteRepo::LocalChannel(_) = remote {
@@ -103,8 +104,7 @@ impl Archive {
                 return Ok(());
             }
         }
-        if let Ok(repo) = Repository::find_root(self.repo_path.clone()).await {
-            let (channel_name, _) = repo.config.get_current_channel(self.channel.as_deref());
+        if let Ok(repo) = Repository::find_root(self.repo_path.clone()) {
             let mut p = std::path::Path::new(&self.name).to_path_buf();
             if !self.name.ends_with(".tar.gz") {
                 p.set_extension("tar.gz");
@@ -113,6 +113,11 @@ impl Archive {
             let mut tarball = libpijul::output::Tarball::new(&mut f, self.prefix, umask);
             let conflicts = if let Some(state) = state {
                 let mut txn = repo.pristine.mut_txn_begin()?;
+                let channel_name = if let Some(ref c) = self.channel {
+                    c
+                } else {
+                    txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+                };
                 let mut channel = txn.load_channel(&channel_name)?.unwrap();
                 txn.archive_with_state(
                     &repo.changes,
@@ -124,6 +129,11 @@ impl Archive {
                 )?
             } else {
                 let txn = repo.pristine.txn_begin()?;
+                let channel_name = if let Some(ref c) = self.channel {
+                    c
+                } else {
+                    txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+                };
                 let channel = txn.load_channel(&channel_name)?.unwrap();
                 txn.archive(&repo.changes, &channel, &mut tarball)?
             };

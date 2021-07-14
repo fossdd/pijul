@@ -79,7 +79,8 @@ pub enum SubCommand {
     /// tracked. This command adds files and directories to that tree.
     Add(Add),
 
-    /// Removes a file from the tree and pristine
+    /// Removes a file from the tree of tracked files (`pijul record`
+    /// will then record this as a deletion).
     #[clap(alias = "rm")]
     Remove(Remove),
 
@@ -127,6 +128,9 @@ pub enum SubCommand {
     /// Manage tags (create tags, check out a tag)
     Tag(Tag),
 
+    /// Key management
+    Key(Key),
+
     #[clap(external_subcommand)]
     ExternalSubcommand(Vec<OsString>),
 }
@@ -139,6 +143,7 @@ async fn main() {
     let opts = Opts::parse();
 
     if let Err(e) = run(opts).await {
+        log::debug!("{:?}", e);
         match e.downcast::<std::io::Error>() {
             Ok(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
             Ok(e) => writeln!(std::io::stderr(), "Error: {}", e).unwrap_or(()),
@@ -214,6 +219,7 @@ async fn run(opts: Opts) -> Result<(), anyhow::Error> {
         SubCommand::Archive(archive) => archive.run().await,
         SubCommand::Credit(credit) => credit.run().await,
         SubCommand::Tag(tag) => tag.run().await,
+        SubCommand::Key(key) => key.run().await,
         SubCommand::ExternalSubcommand(command) => Ok(run_external_command(command)?),
     }
 }

@@ -1,4 +1,4 @@
-use crate::changestore::ChangeStore;
+use crate::changestore::{ChangeStore, FileMetadata};
 use crate::path;
 use crate::pristine::*;
 use crate::HashMap;
@@ -109,18 +109,17 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
         let e = e?;
         let name_vertex = txn.find_block(channel, e.dest()).unwrap();
         let mut name_buf = Vec::new();
-        changes
-            .get_contents(
+        let FileMetadata {
+            basename,
+            metadata: perms,
+            ..
+        } = changes
+            .get_file_meta(
                 |h| txn.get_external(&h).unwrap().map(|x| x.into()),
                 *name_vertex,
                 &mut name_buf,
             )
             .map_err(PristineOutputError::Changestore)?;
-        let (perms, basename) = name_buf.as_slice().split_at(2);
-        let (perms, basename) = (
-            InodeMetadata::from_basename(perms),
-            std::str::from_utf8(basename).unwrap(),
-        );
         debug!("filename: {:?} {:?}", perms, basename);
         let mut name = path.to_string();
         if let Some(next) = prefix_basename {

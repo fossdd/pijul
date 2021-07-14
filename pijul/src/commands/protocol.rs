@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufWriter;
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use crate::repository::Repository;
 use anyhow::bail;
@@ -27,6 +26,8 @@ pub struct Protocol {
 
 lazy_static! {
     static ref STATE: Regex = Regex::new(r#"state\s+(\S+)(\s+([0-9]+)?)\s+"#).unwrap();
+    static ref ID: Regex = Regex::new(r#"id\s+(\S+)\s+"#).unwrap();
+    static ref IDENTITIES: Regex = Regex::new(r#"identities(\s+([0-9]+))?\s+"#).unwrap();
     static ref CHANGELIST: Regex = Regex::new(r#"changelist\s+(\S+)\s+([0-9]+)(.*)\s+"#).unwrap();
     static ref CHANGELIST_PATHS: Regex = Regex::new(r#""(((\\")|[^"])+)""#).unwrap();
     static ref CHANGE: Regex = Regex::new(r#"((change)|(partial))\s+([^ ]*)\s+"#).unwrap();
@@ -48,8 +49,8 @@ const PARTIAL_CHANGE_SIZE: u64 = 1 << 20;
 
 impl Protocol {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let mut repo = Repository::find_root(self.repo_path).await?;
-        let mut txn = repo.pristine.mut_txn_begin()?;
+        let mut repo = Repository::find_root(self.repo_path)?;
+        let txn = repo.pristine.arc_txn_begin()?;
         let mut ws = libpijul::ApplyWorkspace::new();
         let mut buf = String::new();
         let mut buf2 = vec![0; 4096 * 10];
@@ -62,15 +63,20 @@ impl Protocol {
         debug!("reading");
         while s.read_line(&mut buf)? > 0 {
             debug!("{:?}", buf);
-            if let Some(cap) = STATE.captures(&buf) {
-                let channel = load_channel(&txn, &cap[1])?;
+            if let Some(cap) = ID.captures(&buf) {
+                let channel = load_channel(&*txn.read(), &cap[1])?;
+                let c = channel.read();
+                writeln!(o, "{}", c.id)?;
+                o.flush()?;
+            } else if let Some(cap) = STATE.captures(&buf) {
+                let channel = load_channel(&*txn.read(), &cap[1])?;
                 let init = if let Some(u) = cap.get(3) {
                     u.as_str().parse().ok()
                 } else {
                     None
                 };
                 if let Some(pos) = init {
-                    for x in txn.log(&*channel.read()?, pos)? {
+                    for x in txn.read().log(&*channel.read(), pos)? {
                         let (n, (_, m)) = x?;
                         match n.cmp(&pos) {
                             std::cmp::Ordering::Less => continue,
@@ -85,7 +91,7 @@ impl Protocol {
                             }
                         }
                     }
-                } else if let Some(x) = txn.reverse_log(&*channel.read()?, None)?.next() {
+                } else if let Some(x) = txn.read().reverse_log(&*channel.read(), None)?.next() {
                     let (n, (_, m)) = x?;
                     let m: Merkle = m.into();
                     writeln!(o, "{} {}", n, m.to_base32())?
@@ -94,10 +100,11 @@ impl Protocol {
                 }
                 o.flush()?;
             } else if let Some(cap) = CHANGELIST.captures(&buf) {
-                let channel = load_channel(&txn, &cap[1])?;
+                let channel = load_channel(&*txn.read(), &cap[1])?;
                 let from: u64 = cap[2].parse().unwrap();
                 let mut paths = HashSet::new();
                 debug!("cap[3] = {:?}", &cap[3]);
+                let txn = txn.read();
                 for r in CHANGELIST_PATHS.captures_iter(&cap[3]) {
                     let s: String = r[1].replace("\\\"", "\"");
                     if let Ok((p, ambiguous)) = txn.follow_oldest_path(&repo.changes, &channel, &s)
@@ -109,7 +116,7 @@ impl Protocol {
                         writeln!(o, "{}.{}", h.to_base32(), p.pos.0)?;
                         paths.insert(p);
                         paths.extend(
-                            libpijul::fs::iter_graph_descendants(&txn, &channel.read()?.graph, p)?
+                            libpijul::fs::iter_graph_descendants(&*txn, &channel.read().graph, p)?
                                 .map(|x| x.unwrap()),
                         );
                     } else {
@@ -118,7 +125,7 @@ impl Protocol {
                     }
                 }
                 debug!("paths = {:?}", paths);
-                for x in txn.log(&*channel.read()?, from)? {
+                for x in txn.log(&*channel.read(), from)? {
                     let (n, (h, m)) = x?;
                     let h_int = txn.get_internal(h)?.unwrap();
                     if paths.is_empty()
@@ -181,10 +188,11 @@ impl Protocol {
                 s.read_exact(&mut buf2)?;
                 std::fs::write(&path, &buf2)?;
                 libpijul::change::Change::deserialize(&path.to_string_lossy(), Some(&h))?;
-                let channel = load_channel(&txn, &cap[1])?;
+                let channel = load_channel(&*txn.read(), &cap[1])?;
                 {
-                    let mut channel_ = channel.write().unwrap();
-                    txn.apply_change_ws(&repo.changes, &mut channel_, &h, &mut ws)?;
+                    let mut channel_ = channel.write();
+                    txn.write()
+                        .apply_change_ws(&repo.changes, &mut channel_, &h, &mut ws)?;
                 }
                 applied.insert(cap[1].to_string(), channel);
             } else if let Some(cap) = ARCHIVE.captures(&buf) {
@@ -194,15 +202,15 @@ impl Protocol {
                     cap.get(6).map(|x| x.as_str().to_string()),
                     0,
                 );
-                let channel = load_channel(&txn, &cap[1])?;
+                let channel = load_channel(&*txn.read(), &cap[1])?;
                 let conflicts = if let Some(caps) = cap.get(2) {
                     debug!("caps = {:?}", caps.as_str());
                     let mut hashes = caps.as_str().split(' ').filter(|x| !x.is_empty());
                     let state: libpijul::Merkle = hashes.next().unwrap().parse().unwrap();
                     let extra: Vec<libpijul::Hash> = hashes.map(|x| x.parse().unwrap()).collect();
                     debug!("state = {:?}, extra = {:?}", state, extra);
-                    if txn.current_state(&*channel.read()?)? == state && extra.is_empty() {
-                        txn.archive(&repo.changes, &channel, &mut tarball)?
+                    if txn.read().current_state(&*channel.read())? == state && extra.is_empty() {
+                        txn.read().archive(&repo.changes, &channel, &mut tarball)?
                     } else {
                         use rand::Rng;
                         let fork_name: String = rand::thread_rng()
@@ -210,6 +218,7 @@ impl Protocol {
                             .take(30)
                             .map(|x| x as char)
                             .collect();
+                        let mut txn = txn.write();
                         let mut fork = txn.fork(&channel, &fork_name)?;
                         let conflicts = txn.archive_with_state(
                             &repo.changes,
@@ -223,7 +232,7 @@ impl Protocol {
                         conflicts
                     }
                 } else {
-                    txn.archive(&repo.changes, &channel, &mut tarball)?
+                    txn.write().archive(&repo.changes, &channel, &mut tarball)?
                 };
                 std::mem::drop(tarball);
                 let mut o = std::io::stdout();
@@ -231,19 +240,94 @@ impl Protocol {
                 o.write_u64::<BigEndian>(conflicts.len() as u64)?;
                 o.write_all(&w)?;
                 o.flush()?;
+            } else if let Some(cap) = IDENTITIES.captures(&buf) {
+                let last_touched: u64 = if let Some(last) = cap.get(2) {
+                    last.as_str().parse().unwrap()
+                } else {
+                    0
+                };
+                let mut id_dir = repo.path.clone();
+                id_dir.push(DOT_DIR);
+                id_dir.push("identities");
+                let r = if let Ok(r) = std::fs::read_dir(&id_dir) {
+                    r
+                } else {
+                    continue;
+                };
+                for id in r {
+                    let id = id?;
+                    let m = id.metadata()?;
+                    let p = id.path();
+                    debug!("{:?}", p);
+                    let mod_ts = m
+                        .modified()?
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    if mod_ts >= last_touched {
+                        let mut done = HashSet::new();
+                        if p.file_name() == Some("publickey.json".as_ref()) {
+                            let public_key: libpijul::key::PublicKey =
+                                if let Some(mut dir) = crate::config::global_config_dir() {
+                                    dir.push("publickey.json");
+                                    let mut pkf = std::fs::File::open(&dir)?;
+                                    serde_json::from_reader(&mut pkf)?
+                                } else {
+                                    continue;
+                                };
+                            if !done.insert(public_key.key.clone()) {
+                                continue;
+                            }
+                            if let Ok((config, last_modified)) = crate::config::Global::load() {
+                                serde_json::to_writer(
+                                    &mut o,
+                                    &crate::Identity {
+                                        public_key,
+                                        email: config.author.email,
+                                        name: config.author.full_name,
+                                        login: config.author.name,
+                                        origin: String::new(),
+                                        last_modified,
+                                    },
+                                )
+                                .unwrap();
+                                writeln!(o)?;
+                                o.flush()?;
+                            } else {
+                                debug!("no global config");
+                            }
+                        } else {
+                            let mut idf = if let Ok(f) = std::fs::File::open(&p) {
+                                f
+                            } else {
+                                continue;
+                            };
+                            let id: Result<crate::Identity, _> = serde_json::from_reader(&mut idf);
+                            if let Ok(id) = id {
+                                if !done.insert(id.public_key.key.clone()) {
+                                    continue;
+                                }
+                                serde_json::to_writer(&mut o, &id).unwrap();
+                                writeln!(o)?;
+                                o.flush()?;
+                            }
+                        }
+                    }
+                }
+                writeln!(o)?;
+                o.flush()?;
             } else {
                 error!("unmatched")
             }
             buf.clear();
         }
         let applied_nonempty = !applied.is_empty();
-        let txn = Arc::new(RwLock::new(txn));
         for (_, channel) in applied {
             libpijul::output::output_repository_no_pending(
-                repo.working_copy.clone(),
+                &repo.working_copy,
                 &repo.changes,
-                txn.clone(),
-                channel.clone(),
+                &txn,
+                &channel,
                 "",
                 true,
                 None,
@@ -252,11 +336,6 @@ impl Protocol {
             )?;
         }
         if applied_nonempty {
-            let txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-                txn.into_inner().unwrap()
-            } else {
-                unreachable!()
-            };
             txn.commit()?;
         }
         Ok(())

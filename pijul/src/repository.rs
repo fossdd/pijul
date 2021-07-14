@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::{config, current_dir};
 use anyhow::bail;
@@ -9,7 +8,7 @@ use log::debug;
 pub struct Repository {
     pub pristine: libpijul::pristine::sanakirja::Pristine,
     pub changes: libpijul::changestore::filesystem::FileSystem,
-    pub working_copy: Arc<libpijul::working_copy::filesystem::FileSystem>,
+    pub working_copy: libpijul::working_copy::filesystem::FileSystem,
     pub config: config::Config,
     pub path: PathBuf,
     pub changes_dir: PathBuf,
@@ -20,15 +19,6 @@ pub const CHANGES_DIR: &str = "changes";
 pub const CONFIG_FILE: &str = "config";
 
 impl Repository {
-    pub fn config_path(&self) -> PathBuf {
-        self.path.join(DOT_DIR).join(CONFIG_FILE)
-    }
-
-    pub fn save_config(&self) -> Result<(), anyhow::Error> {
-        self.config.save(&self.config_path())?;
-        Ok(())
-    }
-
     fn find_root_(cur: Option<PathBuf>, dot_dir: &str) -> Result<PathBuf, anyhow::Error> {
         let mut cur = if let Some(cur) = cur {
             cur
@@ -52,11 +42,11 @@ impl Repository {
         Ok(cur)
     }
 
-    pub async fn find_root(cur: Option<PathBuf>) -> Result<Self, anyhow::Error> {
-        Self::find_root_with_dot_dir(cur, DOT_DIR).await
+    pub fn find_root(cur: Option<PathBuf>) -> Result<Self, anyhow::Error> {
+        Self::find_root_with_dot_dir(cur, DOT_DIR)
     }
 
-    pub async fn find_root_with_dot_dir(
+    pub fn find_root_with_dot_dir(
         cur: Option<PathBuf>,
         dot_dir: &str,
     ) -> Result<Self, anyhow::Error> {
@@ -79,9 +69,9 @@ impl Repository {
         };
         Ok(Repository {
             pristine: libpijul::pristine::sanakirja::Pristine::new(&pristine_dir.join("db"))?,
-            working_copy: Arc::new(libpijul::working_copy::filesystem::FileSystem::from_root(
+            working_copy: libpijul::working_copy::filesystem::FileSystem::from_root(
                 &working_copy_dir,
-            )),
+            ),
             changes: libpijul::changestore::filesystem::FileSystem::from_root(&working_copy_dir),
             config,
             path: working_copy_dir,
@@ -105,9 +95,7 @@ impl Repository {
             changes_dir.push(CHANGES_DIR);
             Ok(Repository {
                 pristine: libpijul::pristine::sanakirja::Pristine::new(&pristine_dir.join("db"))?,
-                working_copy: Arc::new(libpijul::working_copy::filesystem::FileSystem::from_root(
-                    &cur,
-                )),
+                working_copy: libpijul::working_copy::filesystem::FileSystem::from_root(&cur),
                 changes: libpijul::changestore::filesystem::FileSystem::from_root(&cur),
                 config: config::Config::default(),
                 path: cur,

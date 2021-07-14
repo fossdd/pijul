@@ -4,7 +4,7 @@ use super::*;
 #[cfg(feature = "zstd")]
 pub struct ChangeFile<'a> {
     s: Option<zstd_seekable::Seekable<'a, OffFile>>,
-    hashed: Hashed<Local>,
+    hashed: Hashed<Hunk<Option<Hash>, Local>, Author>,
     hash: Hash,
     unhashed: Option<toml::Value>,
 }
@@ -43,18 +43,29 @@ impl<'a> ChangeFile<'a> {
         buf.resize(Change::OFFSETS_SIZE as usize, 0);
         r.read_exact(&mut buf)?;
         let offsets: Offsets = bincode::deserialize(&buf)?;
-        if offsets.version != VERSION {
-            return Err(ChangeError::VersionMismatch);
+        if offsets.version != VERSION && offsets.version != VERSION_NOENC {
+            return Err(ChangeError::VersionMismatch {
+                got: offsets.version,
+            });
         }
 
         buf.clear();
         buf.resize((offsets.unhashed_off - Change::OFFSETS_SIZE) as usize, 0);
         r.read_exact(&mut buf)?;
         let mut buf2 = vec![0u8; offsets.hashed_len as usize];
-        let hashed: Hashed<Local> = {
+        let hashed: Hashed<Hunk<Option<Hash>, Local>, Author> = if offsets.version == VERSION {
             let mut s = zstd_seekable::Seekable::init_buf(&buf)?;
             s.decompress(&mut buf2, 0)?;
+            trace!("deserialize current version {:?}", buf2.len());
             bincode::deserialize(&buf2)?
+        } else {
+            assert_eq!(offsets.version, VERSION_NOENC);
+            let mut s = zstd_seekable::Seekable::init_buf(&buf)?;
+            s.decompress(&mut buf2, 0)?;
+            trace!("deserialize noenc {:?}", buf2.len());
+            let h: Hashed<noenc::Hunk<Option<Hash>, Local>, noenc::Author> =
+                bincode::deserialize(&buf2)?;
+            h.into()
         };
 
         buf.resize((offsets.contents_off - offsets.unhashed_off) as usize, 0);
@@ -65,7 +76,8 @@ impl<'a> ChangeFile<'a> {
             let mut s = zstd_seekable::Seekable::init_buf(&buf)?;
             buf2.resize(offsets.unhashed_len as usize, 0);
             s.decompress(&mut buf2, 0)?;
-            Some(toml::de::from_slice(&buf2)?)
+            trace!("parsing unhashed: {:?}", std::str::from_utf8(&buf2));
+            serde_json::from_slice(&buf2).ok()
         };
 
         let m = r.metadata()?;
@@ -93,7 +105,7 @@ impl<'a> ChangeFile<'a> {
     /// number of bytes read. The bounds of the change's "contents"
     /// section are not checked.
     pub fn read_contents(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize, ChangeError> {
-        debug!("read_contents {:?} {:?}", offset, buf.len());
+        trace!("read_contents {:?} {:?}", offset, buf.len());
         if let Some(ref mut s) = self.s {
             Ok(s.decompress(buf, offset)?)
         } else {
@@ -101,7 +113,7 @@ impl<'a> ChangeFile<'a> {
         }
     }
 
-    pub fn hashed(&self) -> &Hashed<Local> {
+    pub fn hashed(&self) -> &Hashed<Hunk<Option<Hash>, Local>, Author> {
         &self.hashed
     }
 

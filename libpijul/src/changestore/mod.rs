@@ -2,8 +2,11 @@
 //! changes are normally stored on disk, there are situations (such as
 //! an embedded Pijul) where one might want changes in-memory, in a
 //! database, or something else.
-use crate::change::{Change, ChangeHeader};
 use crate::pristine::{ChangeId, Hash, InodeMetadata, Position, Vertex};
+use crate::{
+    change::{Change, ChangeHeader},
+    text_encoding::Encoding,
+};
 
 #[cfg(feature = "ondisk-repos")]
 /// If this crate is compiled with the `ondisk-repos` feature (the
@@ -72,17 +75,46 @@ pub trait ChangeStore {
     fn save_change(&self, p: &Change) -> Result<Hash, Self::Error>;
     fn del_change(&self, h: &Hash) -> Result<bool, Self::Error>;
     fn get_change(&self, h: &Hash) -> Result<Change, Self::Error>;
-    fn get_file_name<'a, F: Fn(ChangeId) -> Option<Hash>>(
+    fn get_file_meta<'a, F: Fn(ChangeId) -> Option<Hash>>(
         &self,
         hash: F,
         vertex: Vertex<ChangeId>,
         buf: &'a mut Vec<u8>,
-    ) -> Result<(InodeMetadata, &'a str), Self::Error> {
+    ) -> Result<FileMetadata<'a>, Self::Error> {
         buf.clear();
         self.get_contents(hash, vertex, buf)?;
-        assert!(buf.len() >= 2);
-        let (a, b) = buf.as_slice().split_at(2);
-        Ok((InodeMetadata::from_basename(a), std::str::from_utf8(b)?))
+        Ok(FileMetadata::read(buf))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FileMetadata<'a> {
+    pub metadata: InodeMetadata,
+    pub basename: &'a str,
+    pub encoding: Option<Encoding>,
+}
+
+impl<'a> FileMetadata<'a> {
+    pub fn read(buf: &'a [u8]) -> FileMetadata<'a> {
+        // FIXME use ? by adding the From trait somehow
+        trace!("filemetadata read: {:?}", buf);
+        if let Ok(m) = bincode::deserialize(buf) {
+            m
+        } else {
+            let (a, b) = buf.split_at(2);
+            FileMetadata {
+                metadata: InodeMetadata::from_basename(a),
+                basename: std::str::from_utf8(b).unwrap(),
+                encoding: None,
+            }
+        }
+    }
+
+    pub fn write(&self, mut w: &mut Vec<u8>) {
+        // FIXME use ? by adding the From trait somehow
+        let l = w.len();
+        bincode::serialize_into(&mut w, self).unwrap();
+        trace!("filemetadata write: {:?}", &w[l..]);
     }
 }
 

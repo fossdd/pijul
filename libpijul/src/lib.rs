@@ -24,12 +24,16 @@ pub mod path;
 pub mod pristine;
 pub mod record;
 pub mod small_string;
+mod text_encoding;
 mod unrecord;
 mod vector2;
 pub mod vertex_buffer;
 pub mod working_copy;
 
+pub mod key;
 pub mod tag;
+
+mod chardetng;
 
 #[cfg(test)]
 mod tests;
@@ -38,7 +42,9 @@ pub const DOT_DIR: &str = ".pijul";
 
 #[derive(Debug, Error)]
 #[error("Parse error: {:?}", s)]
-pub struct ParseError { s: String }
+pub struct ParseError {
+    s: String,
+}
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum RemoteError {
@@ -55,23 +61,21 @@ pub enum RemoteError {
 }
 
 pub use crate::apply::Workspace as ApplyWorkspace;
-pub use crate::apply::{ApplyError, LocalApplyError};
-pub use crate::unrecord::UnrecordError;
+pub use crate::apply::{apply_change_arc, ApplyError, LocalApplyError};
 pub use crate::fs::{FsError, WorkingCopyIterator};
 pub use crate::output::{Archive, Conflict};
 pub use crate::pristine::{
-    Base32, ChangeId, ChannelMutTxnT, ChannelRef, ChannelTxnT, DepsTxnT, EdgeFlags, GraphTxnT,
-    Hash, Inode, Merkle, MutTxnT, OwnedPathId, RemoteRef, TreeTxnT, TxnT, Vertex,
+    ArcTxn, Base32, ChangeId, ChannelMutTxnT, ChannelRef, ChannelTxnT, DepsTxnT, EdgeFlags,
+    GraphTxnT, Hash, Inode, Merkle, MutTxnT, OwnedPathId, RemoteRef, TreeTxnT, TxnT, Vertex,
 };
 pub use crate::record::Builder as RecordBuilder;
 pub use crate::record::{Algorithm, InodeUpdate};
+pub use crate::unrecord::UnrecordError;
 
 // Making hashmaps deterministic (for testing)
 pub type Hasher = std::hash::BuildHasherDefault<twox_hash::XxHash64>;
-pub type HashMap<K, V> =
-    std::collections::HashMap<K, V, Hasher>;
-pub type HashSet<K> =
-    std::collections::HashSet<K, Hasher>;
+pub type HashMap<K, V> = std::collections::HashMap<K, V, Hasher>;
+pub type HashSet<K> = std::collections::HashSet<K, Hasher>;
 // pub type HashMap<K, V> = std::collections::HashMap<K, V, std::collections::hash_map::RandomState>;
 // pub type HashSet<K> = std::collections::HashSet<K, std::collections::hash_map::RandomState>;
 
@@ -79,7 +83,9 @@ impl MutTxnTExt for pristine::sanakirja::MutTxn<()> {}
 impl TxnTExt for pristine::sanakirja::MutTxn<()> {}
 impl TxnTExt for pristine::sanakirja::Txn {}
 
-pub fn commit<T: pristine::MutTxnT>(txn: std::sync::Arc<std::sync::RwLock<T>>) -> Result<(), T::GraphError> {
+pub fn commit<T: pristine::MutTxnT>(
+    txn: std::sync::Arc<std::sync::RwLock<T>>,
+) -> Result<(), T::GraphError> {
     let txn = if let Ok(txn) = std::sync::Arc::try_unwrap(txn) {
         txn.into_inner().unwrap()
     } else {
@@ -212,7 +218,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
     ) -> Result<pristine::Hash, crate::apply::ApplyError<C::Error, Self::GraphError>> {
         let contents_hash = {
             let mut hasher = pristine::Hasher::default();
-            hasher.update(&recorded.contents.lock().unwrap()[..]);
+            hasher.update(&recorded.contents.lock()[..]);
             hasher.finish()
         };
         let change = change::LocalChange {
@@ -233,8 +239,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
             unhashed: None,
             contents: std::sync::Arc::try_unwrap(recorded.contents)
                 .unwrap()
-                .into_inner()
-                .unwrap(),
+                .into_inner(),
         };
         let hash = changestore
             .save_change(&change)
@@ -294,11 +299,21 @@ pub trait MutTxnTExt: pristine::MutTxnT {
     /// Register a file or directory in the working copy, given by its
     /// path from the root of the repository, where the components of the
     /// path are separated by `/` (example path: `a/b/c`).
-    fn add(&mut self, path: &str, is_dir: bool, salt: u64) -> Result<(), fs::FsError<Self::GraphError>> {
+    fn add(
+        &mut self,
+        path: &str,
+        is_dir: bool,
+        salt: u64,
+    ) -> Result<(), fs::FsError<Self::GraphError>> {
         fs::add_inode(self, None, path, is_dir, salt)
     }
 
-    fn move_file(&mut self, a: &str, b: &str, salt: u64) -> Result<(), fs::FsError<Self::GraphError>> {
+    fn move_file(
+        &mut self,
+        a: &str,
+        b: &str,
+        salt: u64,
+    ) -> Result<(), fs::FsError<Self::GraphError>> {
         fs::move_file(self, a, b, salt)
     }
 
@@ -348,7 +363,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
     {
         let mut unrecord = Vec::new();
         let mut found = false;
-        for x in pristine::changeid_rev_log(self, &channel.read().unwrap(), None)? {
+        for x in pristine::changeid_rev_log(self, &channel.read(), None)? {
             let (_, p) = x?;
             let m: Merkle = (&p.b).into();
             if &m == state {
@@ -365,7 +380,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
                 self.unrecord(changes, channel, &h, salt)?;
             }
             {
-                let mut channel_ = channel.write().unwrap();
+                let mut channel_ = channel.write();
                 for app in extra.iter() {
                     self.apply_change_rec(changes, &mut channel_, app)?
                 }
@@ -396,7 +411,7 @@ pub trait TxnTExt: pristine::TxnT {
         hash: &pristine::Hash,
     ) -> Result<Option<u64>, Self::GraphError> {
         if let Some(cid) = pristine::GraphTxnT::get_internal(self, &hash.into()).map_err(|e| e.0)? {
-            self.get_changeset(self.changes(&channel.read().unwrap()), cid)
+            self.get_changeset(self.changes(&channel.read()), cid)
                 .map_err(|e| e.0)
                 .map(|x| x.map(|x| u64::from_le(x.0)))
         } else {
@@ -481,10 +496,7 @@ pub trait TxnTExt: pristine::TxnT {
         n: u64,
     ) -> Result<Option<(pristine::Hash, pristine::Merkle)>, Self::GraphError> {
         if let Some(p) = self
-            .get_revchangeset(
-                self.rev_changes(&channel.read().unwrap()),
-                &pristine::L64(n.to_le()),
-            )
+            .get_revchangeset(self.rev_changes(&channel.read()), &pristine::L64(n.to_le()))
             .map_err(|e| e.0)?
         {
             Ok(Some((
@@ -505,7 +517,7 @@ pub trait TxnTExt: pristine::TxnT {
         h: &pristine::Hash,
     ) -> Result<Option<u64>, Self::GraphError> {
         if let Some(h) = pristine::GraphTxnT::get_internal(self, &h.into()).map_err(|e| e.0)? {
-            self.get_changeset(self.changes(&channel.read().unwrap()), h)
+            self.get_changeset(self.changes(&channel.read()), h)
                 .map_err(|e| e.0)
                 .map(|x| x.map(|x| u64::from_le(x.0)))
         } else {
@@ -535,7 +547,7 @@ pub trait TxnTExt: pristine::TxnT {
             change: *pristine::GraphTxnT::get_internal(self, &position.change.into())?.unwrap(),
             pos: position.pos,
         };
-        fs::find_path(changes, self, &channel.read().unwrap(), false, position)
+        fs::find_path(changes, self, &channel.read(), false, position)
     }
 
     fn find_youngest_path<C: changestore::ChangeStore>(
@@ -548,7 +560,7 @@ pub trait TxnTExt: pristine::TxnT {
             change: *pristine::GraphTxnT::get_internal(self, &position.change.into())?.unwrap(),
             pos: position.pos,
         };
-        fs::find_path(changes, self, &channel.read().unwrap(), true, position)
+        fs::find_path(changes, self, &channel.read(), true, position)
     }
 
     fn follow_oldest_path<C: changestore::ChangeStore>(
@@ -560,7 +572,7 @@ pub trait TxnTExt: pristine::TxnT {
         (pristine::Position<pristine::ChangeId>, bool),
         fs::FsErrorC<C::Error, Self::GraphError>,
     > {
-        fs::follow_oldest_path(changes, self, &channel.read().unwrap(), path)
+        fs::follow_oldest_path(changes, self, &channel.read(), path)
     }
 
     fn archive<C: changestore::ChangeStore, A: Archive>(

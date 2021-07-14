@@ -5,7 +5,6 @@ use anyhow::bail;
 use clap::Clap;
 use libpijul::MutTxnT;
 use log::debug;
-use std::sync::{Arc, RwLock};
 
 #[derive(Clap, Debug)]
 pub struct Clone {
@@ -35,9 +34,14 @@ pub struct Clone {
 
 impl Clone {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let mut remote =
-            crate::remote::unknown_remote(None, &self.remote, &self.channel, self.no_cert_check)
-                .await?;
+        let mut remote = crate::remote::unknown_remote(
+            None,
+            &self.remote,
+            &self.channel,
+            self.no_cert_check,
+            true,
+        )
+        .await?;
 
         let path = if let Some(path) = self.path {
             if path.is_relative() {
@@ -69,33 +73,34 @@ impl Clone {
         .unwrap_or(());
 
         let mut repo = Repository::init(Some(path)).await?;
-        let mut txn = repo.pristine.mut_txn_begin()?;
-        let mut channel = txn.open_or_create_channel(&self.channel)?;
+        let txn = repo.pristine.arc_txn_begin()?;
+        let mut channel = txn.write().open_or_create_channel(&self.channel)?;
         if let Some(ref change) = self.change {
             let h = change.parse()?;
             remote
-                .clone_tag(&mut repo, &mut txn, &mut channel, &[h])
+                .clone_tag(&mut repo, &mut *txn.write(), &mut channel, &[h])
                 .await?
         } else if let Some(ref state) = self.state {
             let h = state.parse()?;
             remote
-                .clone_state(&mut repo, &mut txn, &mut channel, h)
+                .clone_state(&mut repo, &mut *txn.write(), &mut channel, h)
                 .await?
         } else {
             remote
-                .clone_channel(&mut repo, &mut txn, &mut channel, &self.partial_paths)
+                .clone_channel(
+                    &mut repo,
+                    &mut *txn.write(),
+                    &mut channel,
+                    &self.partial_paths,
+                )
                 .await?;
         }
 
-        let config_path = repo.config_path();
-        let mut config = repo.config;
-
-        let txn = Arc::new(RwLock::new(txn));
         libpijul::output::output_repository_no_pending(
-            repo.working_copy.clone(),
+            &repo.working_copy,
             &repo.changes,
-            txn.clone(),
-            channel,
+            &txn,
+            &channel,
             "",
             true,
             None,
@@ -103,21 +108,8 @@ impl Clone {
             self.salt.unwrap_or(0),
         )?;
         remote.finish().await?;
-        let txn = if let Ok(t) = Arc::try_unwrap(txn) {
-            t.into_inner().unwrap()
-        } else {
-            unreachable!()
-        };
+        txn.write().set_current_channel(&self.channel)?;
         txn.commit()?;
-        config.current_channel = Some(self.channel);
-        if let crate::remote::RemoteRepo::Local(ref l) = remote {
-            config.default_remote = std::fs::canonicalize(&l.root)?
-                .to_str()
-                .map(|x| x.to_string());
-        } else {
-            config.default_remote = Some(self.remote);
-        }
-        config.save(&config_path)?;
         std::mem::forget(repo_path);
         Ok(())
     }

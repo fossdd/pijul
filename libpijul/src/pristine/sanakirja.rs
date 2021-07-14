@@ -1,9 +1,10 @@
 use super::*;
 use crate::HashMap;
 use ::sanakirja::*;
+use parking_lot::Mutex;
 use std::collections::hash_map::Entry;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A Sanakirja pristine.
 pub struct Pristine {
@@ -140,6 +141,7 @@ impl Pristine {
                 open_remotes: Mutex::new(HashMap::default()),
                 txn,
                 counter: 0,
+                cur_channel: None,
             })
         }
         if let Some(txn) = begin(txn) {
@@ -147,6 +149,10 @@ impl Pristine {
         } else {
             Err(SanakirjaError::PristineCorrupt)
         }
+    }
+
+    pub fn arc_txn_begin(&self) -> Result<ArcTxn<MutTxn<()>>, SanakirjaError> {
+        Ok(ArcTxn(Arc::new(RwLock::new(self.mut_txn_begin()?))))
     }
 
     pub fn mut_txn_begin(&self) -> Result<MutTxn<()>, SanakirjaError> {
@@ -228,6 +234,7 @@ impl Pristine {
             open_remotes: Mutex::new(HashMap::default()),
             txn,
             counter: 0,
+            cur_channel: None,
         })
     }
 }
@@ -243,7 +250,8 @@ pub type MutTxn<T> = GenericTxn<::sanakirja::MutTxn<Arc<::sanakirja::Env>, T>>;
 /// of `TxnT` for `Txn<T>` for all `T: sanakirja::Transaction`. This
 /// covers both mutable and immutable transactions in a single
 /// implementation.
-pub struct GenericTxn<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> {
+pub struct GenericTxn<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage>
+{
     #[doc(hidden)]
     pub txn: T,
     #[doc(hidden)]
@@ -263,17 +271,24 @@ pub struct GenericTxn<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> {
     rev_touched_files: Db<ChangeId, Position<ChangeId>>,
 
     partials: UDb<SmallStr, Position<ChangeId>>,
-    channels: UDb<SmallStr, T8>,
-    remotes: UDb<SmallStr, T3>,
+    channels: UDb<SmallStr, SerializedChannel>,
+    remotes: UDb<RemoteId, SerializedRemote>,
+
     pub(crate) open_channels: Mutex<HashMap<SmallString, ChannelRef<Self>>>,
-    open_remotes: Mutex<HashMap<SmallString, RemoteRef<Self>>>,
+    open_remotes: Mutex<HashMap<RemoteId, RemoteRef<Self>>>,
     counter: usize,
+    cur_channel: Option<String>,
 }
+
+direct_repr!(SerializedPublicKey);
 
 /// This is actually safe because the only non-Send fields are
 /// `open_channels` and `open_remotes`, but we can't do anything with
 /// a `ChannelRef` whose transaction has been moved to another thread.
-unsafe impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> Send for GenericTxn<T> {}
+unsafe impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> Send
+    for GenericTxn<T>
+{
+}
 
 impl Txn {
     pub fn check_database(&self) {
@@ -305,12 +320,12 @@ impl Txn {
         for x in btree::iter(&self.txn, &self.channels, None).unwrap() {
             let (name, tup) = x.unwrap();
             debug!("check: channel name: {:?}", name.as_str());
-            let graph: Db<Vertex<ChangeId>, SerializedEdge> = Db::from_page(tup.0[0].into());
-            let changes: Db<ChangeId, L64> = Db::from_page(tup.0[1].into());
+            let graph: Db<Vertex<ChangeId>, SerializedEdge> = Db::from_page(tup.graph.into());
+            let changes: Db<ChangeId, L64> = Db::from_page(tup.changes.into());
             let revchanges: UDb<L64, Pair<ChangeId, SerializedMerkle>> =
-                UDb::from_page(tup.0[2].into());
-            let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.0[3].into());
-            let tags: UDb<L64, SerializedHash> = UDb::from_page(tup.0[4].into());
+                UDb::from_page(tup.revchanges.into());
+            let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.states.into());
+            let tags: UDb<L64, SerializedHash> = UDb::from_page(tup.tags.into());
             debug!("check: graph 0x{:x}", graph.db);
             ::sanakirja::debug::add_refs(&self.txn, &graph, &mut refs).unwrap();
             debug!("check: changes 0x{:x}", changes.db);
@@ -326,10 +341,12 @@ impl Txn {
         ::sanakirja::debug::add_refs(&self.txn, &self.remotes, &mut refs).unwrap();
         for x in btree::iter(&self.txn, &self.remotes, None).unwrap() {
             let (name, tup) = x.unwrap();
-            debug!("check: remote name: {:?}", name.as_str());
-            let remote: UDb<SmallStr, T3> = UDb::from_page(tup.0[0].into());
-            let rev: UDb<SerializedHash, L64> = UDb::from_page(tup.0[1].into());
-            let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.0[2].into());
+            debug!("check: remote name: {:?}", name);
+            let remote: UDb<L64, Pair<SerializedHash, SerializedMerkle>> =
+                UDb::from_page(tup.remote.into());
+
+            let rev: UDb<SerializedHash, L64> = UDb::from_page(tup.rev.into());
+            let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.states.into());
             debug!("check: remote 0x{:x}", remote.db);
             ::sanakirja::debug::add_refs(&self.txn, &remote, &mut refs).unwrap();
             debug!("check: rev 0x{:x}", rev.db);
@@ -342,7 +359,9 @@ impl Txn {
     }
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> GraphTxnT for GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> GraphTxnT
+    for GenericTxn<T>
+{
     type Graph = Db<Vertex<ChangeId>, SerializedEdge>;
     type GraphError = SanakirjaError;
 
@@ -530,8 +549,8 @@ pub fn find_block_end<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
         start: p.pos,
         end: p.pos,
     };
-    let mut cursor = ::sanakirja::btree::cursor::Cursor::new(txn, graph)
-        .map_err(|x| BlockError::Txn(x.into()))?;
+    let mut cursor =
+        btree::cursor::Cursor::new(txn, graph).map_err(|x| BlockError::Txn(x.into()))?;
     let mut k = match cursor.set(txn, &key, None) {
         Ok(Some((k, _))) => k,
         Ok(None) => {
@@ -600,7 +619,9 @@ pub struct Adj {
     pub max_flag: EdgeFlags,
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> GraphIter for GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> GraphIter
+    for GenericTxn<T>
+{
     type GraphCursor = ::sanakirja::btree::cursor::Cursor<
         Vertex<ChangeId>,
         SerializedEdge,
@@ -661,9 +682,12 @@ pub struct Channel {
     pub apply_counter: ApplyTimestamp,
     pub name: SmallString,
     pub last_modified: u64,
+    pub id: RemoteId,
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> ChannelTxnT for GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> ChannelTxnT
+    for GenericTxn<T>
+{
     type Channel = Channel;
 
     fn graph<'a>(&self, c: &'a Self::Channel) -> &'a Db<Vertex<ChangeId>, SerializedEdge> {
@@ -671,6 +695,9 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> ChannelTxnT for Gener
     }
     fn name<'a>(&self, c: &'a Self::Channel) -> &'a str {
         c.name.as_str()
+    }
+    fn id<'a>(&self, c: &'a Self::Channel) -> &'a RemoteId {
+        &c.id
     }
     fn apply_counter(&self, channel: &Self::Channel) -> u64 {
         channel.apply_counter.into()
@@ -942,7 +969,9 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> ChannelTxnT for Gener
     }
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> DepsTxnT for GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> DepsTxnT
+    for GenericTxn<T>
+{
     type DepsError = SanakirjaError;
     type Dep = Db<ChangeId, ChangeId>;
     type Revdep = Db<ChangeId, ChangeId>;
@@ -1020,7 +1049,9 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> DepsTxnT for GenericT
     }
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TreeTxnT for GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> TreeTxnT
+    for GenericTxn<T>
+{
     type TreeError = SanakirjaError;
     type Inodes = Db<Inode, Position<ChangeId>>;
     type Revinodes = Db<Position<ChangeId>, Inode>;
@@ -1083,7 +1114,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TreeTxnT for GenericT
     }
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> GenericTxn<T> {
     #[doc(hidden)]
     pub unsafe fn unsafe_load_channel(
         &self,
@@ -1093,13 +1124,14 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> GenericTxn<T> {
             Some((name_, tup)) if name_ == name.as_ref() => {
                 debug!("load_channel: {:?} {:?}", name, tup);
                 Ok(Some(Channel {
-                    graph: Db::from_page(tup.0[0].into()),
-                    changes: Db::from_page(tup.0[1].into()),
-                    revchanges: UDb::from_page(tup.0[2].into()),
-                    states: UDb::from_page(tup.0[3].into()),
-                    tags: UDb::from_page(tup.0[4].into()),
-                    apply_counter: tup.0[5].into(),
-                    last_modified: tup.0[6].into(),
+                    graph: Db::from_page(tup.graph.into()),
+                    changes: Db::from_page(tup.changes.into()),
+                    revchanges: UDb::from_page(tup.revchanges.into()),
+                    states: UDb::from_page(tup.states.into()),
+                    tags: UDb::from_page(tup.tags.into()),
+                    apply_counter: tup.apply_counter.into(),
+                    last_modified: tup.last_modified.into(),
+                    id: tup.id,
                     name,
                 }))
             }
@@ -1111,7 +1143,9 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> GenericTxn<T> {
     }
 }
 
-impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T> {
+impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> TxnT
+    for GenericTxn<T>
+{
     fn hash_from_prefix(
         &self,
         s: &str,
@@ -1156,7 +1190,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
         remote: &RemoteRef<Self>,
         s: &str,
     ) -> Result<Hash, super::HashPrefixError<Self::GraphError>> {
-        let remote = remote.db.lock().unwrap();
+        let remote = remote.db.lock();
         let h: SerializedHash = if let Some(h) = Hash::from_prefix(s) {
             (&h).into()
         } else {
@@ -1197,7 +1231,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
         name: &str,
     ) -> Result<Option<ChannelRef<Self>>, TxnErr<Self::GraphError>> {
         let name = SmallString::from_str(name);
-        match self.open_channels.lock().unwrap().entry(name.clone()) {
+        match self.open_channels.lock().entry(name.clone()) {
             Entry::Vacant(v) => {
                 if let Some(c) = unsafe { self.unsafe_load_channel(name)? } {
                     Ok(Some(
@@ -1214,16 +1248,21 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
         }
     }
 
-    fn load_remote(&self, name: &str) -> Result<Option<RemoteRef<Self>>, TxnErr<Self::GraphError>> {
-        let name = SmallString::from_str(name);
-        match self.open_remotes.lock().unwrap().entry(name.clone()) {
+    fn load_remote(
+        &self,
+        name: &RemoteId,
+    ) -> Result<Option<RemoteRef<Self>>, TxnErr<Self::GraphError>> {
+        let name = name.to_owned();
+        match self.open_remotes.lock().entry(name.clone()) {
             Entry::Vacant(v) => match btree::get(&self.txn, &self.remotes, &name, None)? {
-                Some((name_, remote)) if name.as_ref() == name_ => {
+                Some((name_, remote)) if name == *name_ => {
                     debug!("load_remote: {:?} {:?}", name_, remote);
                     let r = Remote {
-                        remote: UDb::from_page(remote.0[0].into()),
-                        rev: UDb::from_page(remote.0[1].into()),
-                        states: UDb::from_page(remote.0[2].into()),
+                        remote: UDb::from_page(remote.remote.into()),
+                        rev: UDb::from_page(remote.rev.into()),
+                        states: UDb::from_page(remote.states.into()),
+                        id_rev: remote.id_rev.into(),
+                        path: remote.path.to_owned(),
                     };
                     for x in btree::iter(&self.txn, &r.remote, None).unwrap() {
                         debug!("remote -> {:?}", x);
@@ -1241,7 +1280,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
 
                     let r = RemoteRef {
                         db: Arc::new(Mutex::new(r)),
-                        name: name.clone(),
+                        id: name,
                     };
                     Ok(Some(v.insert(r).clone()))
                 }
@@ -1252,9 +1291,13 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
     }
 
     ///
-    type Channels = UDb<SmallStr, T8>;
-    type ChannelsCursor = ::sanakirja::btree::cursor::Cursor<SmallStr, T8, UP<SmallStr, T8>>;
-    sanakirja_cursor!(channels, SmallStr, T8,);
+    type Channels = UDb<SmallStr, SerializedChannel>;
+    type ChannelsCursor = ::sanakirja::btree::cursor::Cursor<
+        SmallStr,
+        SerializedChannel,
+        UP<SmallStr, SerializedChannel>,
+    >;
+    sanakirja_cursor!(channels, SmallStr, SerializedChannel);
     fn iter_channels<'txn>(
         &'txn self,
         start: &str,
@@ -1265,16 +1308,19 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
         Ok(ChannelIterator { cursor, txn: self })
     }
 
-    type Remotes = UDb<SmallStr, T3>;
-    type RemotesCursor = ::sanakirja::btree::cursor::Cursor<SmallStr, T3, UP<SmallStr, T3>>;
-    sanakirja_cursor!(remotes, SmallStr, T3);
+    type Remotes = UDb<RemoteId, SerializedRemote>;
+    type RemotesCursor = ::sanakirja::btree::cursor::Cursor<
+        RemoteId,
+        SerializedRemote,
+        UP<RemoteId, SerializedRemote>,
+    >;
+    sanakirja_cursor!(remotes, RemoteId, SerializedRemote);
     fn iter_remotes<'txn>(
         &'txn self,
-        start: &str,
+        start: &RemoteId,
     ) -> Result<RemotesIterator<'txn, Self>, TxnErr<Self::GraphError>> {
-        let name = SmallString::from_str(start);
         let mut cursor = btree::cursor::Cursor::new(&self.txn, &self.remotes)?;
-        cursor.set(&self.txn, &name, None)?;
+        cursor.set(&self.txn, start, None)?;
         Ok(RemotesIterator { cursor, txn: self })
     }
 
@@ -1325,19 +1371,21 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
 
     fn get_remote(
         &mut self,
-        name: &str,
+        name: RemoteId,
     ) -> Result<Option<RemoteRef<Self>>, TxnErr<Self::GraphError>> {
-        let name = SmallString::from_str(name);
-        match self.open_remotes.lock().unwrap().entry(name.clone()) {
+        let name = name.to_owned();
+        match self.open_remotes.lock().entry(name.clone()) {
             Entry::Vacant(v) => match btree::get(&self.txn, &self.remotes, &name, None)? {
-                Some((name_, remote)) if name_ == name.as_ref() => {
+                Some((name_, remote)) if *name_ == name => {
                     let r = RemoteRef {
                         db: Arc::new(Mutex::new(Remote {
-                            remote: UDb::from_page(remote.0[0].into()),
-                            rev: UDb::from_page(remote.0[1].into()),
-                            states: UDb::from_page(remote.0[2].into()),
+                            remote: UDb::from_page(remote.remote.into()),
+                            rev: UDb::from_page(remote.rev.into()),
+                            states: UDb::from_page(remote.states.into()),
+                            id_rev: remote.id_rev.into(),
+                            path: remote.path.to_owned(),
                         })),
-                        name: name.clone(),
+                        id: name,
                     };
                     v.insert(r);
                 }
@@ -1345,7 +1393,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
             },
             Entry::Occupied(_) => {}
         }
-        Ok(self.open_remotes.lock().unwrap().get(&name).cloned())
+        Ok(self.open_remotes.lock().get(&name).cloned())
     }
 
     fn last_remote(
@@ -1382,7 +1430,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
         remote: &RemoteRef<Self>,
         hash: &SerializedHash,
     ) -> Result<bool, TxnErr<Self::GraphError>> {
-        match btree::get(&self.txn, &remote.db.lock().unwrap().rev, hash, None)? {
+        match btree::get(&self.txn, &remote.db.lock().rev, hash, None)? {
             Some((k, _)) if k == hash => Ok(true),
             _ => Ok(false),
         }
@@ -1392,9 +1440,25 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>> TxnT for GenericTxn<T
         remote: &RemoteRef<Self>,
         m: &SerializedMerkle,
     ) -> Result<bool, TxnErr<Self::GraphError>> {
-        match btree::get(&self.txn, &remote.db.lock().unwrap().states, m, None)? {
+        match btree::get(&self.txn, &remote.db.lock().states, m, None)? {
             Some((k, _)) if k == m => Ok(true),
             _ => Ok(false),
+        }
+    }
+    fn current_channel(&self) -> Result<&str, Self::GraphError> {
+        if let Some(ref c) = self.cur_channel {
+            Ok(c)
+        } else {
+            unsafe {
+                let b = self.txn.root_page();
+                let len = b[4096 - 256] as usize;
+                if len == 0 {
+                    Ok("main")
+                } else {
+                    let s = std::slice::from_raw_parts(b.as_ptr().add(4096 - 255), len);
+                    Ok(std::str::from_utf8(s).unwrap_or("main"))
+                }
+            }
         }
     }
 }
@@ -1666,7 +1730,7 @@ impl MutTxnT for MutTxn<()> {
         k: u64,
         v: (Hash, Merkle),
     ) -> Result<bool, Self::GraphError> {
-        let mut remote = remote.db.lock().unwrap();
+        let mut remote = remote.db.lock();
         let h = (&v.0).into();
         let m: SerializedMerkle = (&v.1).into();
         btree::put(
@@ -1684,7 +1748,7 @@ impl MutTxnT for MutTxn<()> {
         remote: &mut RemoteRef<Self>,
         k: u64,
     ) -> Result<bool, Self::GraphError> {
-        let mut remote = remote.db.lock().unwrap();
+        let mut remote = remote.db.lock();
         let k = k.into();
         match btree::get(&self.txn, &remote.remote, &k, None)? {
             Some((k0, p)) if k0 == &k => {
@@ -1709,18 +1773,19 @@ impl MutTxnT for MutTxn<()> {
     fn open_or_create_channel(&mut self, name: &str) -> Result<ChannelRef<Self>, Self::GraphError> {
         let name = crate::small_string::SmallString::from_str(name);
         let mut commit = None;
-        let result = match self.open_channels.lock().unwrap().entry(name.clone()) {
+        let result = match self.open_channels.lock().entry(name.clone()) {
             Entry::Vacant(v) => {
                 let r = match btree::get(&self.txn, &self.channels, &name, None)? {
                     Some((name_, b)) if name_ == name.as_ref() => ChannelRef {
                         r: Arc::new(RwLock::new(Channel {
-                            graph: Db::from_page(b.0[0].into()),
-                            changes: Db::from_page(b.0[1].into()),
-                            revchanges: UDb::from_page(b.0[2].into()),
-                            states: UDb::from_page(b.0[3].into()),
-                            tags: UDb::from_page(b.0[4].into()),
-                            apply_counter: b.0[5].into(),
-                            last_modified: b.0[6].into(),
+                            graph: Db::from_page(b.graph.into()),
+                            changes: Db::from_page(b.changes.into()),
+                            revchanges: UDb::from_page(b.revchanges.into()),
+                            states: UDb::from_page(b.states.into()),
+                            tags: UDb::from_page(b.tags.into()),
+                            apply_counter: b.apply_counter.into(),
+                            last_modified: b.last_modified.into(),
+                            id: b.id,
                             name: name.clone(),
                         })),
                     },
@@ -1732,6 +1797,15 @@ impl MutTxnT for MutTxn<()> {
                                 revchanges: btree::create_db_(&mut self.txn)?,
                                 states: btree::create_db_(&mut self.txn)?,
                                 tags: btree::create_db_(&mut self.txn)?,
+                                id: {
+                                    let mut rng = rand::thread_rng();
+                                    use rand::Rng;
+                                    let mut x = RemoteId([0; 16]);
+                                    for x in x.0.iter_mut() {
+                                        *x = rng.gen()
+                                    }
+                                    x
+                                },
                                 apply_counter: 0,
                                 last_modified: 0,
                                 name: name.clone(),
@@ -1756,7 +1830,7 @@ impl MutTxnT for MutTxn<()> {
         channel: &ChannelRef<Self>,
         new_name: &str,
     ) -> Result<ChannelRef<Self>, ForkError<Self::GraphError>> {
-        let channel = channel.r.read().unwrap();
+        let channel = channel.r.read();
         let name = SmallString::from_str(new_name);
         match btree::get(&self.txn, &self.channels, &name, None)
             .map_err(|e| ForkError::Txn(e.into()))?
@@ -1780,9 +1854,18 @@ impl MutTxnT for MutTxn<()> {
                         name: name.clone(),
                         apply_counter: channel.apply_counter,
                         last_modified: channel.last_modified,
+                        id: {
+                            let mut rng = rand::thread_rng();
+                            use rand::Rng;
+                            let mut x = RemoteId([0; 16]);
+                            for x in x.0.iter_mut() {
+                                *x = rng.gen()
+                            }
+                            x
+                        },
                     })),
                 };
-                self.open_channels.lock().unwrap().insert(name, br.clone());
+                self.open_channels.lock().insert(name, br.clone());
                 Ok(br)
             }
         }
@@ -1804,22 +1887,18 @@ impl MutTxnT for MutTxn<()> {
                 btree::del(
                     &mut self.txn,
                     &mut self.channels,
-                    &channel.r.read().unwrap().name,
+                    &channel.r.read().name,
                     None,
                 )
                 .map_err(|e| ForkError::Txn(e.into()))?;
                 std::mem::drop(
                     self.open_channels
                         .lock()
-                        .unwrap()
-                        .remove(&channel.r.read().unwrap().name)
+                        .remove(&channel.r.read().name)
                         .unwrap(),
                 );
-                channel.r.write().unwrap().name = name.clone();
-                self.open_channels
-                    .lock()
-                    .unwrap()
-                    .insert(name, channel.clone());
+                channel.r.write().name = name.clone();
+                self.open_channels.lock().insert(name, channel.clone());
                 Ok(())
             }
         }
@@ -1827,13 +1906,12 @@ impl MutTxnT for MutTxn<()> {
 
     fn drop_channel(&mut self, name0: &str) -> Result<bool, Self::GraphError> {
         let name = SmallString::from_str(name0);
-        let channel = if let Some(channel) = self.open_channels.lock().unwrap().remove(&name) {
+        let channel = if let Some(channel) = self.open_channels.lock().remove(&name) {
             let channel = Arc::try_unwrap(channel.r)
                 .map_err(|_| SanakirjaError::ChannelRc {
                     c: name0.to_string(),
                 })?
-                .into_inner()
-                .unwrap();
+                .into_inner();
             Some((
                 channel.graph,
                 channel.changes,
@@ -1844,11 +1922,11 @@ impl MutTxnT for MutTxn<()> {
         } else if let Some((name_, chan)) = btree::get(&self.txn, &self.channels, &name, None)? {
             if name_ == name.as_ref() {
                 Some((
-                    Db::from_page(chan.0[0].into()),
-                    Db::from_page(chan.0[1].into()),
-                    UDb::from_page(chan.0[2].into()),
-                    UDb::from_page(chan.0[3].into()),
-                    UDb::from_page(chan.0[4].into()),
+                    Db::from_page(chan.graph.into()),
+                    Db::from_page(chan.changes.into()),
+                    UDb::from_page(chan.revchanges.into()),
+                    UDb::from_page(chan.states.into()),
+                    UDb::from_page(chan.tags.into()),
                 ))
             } else {
                 None
@@ -1864,12 +1942,20 @@ impl MutTxnT for MutTxn<()> {
                 for chan in self.iter_channels("").map_err(|e| e.0)? {
                     let (name, chan) = chan.map_err(|e| e.0)?;
                     assert_ne!(name.as_str(), name0);
-                    let chan = chan.read().unwrap();
-                    if self.channel_has_state(&chan.states, &p.b).map_err(|e| e.0)?.is_some() {
-                        break 'outer
+                    let chan = chan.read();
+                    if self
+                        .channel_has_state(&chan.states, &p.b)
+                        .map_err(|e| e.0)?
+                        .is_some()
+                    {
+                        break 'outer;
                     }
-                    if self.get_changeset(&chan.changes, &p.a).map_err(|e| e.0)?.is_some() {
-                        continue 'outer
+                    if self
+                        .get_changeset(&chan.changes, &p.a)
+                        .map_err(|e| e.0)?
+                        .is_some()
+                    {
+                        continue 'outer;
                     }
                 }
                 unused_changes.push(p.a);
@@ -1879,7 +1965,7 @@ impl MutTxnT for MutTxn<()> {
                 for x in btree::iter(&self.txn, &self.dep, Some((ch, None)))? {
                     let (k, v) = x?;
                     if k > ch {
-                        break
+                        break;
                     }
                     deps.push((*k, *v));
                 }
@@ -1899,19 +1985,24 @@ impl MutTxnT for MutTxn<()> {
         }
     }
 
-    fn open_or_create_remote(&mut self, name: &str) -> Result<RemoteRef<Self>, Self::GraphError> {
-        let name = crate::small_string::SmallString::from_str(name);
+    fn open_or_create_remote(
+        &mut self,
+        id: RemoteId,
+        path: &str,
+    ) -> Result<RemoteRef<Self>, Self::GraphError> {
         let mut commit = None;
-        match self.open_remotes.lock().unwrap().entry(name.clone()) {
+        match self.open_remotes.lock().entry(id) {
             Entry::Vacant(v) => {
-                let r = match btree::get(&self.txn, &self.remotes, &name, None)? {
-                    Some((name_, remote)) if name_ == name.as_ref() => RemoteRef {
+                let r = match btree::get(&self.txn, &self.remotes, &id, None)? {
+                    Some((name_, remote)) if *name_ == id => RemoteRef {
                         db: Arc::new(Mutex::new(Remote {
-                            remote: UDb::from_page(remote.0[0].into()),
-                            rev: UDb::from_page(remote.0[1].into()),
-                            states: UDb::from_page(remote.0[2].into()),
+                            remote: UDb::from_page(remote.remote.into()),
+                            rev: UDb::from_page(remote.rev.into()),
+                            states: UDb::from_page(remote.states.into()),
+                            id_rev: remote.id_rev.into(),
+                            path: SmallString::from_str(path),
                         })),
-                        name: name.clone(),
+                        id,
                     },
                     _ => {
                         let br = RemoteRef {
@@ -1919,8 +2010,10 @@ impl MutTxnT for MutTxn<()> {
                                 remote: btree::create_db_(&mut self.txn)?,
                                 rev: btree::create_db_(&mut self.txn)?,
                                 states: btree::create_db_(&mut self.txn)?,
+                                id_rev: 0u64.into(),
+                                path: SmallString::from_str(path),
                             })),
-                            name: name.clone(),
+                            id,
                         };
                         commit = Some(br.clone());
                         br
@@ -1933,51 +2026,47 @@ impl MutTxnT for MutTxn<()> {
         if let Some(commit) = commit {
             self.put_remotes(commit)?;
         }
-        Ok(self
-            .open_remotes
-            .lock()
-            .unwrap()
-            .get(&name)
-            .unwrap()
-            .clone())
+        Ok(self.open_remotes.lock().get(&id).unwrap().clone())
     }
 
     fn drop_remote(&mut self, remote: RemoteRef<Self>) -> Result<bool, Self::GraphError> {
-        let name = remote.name.clone();
-        let r = self.open_remotes.lock().unwrap().remove(&name).unwrap();
+        let r = self.open_remotes.lock().remove(&remote.id).unwrap();
         std::mem::drop(remote);
         assert_eq!(Arc::strong_count(&r.db), 1);
-        Ok(btree::del(&mut self.txn, &mut self.remotes, &name, None)?)
+        Ok(btree::del(&mut self.txn, &mut self.remotes, &r.id, None)?)
     }
 
-    fn drop_named_remote(&mut self, name: &str) -> Result<bool, Self::GraphError> {
-        let name = SmallString::from_str(name);
-        if let Some(r) = self.open_remotes.lock().unwrap().remove(&name) {
+    fn drop_named_remote(&mut self, id: RemoteId) -> Result<bool, Self::GraphError> {
+        if let Some(r) = self.open_remotes.lock().remove(&id) {
             assert_eq!(Arc::strong_count(&r.db), 1);
         }
-        Ok(btree::del(&mut self.txn, &mut self.remotes, &name, None)?)
+        Ok(btree::del(&mut self.txn, &mut self.remotes, &id, None)?)
     }
 
     fn commit(mut self) -> Result<(), Self::GraphError> {
         use std::ops::DerefMut;
         {
-            let open_channels = std::mem::replace(
-                self.open_channels.lock().unwrap().deref_mut(),
-                HashMap::default(),
-            );
+            let open_channels =
+                std::mem::replace(self.open_channels.lock().deref_mut(), HashMap::default());
             for (name, channel) in open_channels {
                 debug!("commit_channel {:?}", name);
                 self.commit_channel(channel)?
             }
         }
         {
-            let open_remotes = std::mem::replace(
-                self.open_remotes.lock().unwrap().deref_mut(),
-                HashMap::default(),
-            );
+            let open_remotes =
+                std::mem::replace(self.open_remotes.lock().deref_mut(), HashMap::default());
             for (name, remote) in open_remotes {
                 debug!("commit remote {:?}", name);
                 self.commit_remote(remote)?
+            }
+        }
+        if let Some(ref cur) = self.cur_channel {
+            unsafe {
+                assert!(cur.len() < 256);
+                let b = self.txn.root_page_mut();
+                b[4096 - 256] = cur.len() as u8;
+                std::ptr::copy(cur.as_ptr(), b.as_mut_ptr().add(4096 - 255), cur.len())
             }
         }
         // No need to set `Root::Version`, it is set at init.
@@ -1997,8 +2086,12 @@ impl MutTxnT for MutTxn<()> {
         self.txn
             .set_root(Root::RevTouchedFiles as usize, self.rev_touched_files.db);
         self.txn.set_root(Root::Partials as usize, self.partials.db);
-
         self.txn.commit()?;
+        Ok(())
+    }
+
+    fn set_current_channel(&mut self, cur: &str) -> Result<(), Self::GraphError> {
+        self.cur_channel = Some(cur.to_string());
         Ok(())
     }
 }
@@ -2010,13 +2103,14 @@ impl Txn {
             Some((name_, c)) if name.as_ref() == name_ => {
                 debug!("load_const_channel = {:?} {:?}", name_, c);
                 Ok(Some(Channel {
-                    graph: Db::from_page(c.0[0].into()),
-                    changes: Db::from_page(c.0[1].into()),
-                    revchanges: UDb::from_page(c.0[2].into()),
-                    states: UDb::from_page(c.0[3].into()),
-                    tags: UDb::from_page(c.0[4].into()),
-                    apply_counter: c.0[5].into(),
-                    last_modified: c.0[6].into(),
+                    graph: Db::from_page(c.graph.into()),
+                    changes: Db::from_page(c.changes.into()),
+                    revchanges: UDb::from_page(c.revchanges.into()),
+                    states: UDb::from_page(c.states.into()),
+                    tags: UDb::from_page(c.tags.into()),
+                    apply_counter: c.apply_counter.into(),
+                    last_modified: c.last_modified.into(),
+                    id: c.id,
                     name,
                 }))
             }
@@ -2028,7 +2122,7 @@ impl Txn {
 impl<T> MutTxn<T> {
     fn put_channel(&mut self, channel: ChannelRef<Self>) -> Result<(), SanakirjaError> {
         debug!("Commit_channel.");
-        let channel = channel.r.read().unwrap();
+        let channel = channel.r.read();
         // Since we are replacing the value, we don't want to
         // decrement its reference counter (which del would do), hence
         // the transmute.
@@ -2040,47 +2134,45 @@ impl<T> MutTxn<T> {
         // referenced" in Sanakirja).
         debug!("Commit_channel, dbs_channels = {:?}", self.channels);
         btree::del(&mut self.txn, &mut self.channels, &channel.name, None)?;
-        let t8 = T8([
-            channel.graph.db.into(),
-            channel.changes.db.into(),
-            channel.revchanges.db.into(),
-            channel.states.db.into(),
-            channel.tags.db.into(),
-            channel.apply_counter.into(),
-            channel.last_modified.into(),
-            0u64.into(),
-        ]);
-        btree::put(&mut self.txn, &mut self.channels, &channel.name, &t8)?;
+        let sc = SerializedChannel {
+            graph: channel.graph.db.into(),
+            changes: channel.changes.db.into(),
+            revchanges: channel.revchanges.db.into(),
+            states: channel.states.db.into(),
+            tags: channel.tags.db.into(),
+            apply_counter: channel.apply_counter.into(),
+            last_modified: channel.last_modified.into(),
+            id: channel.id,
+        };
+        btree::put(&mut self.txn, &mut self.channels, &channel.name, &sc)?;
         debug!("Commit_channel, self.channels = {:?}", self.channels);
         Ok(())
     }
 
     fn commit_channel(&mut self, channel: ChannelRef<Self>) -> Result<(), SanakirjaError> {
-        std::mem::drop(
-            self.open_channels
-                .lock()
-                .unwrap()
-                .remove(&channel.r.read().unwrap().name),
-        );
+        std::mem::drop(self.open_channels.lock().remove(&channel.r.read().name));
         self.put_channel(channel)
     }
 
     fn put_remotes(&mut self, remote: RemoteRef<Self>) -> Result<(), SanakirjaError> {
-        btree::del(&mut self.txn, &mut self.remotes, &remote.name, None)?;
+        btree::del(&mut self.txn, &mut self.remotes, &remote.id, None)?;
         debug!("Commit_remote, dbs_remotes = {:?}", self.remotes);
-        let r = remote.db.lock().unwrap();
-        btree::put(
-            &mut self.txn,
-            &mut self.remotes,
-            &remote.name,
-            &T3([r.remote.db.into(), r.rev.db.into(), r.states.db.into()]),
-        )?;
+        let r = remote.db.lock();
+        let rr = OwnedSerializedRemote {
+            _remote: r.remote.db.into(),
+            _rev: r.rev.db.into(),
+            _states: r.states.db.into(),
+            _id_rev: r.id_rev.into(),
+            _path: r.path.clone(),
+        };
+        debug!("put {:?}", rr);
+        btree::put(&mut self.txn, &mut self.remotes, &remote.id, &rr)?;
         debug!("Commit_remote, self.dbs.remotes = {:?}", self.remotes);
         Ok(())
     }
 
     fn commit_remote(&mut self, remote: RemoteRef<Self>) -> Result<(), SanakirjaError> {
-        std::mem::drop(self.open_remotes.lock().unwrap().remove(&remote.name));
+        std::mem::drop(self.open_remotes.lock().remove(&remote.id));
         // assert_eq!(Rc::strong_count(&remote.db), 1);
         self.put_remotes(remote)
     }
@@ -2184,5 +2276,65 @@ impl<A: Ord + UnsizedStorable, B: Ord + UnsizedStorable> UnsizedStorable for Pai
     }
 }
 
-direct_repr!(T3);
-direct_repr!(T8);
+impl Storable for SerializedRemote {
+    type PageReferences = std::iter::Empty<u64>;
+    fn page_references(&self) -> Self::PageReferences {
+        std::iter::empty()
+    }
+    fn compare<T: LoadPage>(&self, _t: &T, b: &Self) -> core::cmp::Ordering {
+        self.cmp(b)
+    }
+}
+
+impl UnsizedStorable for SerializedRemote {
+    const ALIGN: usize = 8;
+
+    fn size(&self) -> usize {
+        33 + self.path.len()
+    }
+    unsafe fn onpage_size(p: *const u8) -> usize {
+        33 + (*p.add(32)) as usize
+    }
+    unsafe fn from_raw_ptr<'a, T>(_: &T, p: *const u8) -> &'a Self {
+        let len = *p.add(32) as usize;
+        let m: &SerializedRemote =
+            std::mem::transmute(std::slice::from_raw_parts(p, 1 + len as usize));
+        m
+    }
+    unsafe fn write_to_page(&self, p: *mut u8) {
+        std::ptr::copy(
+            &self.remote as *const L64 as *const u8,
+            p,
+            33 + self.path.len(),
+        );
+        debug!(
+            "write_to_page: {:?}",
+            std::slice::from_raw_parts(p, 33 + self.path.len())
+        );
+    }
+}
+
+#[derive(Debug)]
+struct OwnedSerializedRemote {
+    _remote: L64,
+    _rev: L64,
+    _states: L64,
+    _id_rev: L64,
+    _path: SmallString,
+}
+
+impl std::ops::Deref for OwnedSerializedRemote {
+    type Target = SerializedRemote;
+    fn deref(&self) -> &Self::Target {
+        let len = 33 + self._path.len() as usize;
+        unsafe {
+            std::mem::transmute(std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                len,
+            ))
+        }
+    }
+}
+
+direct_repr!(SerializedChannel);
+direct_repr!(RemoteId);

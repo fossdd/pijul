@@ -1,6 +1,6 @@
 use super::*;
-
 use crate::working_copy::WorkingCopy;
+use std::io::Write;
 
 /// Rename conflict
 #[test]
@@ -19,74 +19,60 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo_alice.add_file(file, contents.to_vec());
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice").unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("alice").unwrap();
 
-    txn_alice.add_file(file).unwrap();
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    txn_alice.write().add_file(file, 0).unwrap();
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob clones
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
     // Alice renames "file" to "alice"
     repo_alice.rename(file, alice)?;
-    txn_alice.move_file(file, alice)?;
+    txn_alice.write().move_file(file, alice, 0)?;
     debug!("repo_bob = {:?}", repo_alice.list_files());
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob renames "file" to "bob"
     repo_bob.rename(file, bob)?;
-    txn_bob.move_file(file, bob)?;
+    txn_bob.write().move_file(file, bob, 0)?;
     debug!("repo_bob = {:?}", repo_bob.list_files());
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Alice applies Bob's change
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     match conflicts[0] {
         Conflict::MultipleNames { .. } => {}
@@ -94,41 +80,46 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
     }
 
     // Bob applies Alice's change
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         alice,
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("conflicts = {:#?}", conflicts);
     }
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         bob,
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("conflicts = {:#?}", conflicts);
     }
 
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     match conflicts[0] {
         Conflict::MultipleNames { .. } => {}
@@ -136,31 +127,34 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
     }
 
     // Bob solves.
-    let bob_solution =
-        record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
+    let bob_solution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("conflicts = {:#?}", conflicts);
     }
 
     // Alice applies Bob's solution.
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_solution)?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_solution)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("conflicts = {:#?}", conflicts);
@@ -168,7 +162,7 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
 
     debug!("repo_alice = {:?}", repo_alice.list_files());
     debug!("repo_bob = {:?}", repo_bob.list_files());
-    debug_tree(&txn_bob, "debug_tree")?;
+    debug_tree(&*txn_bob.read(), "debug_tree")?;
     Ok(())
 }
 
@@ -179,93 +173,80 @@ fn same_name_test() -> Result<(), anyhow::Error> {
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo_alice.add_file("file1", contents.to_vec());
     repo_alice.add_file("file2", contents.to_vec());
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice")?;
+    let channel_alice = txn_alice.write().open_or_create_channel("alice")?;
 
-    txn_alice.add_file("file1")?;
-    txn_alice.add_file("file2")?;
+    txn_alice.write().add_file("file1", 0)?;
+    txn_alice.write().add_file("file2", 0)?;
     info!("recording file additions");
     debug!("working_copy = {:?}", repo_alice);
-    debug_tree(&txn_alice, "debug_tree")?;
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    debug_tree(&*txn_alice.read(), "debug_tree")?;
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob clones
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
     // Alice renames "file1" to "file"
     repo_alice.rename("file1", "file")?;
-    txn_alice.move_file("file1", "file")?;
+    txn_alice.write().move_file("file1", "file", 0)?;
 
     debug!("repo_bob = {:?}", repo_alice.list_files());
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob renames "file2" to "file"
     repo_bob.rename("file2", "file")?;
-    txn_bob.move_file("file2", "file")?;
+    txn_bob.write().move_file("file2", "file", 0)?;
     debug!("repo_bob = {:?}", repo_bob.list_files());
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Alice applies Bob's change
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
     output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
 
     // Bob applies Alice's change
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
 
     assert!(!conflicts.is_empty());
@@ -278,17 +259,10 @@ fn same_name_test() -> Result<(), anyhow::Error> {
     assert!(files_alice[1].starts_with("file."));
 
     // Alice solves it.
-    txn_alice.move_file(&files_alice[1], "a1")?;
+    txn_alice.write().move_file(&files_alice[1], "a1", 0)?;
     repo_alice.rename(&files_alice[0], "file")?;
     repo_alice.rename(&files_alice[1], "a1")?;
-    let solution_alice = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
+    let solution_alice = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     let mut files_bob = repo_bob.list_files();
     debug!("repo_bob = {:?}", files_bob);
@@ -298,20 +272,21 @@ fn same_name_test() -> Result<(), anyhow::Error> {
     assert!(files_bob[1].starts_with("file."));
 
     // Bob applies Alice's solution and checks that it does solve his problem.
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &solution_alice)?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &solution_alice)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("conflicts = {:#?}", conflicts);
     }
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
     let mut files_bob = repo_bob.list_files();
     files_bob.sort();
     assert_eq!(files_bob, vec!["a1", "file"]);
@@ -324,107 +299,91 @@ fn file_conflicts_same_name_and_two_names() -> Result<(), anyhow::Error> {
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
 
-    let mut repo_alice = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
     let mut repo_bob = working_copy::memory::Memory::new();
-    let mut repo_charlie = working_copy::memory::Memory::new();
+    let repo_charlie = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo_alice.add_file("file1", contents.to_vec());
     repo_alice.add_file("file2", contents.to_vec());
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let mut txn_bob = env_bob.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice")?;
+    let channel_alice = txn_alice.write().open_or_create_channel("alice")?;
 
-    txn_alice.add_file("file1")?;
-    txn_alice.add_file("file2")?;
+    txn_alice.write().add_file("file1", 0)?;
+    txn_alice.write().add_file("file2", 0)?;
     info!("recording file additions");
     debug!("working_copy = {:?}", repo_alice);
-    debug_tree(&txn_alice, "debug_tree")?;
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    debug_tree(&*txn_alice.read(), "debug_tree")?;
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob clones and renames "file2" to "file"
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let mut channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
     repo_bob.rename("file2", "file")?;
-    txn_bob.move_file("file2", "file")?;
+    txn_bob.write().move_file("file2", "file", 0)?;
     debug!("repo_bob = {:?}", repo_bob.list_files());
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Alice renames "file1" to "file"
     repo_alice.rename("file1", "file")?;
-    txn_alice.move_file("file1", "file")?;
+    txn_alice.write().move_file("file1", "file", 0)?;
 
     debug!("repo_bob = {:?}", repo_alice.list_files());
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Charlie clones, moves "file1" to "file3" and applies both
     // Alice's and Bob's change.
     let env_charlie = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_charlie = env_charlie.mut_txn_begin().unwrap();
-    let mut channel_charlie = txn_charlie.open_or_create_channel("charlie").unwrap();
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &init_h).unwrap();
+    let txn_charlie = env_charlie.arc_txn_begin().unwrap();
+    let channel_charlie = txn_charlie
+        .write()
+        .open_or_create_channel("charlie")
+        .unwrap();
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     repo_charlie.rename("file1", "file3")?;
-    txn_charlie.move_file("file1", "file3")?;
-    let charlie_h = record_all(
-        &mut repo_charlie,
-        &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie1")?;
+    txn_charlie.write().move_file("file1", "file3", 0)?;
+    let charlie_h =
+        record_all(&repo_charlie, &changes, &txn_charlie, &channel_charlie, "").unwrap();
 
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &bob_h)?;
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &alice_h)?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &bob_h)?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &alice_h)?;
     output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie2")?;
     let mut files_charlie = repo_charlie.list_files();
     files_charlie.sort();
     // Two files with the same name (file), one of which also has another name (file3). This means that we don't know which one of the two names crate::output will pick, between "file3" and the conflicting name.
@@ -434,75 +393,66 @@ fn file_conflicts_same_name_and_two_names() -> Result<(), anyhow::Error> {
     debug!("files_charlie {:?}", files_charlie);
 
     repo_charlie.rename(&files_charlie[1], "file3")?;
-    txn_charlie.move_file(&files_charlie[1], "file3")?;
-    let _charlie_solution = record_all(
-        &mut repo_charlie,
-        &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie3")?;
+    txn_charlie
+        .write()
+        .move_file(&files_charlie[1], "file3", 0)?;
+    let _charlie_solution =
+        record_all(&repo_charlie, &changes, &txn_charlie, &channel_charlie, "").unwrap();
     output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let mut files_charlie = repo_charlie.list_files();
     files_charlie.sort();
     assert_eq!(files_charlie, &["file", "file3"]);
 
     // Alice applies Bob's change and Charlie's change.
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &charlie_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &charlie_h)?;
     output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let mut files_alice = repo_alice.list_files();
     files_alice.sort();
     debug!("files_alice {:?}", files_alice);
     repo_alice.remove_path(&files_alice[1]).unwrap();
-    let _alice_solution = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3")?;
+    let _alice_solution =
+        record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob applies Alice's change and Charlie's change
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &charlie_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &charlie_h)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let files_bob = repo_bob.list_files();
     debug!("files_bob {:?}", files_bob);
     repo_bob.remove_path(&files_bob[1]).unwrap();
     let _bob_solution =
         record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob3")?;
     Ok(())
 }
 
@@ -513,79 +463,65 @@ fn zombie_file_test() -> Result<(), anyhow::Error> {
     let contents = b"a\nb\nc\nd\ne\nf\n";
     let contents2 = b"a\nb\nc\nx\nd\ne\nf\n";
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo_alice.add_file("a/b/c/file", contents.to_vec());
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice").unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("alice").unwrap();
 
-    txn_alice.add_file("a/b/c/file").unwrap();
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    txn_alice.write().add_file("a/b/c/file", 0).unwrap();
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob clones
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
     // Alice deletes "file"
     repo_alice.remove_path("a/b")?;
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob edits "file"
-    repo_bob.write_file::<_, std::io::Error, _>("a/b/c/file", |w| {
-        w.write_all(contents2)?;
-        Ok(())
-    })?;
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    repo_bob
+        .write_file("a/b/c/file")
+        .unwrap()
+        .write_all(contents2)?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Alice applies Bob's change
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
     debug!("alice2");
     output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2")?;
     let files_alice = repo_alice.list_files();
     assert_eq!(files_alice, vec!["a", "a/b", "a/b/c", "a/b/c/file"]);
     for x in txn_alice
+        .read()
         .iter_tree(
             &OwnedPathId {
                 parent_inode: Inode::ROOT,
@@ -598,40 +534,34 @@ fn zombie_file_test() -> Result<(), anyhow::Error> {
         debug!("x = {:?}", x);
     }
     debug!("recording a solution");
-    let alice_solution = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3")?;
+    let alice_solution = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob applies Alice's change
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     debug!("repo_alice = {:?}", repo_alice.list_files());
     debug!("repo_bob = {:?}", repo_bob.list_files());
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_solution)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_solution)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let files_bob = repo_bob.list_files();
     assert_eq!(files_bob, vec!["a", "a/b", "a/b/c", "a/b/c/file"]);
@@ -646,40 +576,34 @@ fn rename_zombie_file() -> Result<(), anyhow::Error> {
     let contents2 = b"a\nb\nc\nx\nd\ne\nf\n";
 
     let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo_alice.add_file("a/b/c/file", contents.to_vec());
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let mut txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice").unwrap();
+    let mut channel_alice = txn_alice.write().open_or_create_channel("alice").unwrap();
 
-    txn_alice.add_file("a/b/c/file").unwrap();
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    txn_alice.write().add_file("a/b/c/file", 0).unwrap();
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob clones
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
     // Alice deletes "file"
     repo_alice.remove_path("a/b")?;
@@ -691,33 +615,31 @@ fn rename_zombie_file() -> Result<(), anyhow::Error> {
         "",
     )
     .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
 
     // Bob renames "file"
     repo_bob.rename("a/b/c/file", "a/b/c/file2")?;
-    repo_bob.write_file::<_, std::io::Error, _>("a/b/c/file2", |w| {
-        w.write_all(contents2)?;
-        Ok(())
-    })?;
-    txn_bob.move_file("a/b/c/file", "a/b/c/file2")?;
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    repo_bob
+        .write_file("a/b/c/file2")
+        .unwrap()
+        .write_all(contents2)?;
+    txn_bob.write().move_file("a/b/c/file", "a/b/c/file2", 0)?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Alice applies Bob's change
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
 
     debug!("alice2");
     output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3")?;
     let files_alice = repo_alice.list_files();
     debug!("Alice records {:?}", files_alice);
     repo_alice.rename("a/b/c/file", "a/b/c/file2").unwrap_or(());
@@ -725,43 +647,38 @@ fn rename_zombie_file() -> Result<(), anyhow::Error> {
     // repo_alice.remove_path("a/b/c/file2").unwrap_or(());
 
     txn_alice
-        .move_file("a/b/c/file", "a/b/c/file2")
+        .write()
+        .move_file("a/b/c/file", "a/b/c/file2", 0)
         .unwrap_or(());
-    let alice_solution = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice4")?;
+    let alice_solution = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
     debug!("Alice recorded {:?}", alice_solution);
 
     // Bob applies Alice's change
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     debug!("repo_alice = {:?}", repo_alice.list_files());
     debug!("repo_bob = {:?}", repo_bob.list_files());
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_solution)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob3")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_solution)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let files_bob = repo_bob.list_files();
     assert!(["a", "a/b", "a/b/c", "a/b/c/file2"]
@@ -778,18 +695,18 @@ fn rename_zombie_dir() -> Result<(), anyhow::Error> {
     let contents2 = b"a\nb\nc\nx\nd\ne\nf\n";
 
     let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo_alice.add_file("a/b/c/file", contents.to_vec());
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let mut txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice").unwrap();
+    let mut channel_alice = txn_alice.write().open_or_create_channel("alice").unwrap();
 
-    txn_alice.add_file("a/b/c/file").unwrap();
+    txn_alice.write().add_file("a/b/c/file", 0).unwrap();
     let init_h = record_all(
         &mut repo_alice,
         &changes,
@@ -797,21 +714,21 @@ fn rename_zombie_dir() -> Result<(), anyhow::Error> {
         &mut channel_alice,
         "",
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
 
     // Bob clones
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
     // Alice deletes "file"
     repo_alice.remove_path("a/b")?;
@@ -823,77 +740,69 @@ fn rename_zombie_dir() -> Result<(), anyhow::Error> {
         "",
     )
     .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
 
     // Bob renames "file"
     repo_bob.rename("a/b/c", "a/b/d")?;
-    repo_bob.write_file::<_, std::io::Error, _>("a/b/d/file", |w| {
-        w.write_all(contents2)?;
-        Ok(())
-    })?;
-    txn_bob.move_file("a/b/c", "a/b/d")?;
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    repo_bob
+        .write_file("a/b/d/file")
+        .unwrap()
+        .write_all(contents2)?;
+    txn_bob.write().move_file("a/b/c", "a/b/d", 0)?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Alice applies Bob's change
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
     debug!("alice2");
     output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3")?;
     let files_alice = repo_alice.list_files();
     if files_alice.iter().any(|x| x == "a/b/d/file") {
-        txn_alice.add_file("a/b/d/file").unwrap_or(());
+        txn_alice.write().add_file("a/b/d/file", 0).unwrap_or(());
     } else {
         assert!(files_alice.iter().any(|x| x == "a/b/c/file"));
-        txn_alice.move_file("a/b/c", "a/b/d").unwrap();
+        txn_alice.write().move_file("a/b/c", "a/b/d", 0).unwrap();
         repo_alice.rename("a/b/c", "a/b/d").unwrap();
     }
     debug!("Alice records");
-    let alice_solution = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice4")?;
+    let alice_solution = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
     debug!("Alice recorded {:?}", alice_solution);
 
     // Bob applies Alice's change
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     debug!("repo_alice = {:?}", repo_alice.list_files());
     debug!("repo_bob = {:?}", repo_bob.list_files());
 
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_solution)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob3")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_solution)?;
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let files_bob = repo_bob.list_files();
     debug!("files_bob = {:?}", files_bob);
@@ -911,210 +820,186 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
     let contents2 = b"a\nb\nc\nx\nd\ne\nf\n";
     let contents3 = b"a\nby\n\nc\nd\ne\nf\n";
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
-    let mut repo_charlie = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
+    let repo_charlie = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
     let env_charlie = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_charlie = env_charlie.mut_txn_begin().unwrap();
+    let txn_charlie = env_charlie.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice").unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("alice").unwrap();
 
     repo_alice.add_file("a/b/c/file", contents.to_vec());
-    txn_alice.add_file("a/b/c/file").unwrap();
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    txn_alice.write().add_file("a/b/c/file", 0).unwrap();
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob and Charlie clone
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
-    let mut channel_charlie = txn_charlie.open_or_create_channel("charlie").unwrap();
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &init_h).unwrap();
+    let channel_charlie = txn_charlie
+        .write()
+        .open_or_create_channel("charlie")
+        .unwrap();
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &init_h).unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie0")?;
     if !conflicts.is_empty() {
         panic!("charlie has conflicts: {:?}", conflicts);
     }
 
     // Alice deletes "file"
     repo_alice.remove_path("a/b")?;
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob edits "file"
-    repo_bob.write_file::<_, std::io::Error, _>("a/b/c/file", |w| {
-        w.write_all(contents2)?;
-        Ok(())
-    })?;
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    repo_bob
+        .write_file("a/b/c/file")
+        .unwrap()
+        .write_all(contents2)?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Charlie edits "file"
-    repo_charlie.write_file::<_, std::io::Error, _>("a/b/c/file", |w| {
-        w.write_all(contents3)?;
-        Ok(())
-    })?;
-    let charlie_h = record_all(
-        &mut repo_charlie,
-        &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie1")?;
+    repo_charlie
+        .write_file("a/b/c/file")
+        .unwrap()
+        .write_all(contents3)?;
+    let charlie_h =
+        record_all(&repo_charlie, &changes, &txn_charlie, &channel_charlie, "").unwrap();
 
     // Alice applies Bob's and Charlie's changes
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h)?;
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &charlie_h)?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h)?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &charlie_h)?;
     debug!("alice2");
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2")?;
     let files_alice = repo_alice.list_files();
     assert_eq!(files_alice, vec!["a", "a/b", "a/b/c", "a/b/c/file"]);
-    assert_eq!(conflicts.len(), 5);
-    match conflicts[0] {
-        Conflict::ZombieFile { ref path } => assert_eq!(path, "a/b"),
-        ref c => panic!("unexpected conflict {:#?}", c),
-    }
+    let expected = [
+        Conflict::ZombieFile {
+            path: "a/b".to_string(),
+        },
+        Conflict::ZombieFile {
+            path: "a/b/c".to_string(),
+        },
+        Conflict::ZombieFile {
+            path: "a/b/c/file".to_string(),
+        },
+        Conflict::Zombie {
+            path: "a/b/c/file".to_string(),
+            line: 1,
+        },
+    ];
+    assert_eq!(&conflicts[..], &expected[..]);
     let mut buf = Vec::new();
     repo_alice.read_file("a/b/c/file", &mut buf)?;
     // Alice removes conflict markers.
-    repo_alice.write_file::<_, std::io::Error, _>("a/b/c/file", |w| {
+    {
+        let mut w = repo_alice.write_file("a/b/c/file").unwrap();
         for l in std::str::from_utf8(&buf).unwrap().lines() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
             }
         }
-        Ok(())
-    })?;
-
-    let alice_solution = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3")?;
-
-    // Bob applies
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h)?;
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &charlie_h)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
-    let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
-        &changes,
-        &mut txn_bob,
-        &mut channel_bob,
-        "",
-        true,
-        None,
-    )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
-    assert_eq!(conflicts.len(), 5);
-    match conflicts[0] {
-        Conflict::ZombieFile { ref path } => assert_eq!(path, "a/b"),
-        ref c => panic!("unexpected conflict {:#?}", c),
     }
 
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_solution)?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob3")?;
+    let alice_solution = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
+
+    // Bob applies
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h)?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &charlie_h)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
+    )?;
+
+    assert_eq!(conflicts, expected);
+
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_solution)?;
+    let conflicts = output::output_repository_no_pending(
+        &repo_bob,
+        &changes,
+        &txn_bob,
+        &channel_bob,
+        "",
+        true,
+        None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("bob has conflicts: {:?}", conflicts);
     }
 
     // Charlie applies
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &bob_h)?;
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie2")?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &bob_h)?;
     debug!("charlie applies Alice's change");
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &alice_h)?;
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie3")?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &alice_h)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    assert_eq!(conflicts.len(), 5);
-    match conflicts[0] {
-        Conflict::ZombieFile { ref path } => assert_eq!(path, "a/b"),
-        ref c => panic!("unexpected conflict {:#?}", c),
-    }
+    assert_eq!(conflicts, expected);
     debug!("charlie applies Alice's solution");
-    apply::apply_change(
-        &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
-        &alice_solution,
-    )?;
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie4")?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &alice_solution)?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("charlie has conflicts: {:?}", conflicts);
@@ -1129,69 +1014,59 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
-    let mut repo_charlie = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
+    let repo_charlie = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
 
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
     let env_charlie = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_charlie = env_charlie.mut_txn_begin().unwrap();
+    let txn_charlie = env_charlie.arc_txn_begin().unwrap();
 
-    let mut channel_alice = txn_alice.open_or_create_channel("alice").unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("alice").unwrap();
 
     repo_alice.add_file("a/b/c/file", contents.to_vec());
-    txn_alice.add_file("a/b/c/file").unwrap();
-    let init_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice0")?;
+    txn_alice.write().add_file("a/b/c/file", 0).unwrap();
+    let init_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     repo_alice.rename("a/b/c/file", "a/b/c/alice")?;
-    txn_alice.move_file("a/b/c/file", "a/b/c/alice")?;
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1")?;
+    txn_alice
+        .write()
+        .move_file("a/b/c/file", "a/b/c/alice", 0)?;
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob clones
-    let mut channel_bob = txn_bob.open_or_create_channel("bob").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &init_h).unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("bob").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &init_h).unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0")?;
 
     // Bob deletes "file"
     repo_bob.remove_path("a/b/c/file")?;
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &alice_h).unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1")?;
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h).unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
@@ -1201,17 +1076,17 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
     }
 
     debug!("Bob resolves");
-    let bob_resolution =
-        record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2")?;
+    let bob_resolution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("Bob has conflicts: {:?}", conflicts);
@@ -1219,79 +1094,65 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
 
     // Alice applies Bob's patch and solution.
     debug!("Alice applies Bob's resolution");
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &bob_h).unwrap();
-    apply::apply_change(
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        &bob_resolution,
-    )
-    .unwrap();
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_h).unwrap();
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &bob_resolution).unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2")?;
     if !conflicts.is_empty() {
         panic!("Alice has conflicts: {:?}", conflicts);
     }
 
     // Charlie applies Alice's move and deletes (i.e. does the same as Bob).
-    let mut channel_charlie = txn_charlie.open_or_create_channel("charlie").unwrap();
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &init_h).unwrap();
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &alice_h).unwrap();
+    let channel_charlie = txn_charlie
+        .write()
+        .open_or_create_channel("charlie")
+        .unwrap();
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &init_h).unwrap();
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &alice_h).unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie0")?;
     if !conflicts.is_empty() {
         panic!("charlie has conflicts: {:?}", conflicts);
     }
 
     debug!("Charlie applies Alice's move and deletes");
     repo_charlie.remove_path("a/b/c/alice")?;
-    let charlie_h = record_all(
-        &mut repo_charlie,
-        &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
-        "",
-    )
-    .unwrap();
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie1")?;
+    let charlie_h =
+        record_all(&repo_charlie, &changes, &txn_charlie, &channel_charlie, "").unwrap();
 
     //
     debug!("Charlie applies Bob's deletion");
-    apply::apply_change(&changes, &mut txn_charlie, &mut channel_charlie, &bob_h).unwrap();
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie2")?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &bob_h).unwrap();
     debug!("Charlie applies Bob's resolution");
-    apply::apply_change(
-        &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
-        &bob_resolution,
-    )
-    .unwrap();
-    debug_to_file(&txn_charlie, &channel_charlie.borrow(), "debug_charlie3")?;
+    apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &bob_resolution).unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_charlie,
+        &repo_charlie,
         &changes,
-        &mut txn_charlie,
-        &mut channel_charlie,
+        &txn_charlie,
+        &channel_charlie,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     assert_eq!(conflicts.len(), 1);
     match conflicts[0] {
@@ -1301,16 +1162,17 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
 
     //
     debug!("Alice applies Charlie's deletion");
-    apply::apply_change(&changes, &mut txn_alice, &mut channel_alice, &charlie_h).unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3")?;
+    apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &charlie_h).unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     assert_eq!(conflicts.len(), 1);
     match conflicts[0] {
@@ -1319,17 +1181,18 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
     }
 
     //
-    apply::apply_change(&changes, &mut txn_bob, &mut channel_bob, &charlie_h).unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob3")?;
+    apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &charlie_h).unwrap();
 
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     assert_eq!(conflicts.len(), 1);
     match conflicts[0] {
@@ -1344,69 +1207,63 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
 fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
-    let mut channel_alice = txn_alice.open_or_create_channel("main")?;
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("main")?;
     repo_alice.add_file("file", b"a\n".to_vec());
-    txn_alice.add_file("file")?;
-    let init = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
+    txn_alice.write().add_file("file", 0)?;
+    let init = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
-    let mut channel_bob = txn_bob.open_or_create_channel("main")?;
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("main")?;
     txn_bob
-        .apply_change(&changes, &mut channel_bob, &init)
+        .write()
+        .apply_change(&changes, &mut *channel_bob.write(), &init)
         .unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
 
     // Alice moves "file"
     repo_alice.rename("file", "alice/file").unwrap_or(());
-    txn_alice.move_file("file", "alice/file").unwrap_or(());
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1").unwrap();
+    txn_alice
+        .write()
+        .move_file("file", "alice/file", 0)
+        .unwrap_or(());
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob deletes "file"
     repo_bob.remove_path("file").unwrap_or(());
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "")?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0").unwrap();
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Bob applies Alice's change
     debug!("Bob applies Alice's change");
     txn_bob
-        .apply_change(&changes, &mut channel_bob, &alice_h)
+        .write()
+        .apply_change(&changes, &mut *channel_bob.write(), &alice_h)
         .unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1").unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
@@ -1420,16 +1277,17 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     } else {
         repo_bob.remove_path("alice").unwrap()
     }
-    let resolution = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "")?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2").unwrap();
+    let resolution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("Bob has conflicts: {:?}", conflicts);
@@ -1438,17 +1296,19 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     // Alice applies Bob's change
     debug!("Alice applies Bob's change");
     txn_alice
-        .apply_change(&changes, &mut channel_alice, &bob_h)
+        .write()
+        .apply_change(&changes, &mut *channel_alice.write(), &bob_h)
         .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2").unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     assert_eq!(conflicts.len(), 1);
     match conflicts[0] {
@@ -1457,18 +1317,20 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     }
     debug!("Alice applies Bob's resolution");
     txn_alice
-        .apply_change(&changes, &mut channel_alice, &resolution)
+        .write()
+        .apply_change(&changes, &mut *channel_alice.write(), &resolution)
         .unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3").unwrap();
     if !conflicts.is_empty() {
         panic!("Alice has conflicts: {:?}", conflicts);
     }
@@ -1482,77 +1344,62 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
 fn delete_zombie_test() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
-    let mut repo_alice = working_copy::memory::Memory::new();
-    let mut repo_bob = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
+    let repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
-    let mut channel_alice = txn_alice.open_or_create_channel("main")?;
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("main")?;
     repo_alice.add_file("file", b"a\nb\nc\nd\n".to_vec());
-    txn_alice.add_file("file")?;
-    let init = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
+    txn_alice.write().add_file("file", 0)?;
+    let init = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
-    let mut channel_bob = txn_bob.open_or_create_channel("main")?;
+    let txn_bob = env_bob.arc_txn_begin().unwrap();
+    let channel_bob = txn_bob.write().open_or_create_channel("main")?;
     txn_bob
-        .apply_change(&changes, &mut channel_bob, &init)
+        .write()
+        .apply_change(&changes, &mut *channel_bob.write(), &init)
         .unwrap();
     output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
 
     // Alice adds a zombie line.
-    repo_alice.write_file::<_, std::io::Error, _>("file", |w| {
-        w.write_all(b"a\nb\nx\nc\nd\n")?;
-        Ok(())
-    })?;
-    record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1").unwrap();
+    repo_alice
+        .write_file("file")
+        .unwrap()
+        .write_all(b"a\nb\nx\nc\nd\n")?;
+    record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob deletes the context of Alice's new line, and then deletes
     // "file".
-    repo_bob.write_file::<_, std::io::Error, _>("file", |w| {
-        w.write_all(b"a\nd\n")?;
-        Ok(())
-    })?;
-    let bob_h1 = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "")?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0").unwrap();
+    repo_bob.write_file("file").unwrap().write_all(b"a\nd\n")?;
+    let bob_h1 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
     repo_bob.remove_path("file").unwrap_or(());
-    let bob_h2 = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "")?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1").unwrap();
+    let bob_h2 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Alice applies Bob's changes.
     debug!("Alice applies Bob's change");
     txn_alice
-        .apply_change(&changes, &mut channel_alice, &bob_h1)
+        .write()
+        .apply_change(&changes, &mut *channel_alice.write(), &bob_h1)
         .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2").unwrap();
     debug!("Applying bob_h2");
     txn_alice
-        .apply_change(&changes, &mut channel_alice, &bob_h2)
+        .write()
+        .apply_change(&changes, &mut *channel_alice.write(), &bob_h2)
         .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3").unwrap();
 
-    let (alive, reachable) = check_alive(&txn_alice, &channel_alice.borrow().graph);
+    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel_alice.read().graph);
     if !alive.is_empty() {
         panic!("alive (bob0): {:?}", alive);
     }
@@ -1560,16 +1407,24 @@ fn delete_zombie_test() -> Result<(), anyhow::Error> {
         panic!("reachable (bob0): {:?}", reachable);
     }
 
-    crate::unrecord::unrecord(&mut txn_alice, &mut channel_alice, &changes, &bob_h2).unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice4").unwrap();
-    output::output_repository_no_pending(
-        &mut repo_alice,
+    crate::unrecord::unrecord(
+        &mut *txn_alice.write(),
+        &channel_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &bob_h2,
+        0,
+    )
+    .unwrap();
+    output::output_repository_no_pending(
+        &repo_alice,
+        &changes,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     let mut buf = Vec::new();
     repo_alice.read_file("file", &mut buf)?;
@@ -1581,29 +1436,24 @@ fn delete_zombie_test() -> Result<(), anyhow::Error> {
 fn move_into_deleted_test() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
-    let mut repo_alice = working_copy::memory::Memory::new();
+    let repo_alice = working_copy::memory::Memory::new();
     let mut repo_bob = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     let env_alice = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_alice = env_alice.mut_txn_begin().unwrap();
-    let mut channel_alice = txn_alice.open_or_create_channel("main")?;
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("main")?;
     repo_alice.add_file("file", b"a\n".to_vec());
     repo_alice.add_dir("dir");
-    txn_alice.add_file("file")?;
-    txn_alice.add_dir("dir")?;
-    let init = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
+    txn_alice.write().add_file("file", 0)?;
+    txn_alice.write().add_dir("dir", 0)?;
+    let init = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     let env_bob = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn_bob = env_bob.mut_txn_begin().unwrap();
-    let mut channel_bob = txn_bob.open_or_create_channel("main")?;
+    let mut txn_bob = env_bob.arc_txn_begin().unwrap();
+    let mut channel_bob = txn_bob.write().open_or_create_channel("main")?;
     txn_bob
-        .apply_change(&changes, &mut channel_bob, &init)
+        .write()
+        .apply_change(&changes, &mut *channel_bob.write(), &init)
         .unwrap();
     output::output_repository_no_pending(
         &mut repo_bob,
@@ -1613,39 +1463,38 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
         "",
         true,
         None,
+        1,
+        0,
     )?;
 
     // Alice moves "file"
     repo_alice.rename("file", "dir/file").unwrap_or(());
-    txn_alice.move_file("file", "dir/file").unwrap_or(());
-    let alice_h = record_all(
-        &mut repo_alice,
-        &changes,
-        &mut txn_alice,
-        &mut channel_alice,
-        "",
-    )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice1").unwrap();
+    txn_alice
+        .write()
+        .move_file("file", "dir/file", 0)
+        .unwrap_or(());
+    let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob deletes "dir"
     repo_bob.remove_path("dir").unwrap_or(());
-    let bob_h = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "")?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob0").unwrap();
+    let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Bob applies Alice's change
     debug!("Bob applies Alice's change");
     txn_bob
-        .apply_change(&changes, &mut channel_bob, &alice_h)
+        .write()
+        .apply_change(&changes, &mut *channel_bob.write(), &alice_h)
         .unwrap();
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob1").unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
@@ -1653,16 +1502,17 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "dir"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
-    let resolution = record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "")?;
-    debug_to_file(&txn_bob, &channel_bob.borrow(), "debug_bob2").unwrap();
+    let resolution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
     let conflicts = output::output_repository_no_pending(
-        &mut repo_bob,
+        &repo_bob,
         &changes,
-        &mut txn_bob,
-        &mut channel_bob,
+        &txn_bob,
+        &channel_bob,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     if !conflicts.is_empty() {
         panic!("Bob has conflicts: {:?}", conflicts);
@@ -1671,17 +1521,19 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
     // Alice applies Bob's change
     debug!("Alice applies Bob's change");
     txn_alice
-        .apply_change(&changes, &mut channel_alice, &bob_h)
+        .write()
+        .apply_change(&changes, &mut *channel_alice.write(), &bob_h)
         .unwrap();
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice2").unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
     assert_eq!(conflicts.len(), 1);
     match conflicts[0] {
@@ -1690,18 +1542,20 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
     }
     debug!("Alice applies Bob's resolution");
     txn_alice
-        .apply_change(&changes, &mut channel_alice, &resolution)
+        .write()
+        .apply_change(&changes, &mut *channel_alice.write(), &resolution)
         .unwrap();
     let conflicts = output::output_repository_no_pending(
-        &mut repo_alice,
+        &repo_alice,
         &changes,
-        &mut txn_alice,
-        &mut channel_alice,
+        &txn_alice,
+        &channel_alice,
         "",
         true,
         None,
+        1,
+        0,
     )?;
-    debug_to_file(&txn_alice, &channel_alice.borrow(), "debug_alice3").unwrap();
     if !conflicts.is_empty() {
         panic!("Alice has conflicts: {:?}", conflicts);
     }

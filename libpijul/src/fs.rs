@@ -58,7 +58,11 @@ impl<C: std::error::Error + 'static, T: std::error::Error + 'static> std::conver
     }
 }
 
-pub(crate) fn create_new_inode<T: TreeMutTxnT>(txn: &mut T, parent_id: &PathId, salt: u64) -> Result<Inode, TxnErr<T::TreeError>> {
+pub(crate) fn create_new_inode<T: TreeMutTxnT>(
+    txn: &mut T,
+    parent_id: &PathId,
+    salt: u64,
+) -> Result<Inode, TxnErr<T::TreeError>> {
     use std::hash::{BuildHasher, Hash, Hasher};
     let mut s = crate::Hasher::default().build_hasher();
     (parent_id, salt).hash(&mut s);
@@ -572,17 +576,20 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
         };
         let dest = self.txn.find_block(self.channel, child.dest()).unwrap();
         let mut buf = std::mem::replace(&mut self.buf, Vec::new());
-        self.changes
-            .get_contents(
+        let FileMetadata {
+            basename,
+            metadata: perms,
+            ..
+        } = self
+            .changes
+            .get_file_meta(
                 |p| self.txn.get_external(&p).unwrap().map(|x| x.into()),
                 *dest,
                 &mut buf,
             )
             .unwrap();
+        let basename = basename.to_string();
         self.buf = buf;
-        let (perms, basename) = self.buf.split_at(2);
-        let perms = InodeMetadata::from_basename(perms);
-        let basename = std::str::from_utf8(basename).unwrap();
 
         let grandchild = match iter_adjacent(
             self.txn,
@@ -602,7 +609,7 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
             grandchild.dest(),
             grandchild.introduced_by(),
             perms,
-            basename.to_string(),
+            basename,
         )))
     }
 }
@@ -662,17 +669,20 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
                 .find_block_end(&self.channel, parent.dest())
                 .unwrap();
             let mut buf = std::mem::replace(&mut self.buf, Vec::new());
-            self.changes
-                .get_contents(
+            let FileMetadata {
+                basename,
+                metadata: perms,
+                ..
+            } = self
+                .changes
+                .get_file_meta(
                     |p| self.txn.get_external(&p).unwrap().map(|x| x.into()),
                     *dest,
                     &mut buf,
                 )
                 .unwrap();
+            let basename = basename.to_owned();
             self.buf = buf;
-            let (perms, basename) = self.buf.split_at(2);
-            let perms = InodeMetadata::from_basename(perms);
-            let basename = std::str::from_utf8(basename).unwrap().to_string();
             match iter_adjacent(
                 self.txn,
                 &self.channel,
@@ -806,8 +816,8 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                     &mut name_buf,
                 )
                 .map_err(FsErrorC::Changestore)?;
-
-            if std::str::from_utf8(&name_buf[2..]) == Ok(c) {
+            let FileMetadata { basename, .. } = FileMetadata::read(&name_buf);
+            if basename == c {
                 let age = txn
                     .get_changeset(txn.changes(&channel), &name.dest().change)
                     .unwrap();
@@ -901,14 +911,16 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
         if alive {
             name_buf.clear();
             debug!("getting contents {:?}", name);
-            changes
-                .get_contents(
-                    |h| txn.get_external(&h).unwrap().map(|x| x.into()),
+
+            let FileMetadata { basename, .. } = changes
+                .get_file_meta(
+                    |p| txn.get_external(&p).unwrap().map(From::from),
                     *name,
                     &mut name_buf,
                 )
                 .map_err(crate::output::FileError::Changestore)?;
-            path.push(std::str::from_utf8(&name_buf[2..]).unwrap().to_string());
+
+            path.push(basename.to_string());
         }
         debug!("next = {:?}", next);
         v = next;

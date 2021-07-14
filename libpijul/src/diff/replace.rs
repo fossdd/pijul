@@ -4,6 +4,7 @@ use super::{bytes_len, bytes_pos, Line};
 use crate::change::{Atom, Hunk, Local, NewVertex};
 use crate::pristine::{ChangeId, ChangePosition, EdgeFlags, Position};
 use crate::record::Recorded;
+use crate::text_encoding::Encoding;
 use crate::{HashMap, HashSet};
 
 pub struct ConflictContexts {
@@ -33,6 +34,7 @@ impl Recorded {
         lines_b: &[Line],
         dd: &D,
         r: usize,
+        encoding: &Option<Encoding>,
     ) {
         let old = dd[r].old;
         let old_len = dd[r].old_len;
@@ -40,7 +42,7 @@ impl Recorded {
         let len = dd[r].new_len;
         let up_context = get_up_context(diff, conflict_contexts, lines_a, old);
 
-        let start = self.contents.lock().unwrap().len();
+        let start = self.contents.lock().len();
 
         let down_context = get_down_context(
             diff,
@@ -55,10 +57,12 @@ impl Recorded {
             start,
         );
 
-        debug!("old {:?}", &lines_a[old..(old + old_len)]);
-        debug!("new {:?}", &lines_b[from_new..(from_new + len)]);
+        debug!("old {:?}..{:?}", old, old + old_len);
+        trace!("old {:?}", &lines_a[old..(old + old_len)]);
+        debug!("new {:?}..{:?}", from_new, from_new + len);
+        trace!("new {:?}", &lines_b[from_new..(from_new + len)]);
 
-        let mut contents = self.contents.lock().unwrap();
+        let mut contents = self.contents.lock();
         for &line in &lines_b[from_new..(from_new + len)] {
             contents.extend(line.l);
         }
@@ -79,16 +83,23 @@ impl Recorded {
         };
         if old_len > 0 {
             match self.actions.pop() {
-                Some(Hunk::Edit { change: c, local }) => {
+                Some(Hunk::Edit {
+                    change: c, local, ..
+                }) => {
                     if local.line == from_new + 1 {
                         self.actions.push(Hunk::Replacement {
                             change: c,
                             local,
                             replacement: Atom::NewVertex(change),
+                            encoding: encoding.clone(),
                         });
                         return;
                     } else {
-                        self.actions.push(Hunk::Edit { change: c, local })
+                        self.actions.push(Hunk::Edit {
+                            change: c,
+                            local,
+                            encoding: encoding.clone(),
+                        })
                     }
                 }
                 Some(c) => self.actions.push(c),
@@ -101,6 +112,7 @@ impl Recorded {
                 path: diff.path.clone(),
             },
             change: Atom::NewVertex(change),
+            encoding: encoding.clone(),
         });
     }
 }

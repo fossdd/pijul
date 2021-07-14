@@ -1,8 +1,9 @@
 use crate::change::*;
 use crate::small_string::*;
 use crate::{HashMap, HashSet};
+use parking_lot::{Mutex, RwLock};
 use std::io::Write;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 mod change_id;
 pub use change_id::*;
@@ -110,13 +111,28 @@ impl L64 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq)]
 #[repr(C)]
-pub struct T3([L64; 3]);
+pub struct SerializedRemote {
+    remote: L64,
+    rev: L64,
+    states: L64,
+    id_rev: L64,
+    path: SmallStr,
+}
 
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 #[repr(C)]
-pub struct T8([L64; 8]);
+pub struct SerializedChannel {
+    graph: L64,
+    changes: L64,
+    revchanges: L64,
+    states: L64,
+    tags: L64,
+    apply_counter: L64,
+    last_modified: L64,
+    id: RemoteId,
+}
 
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 #[repr(C)]
@@ -138,16 +154,41 @@ pub struct ChannelRef<T: ChannelTxnT> {
     pub(crate) r: Arc<RwLock<T::Channel>>,
 }
 
+pub struct ArcTxn<T>(pub Arc<RwLock<T>>);
+
+impl<T> Clone for ArcTxn<T> {
+    fn clone(&self) -> Self {
+        ArcTxn(self.0.clone())
+    }
+}
+
+impl<T: MutTxnT> ArcTxn<T> {
+    pub fn commit(self) -> Result<(), T::GraphError> {
+        if let Ok(txn) = Arc::try_unwrap(self.0) {
+            txn.into_inner().commit()
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+impl<T> std::ops::Deref for ArcTxn<T> {
+    type Target = RwLock<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("Mutex poison error")]
 pub struct PoisonError {}
 
 impl<T: ChannelTxnT> ChannelRef<T> {
-    pub fn read(&self) -> Result<std::sync::RwLockReadGuard<T::Channel>, PoisonError> {
-        self.r.read().map_err(|_| PoisonError {})
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<T::Channel> {
+        self.r.read()
     }
-    pub fn write(&self) -> Result<std::sync::RwLockWriteGuard<T::Channel>, PoisonError> {
-        self.r.write().map_err(|_| PoisonError {})
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<T::Channel> {
+        self.r.write()
     }
 }
 
@@ -158,12 +199,20 @@ impl<T: ChannelTxnT> Clone for ChannelRef<T> {
 }
 
 impl<T: TxnT> RemoteRef<T> {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+    pub fn id(&self) -> &RemoteId {
+        &self.id
     }
 
-    pub fn lock(&self) -> Result<std::sync::MutexGuard<Remote<T>>, PoisonError> {
-        self.db.lock().map_err(|_| PoisonError {})
+    pub fn lock(&self) -> parking_lot::MutexGuard<Remote<T>> {
+        self.db.lock()
+    }
+
+    pub fn id_revision(&self) -> u64 {
+        self.lock().id_rev.into()
+    }
+
+    pub fn set_id_revision(&self, rev: u64) -> () {
+        self.lock().id_rev = rev.into()
     }
 }
 
@@ -171,19 +220,58 @@ pub struct Remote<T: TxnT> {
     pub remote: T::Remote,
     pub rev: T::Revremote,
     pub states: T::Remotestates,
+    pub id_rev: L64,
+    pub path: SmallString,
 }
 
 pub struct RemoteRef<T: TxnT> {
     db: Arc<Mutex<Remote<T>>>,
-    name: SmallString,
+    id: RemoteId,
 }
 
 impl<T: TxnT> Clone for RemoteRef<T> {
     fn clone(&self) -> Self {
         RemoteRef {
             db: self.db.clone(),
-            name: self.name.clone(),
+            id: self.id.clone(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RemoteId(pub(crate) [u8; 16]);
+
+impl RemoteId {
+    pub fn nil() -> Self {
+        RemoteId([0; 16])
+    }
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        if b.len() < 16 {
+            return None;
+        }
+        let mut x = RemoteId([0; 16]);
+        unsafe {
+            std::ptr::copy_nonoverlapping(b.as_ptr(), x.0.as_mut_ptr(), 16);
+        }
+        Some(x)
+    }
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    pub fn from_base32(b: &[u8]) -> Option<Self> {
+        let mut bb = RemoteId([0; 16]);
+        if data_encoding::BASE32_NOPAD.decode_mut(b, &mut bb.0).is_ok() {
+            Some(bb)
+        } else {
+            None
+        }
+    }
+}
+
+impl std::fmt::Display for RemoteId {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "{}", data_encoding::BASE32_NOPAD.encode(&self.0))
     }
 }
 
@@ -261,6 +349,7 @@ pub trait ChannelTxnT: GraphTxnT {
     type Channel: Sync + Send;
 
     fn name<'a>(&self, channel: &'a Self::Channel) -> &'a str;
+    fn id<'a>(&self, c: &'a Self::Channel) -> &'a RemoteId;
     fn graph<'a>(&self, channel: &'a Self::Channel) -> &'a Self::Graph;
     fn apply_counter(&self, channel: &Self::Channel) -> u64;
     fn last_modified(&self, channel: &Self::Channel) -> u64;
@@ -372,10 +461,7 @@ pub trait ChannelTxnT: GraphTxnT {
         &self,
         channel: &Self::Tags,
         from: u64,
-    ) -> Result<
-        Cursor<Self, &Self, Self::TagsCursor, L64, SerializedHash>,
-        TxnErr<Self::GraphError>,
-    >;
+    ) -> Result<Cursor<Self, &Self, Self::TagsCursor, L64, SerializedHash>, TxnErr<Self::GraphError>>;
 
     fn rev_iter_tags(
         &self,
@@ -507,7 +593,7 @@ pub trait TxnT:
     + TreeTxnT<TreeError = <Self as GraphTxnT>::GraphError>
 {
     table!(channels);
-    cursor!(channels, SmallStr, T8);
+    cursor!(channels, SmallStr, SerializedChannel);
 
     fn hash_from_prefix(
         &self,
@@ -524,7 +610,10 @@ pub trait TxnT:
         name: &str,
     ) -> Result<Option<ChannelRef<Self>>, TxnErr<Self::GraphError>>;
 
-    fn load_remote(&self, name: &str) -> Result<Option<RemoteRef<Self>>, TxnErr<Self::GraphError>>;
+    fn load_remote(
+        &self,
+        name: &RemoteId,
+    ) -> Result<Option<RemoteRef<Self>>, TxnErr<Self::GraphError>>;
 
     /// Iterate a function over all channels. The loop stops the first
     /// time `f` returns `false`.
@@ -535,11 +624,11 @@ pub trait TxnT:
 
     fn iter_remotes<'txn>(
         &'txn self,
-        start: &str,
+        start: &RemoteId,
     ) -> Result<RemotesIterator<'txn, Self>, TxnErr<Self::GraphError>>;
 
     table!(remotes);
-    cursor!(remotes, SmallStr, T3);
+    cursor!(remotes, RemoteId, SerializedRemote);
     table!(remote);
     table!(revremote);
     table!(remotestates);
@@ -572,7 +661,7 @@ pub trait TxnT:
 
     fn get_remote(
         &mut self,
-        name: &str,
+        name: RemoteId,
     ) -> Result<Option<RemoteRef<Self>>, TxnErr<Self::GraphError>>;
 
     fn last_remote(
@@ -596,6 +685,14 @@ pub trait TxnT:
         remote: &RemoteRef<Self>,
         hash: &SerializedMerkle,
     ) -> Result<bool, TxnErr<Self::GraphError>>;
+
+    fn current_channel(&self) -> Result<&str, Self::GraphError>;
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SerializedPublicKey {
+    algorithm: crate::key::Algorithm,
+    key: [u8; 32],
 }
 
 /// Iterate the graph between `(key, min_flag)` and `(key,
@@ -892,6 +989,17 @@ pub fn debug_tree_print<T: TreeTxnT>(txn: &T) {
     }
 }
 
+// #[cfg(debug_assertions)]
+pub fn debug_remotes<T: TxnT>(txn: &T) {
+    for t in txn.iter_remotes(&RemoteId([0; 16])).unwrap() {
+        let rem = t.unwrap();
+        debug!("{:?}", rem.id());
+        for x in txn.iter_remote(&rem.lock().remote, 0).unwrap() {
+            debug!("    {:?}", x.unwrap());
+        }
+    }
+}
+
 /// Write the graph of a channel to file `f` in graphviz
 /// format. **Warning:** this can be really large on old channels.
 // #[cfg(debug_assertions)]
@@ -902,7 +1010,7 @@ pub fn debug_to_file<P: AsRef<std::path::Path>, T: GraphIter + ChannelTxnT>(
 ) -> Result<bool, std::io::Error> {
     info!("debug {:?}", f.as_ref());
     let mut f = std::fs::File::create(f)?;
-    let channel = channel.r.read().unwrap();
+    let channel = channel.r.read();
     let done = debug(txn, txn.graph(&*channel), &mut f)?;
     f.flush()?;
     info!("done debugging {:?}", done);
@@ -1478,7 +1586,7 @@ impl<'txn, T: TxnT> Iterator for RemotesIterator<'txn, T> {
     type Item = Result<RemoteRef<T>, TxnErr<T::GraphError>>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.txn.cursor_remotes_next(&mut self.cursor) {
-            Ok(Some((name, _))) => self.txn.load_remote(name.as_str()).transpose(),
+            Ok(Some((name, _))) => self.txn.load_remote(name).transpose(),
             Ok(None) => None,
             Err(e) => Some(Err(e)),
         }
@@ -1505,7 +1613,6 @@ pub trait GraphMutTxnT: GraphTxnT {
         v: Option<&SerializedEdge>,
     ) -> Result<bool, TxnErr<Self::GraphError>>;
 
-    /// Delete a key and a value from a graph. Returns `true` if and only if `(k, v)` was in the graph.
     fn debug(&mut self, channel: &mut Self::Graph, extra: &str);
 
     /// Split a key `[a, b[` at position `pos`, yielding two keys `[a,
@@ -1616,7 +1723,11 @@ pub trait MutTxnT:
     /// Commit this transaction.
     fn commit(self) -> Result<(), Self::GraphError>;
 
-    fn open_or_create_remote(&mut self, name: &str) -> Result<RemoteRef<Self>, Self::GraphError>;
+    fn open_or_create_remote(
+        &mut self,
+        id: RemoteId,
+        path: &str,
+    ) -> Result<RemoteRef<Self>, Self::GraphError>;
 
     fn put_remote(
         &mut self,
@@ -1633,7 +1744,9 @@ pub trait MutTxnT:
 
     fn drop_remote(&mut self, remote: RemoteRef<Self>) -> Result<bool, Self::GraphError>;
 
-    fn drop_named_remote(&mut self, remote: &str) -> Result<bool, Self::GraphError>;
+    fn drop_named_remote(&mut self, id: RemoteId) -> Result<bool, Self::GraphError>;
+
+    fn set_current_channel(&mut self, cur: &str) -> Result<(), Self::GraphError>;
 }
 
 pub(crate) fn put_inodes_with_rev<T: TreeMutTxnT>(

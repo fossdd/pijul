@@ -1,5 +1,6 @@
 use super::*;
 use crate::working_copy::WorkingCopy;
+use std::io::Write;
 
 #[test]
 fn clone_simple() -> Result<(), anyhow::Error> {
@@ -8,26 +9,23 @@ fn clone_simple() -> Result<(), anyhow::Error> {
     let contents = b"a\nb\nc\nd\ne\nf\n";
     let contents2 = b"a\nb\n\nc\nd\nx\nf\n";
 
-    let mut repo = working_copy::memory::Memory::new();
+    let repo = working_copy::memory::Memory::new();
     let changes = changestore::memory::Memory::new();
     repo.add_file("file", contents.to_vec());
 
     let env = pristine::sanakirja::Pristine::new_anon()?;
     let mut recorded_changes = Vec::new();
-    let mut txn = env.mut_txn_begin().unwrap();
+    let txn = env.arc_txn_begin().unwrap();
     {
-        let mut channel = txn.open_or_create_channel("main").unwrap();
+        let channel = txn.write().open_or_create_channel("main").unwrap();
 
-        txn.add_file("file")?;
-        recorded_changes.push(record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap());
-        debug_to_file(&txn, &channel.borrow(), "debug0").unwrap();
-        repo.write_file::<_, std::io::Error, _>("file", |w| {
-            w.write_all(contents2).unwrap();
-            Ok(())
-        })
-        .unwrap();
-        recorded_changes.push(record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap());
-        debug_to_file(&txn, &channel.borrow(), "debug1").unwrap();
+        txn.write().add_file("file", 0)?;
+        recorded_changes.push(record_all(&repo, &changes, &txn, &channel, "").unwrap());
+        repo.write_file("file")
+            .unwrap()
+            .write_all(contents2)
+            .unwrap();
+        recorded_changes.push(record_all(&repo, &changes, &txn, &channel, "").unwrap());
     }
     txn.commit().unwrap();
 
@@ -36,7 +34,7 @@ fn clone_simple() -> Result<(), anyhow::Error> {
         let txn = env.txn_begin()?;
         for channel in txn.iter_channels("").unwrap() {
             let channel = channel.unwrap();
-            for x in txn.log(&channel.borrow(), 0).unwrap() {
+            for x in txn.log(&channel.1.read(), 0).unwrap() {
                 let (_, (i, _)) = x.unwrap();
                 channel_changes.push(i.into())
             }
@@ -44,23 +42,16 @@ fn clone_simple() -> Result<(), anyhow::Error> {
     }
     info!("{:?}", channel_changes);
     assert_eq!(channel_changes, recorded_changes);
-    let mut repo2 = working_copy::memory::Memory::new();
+    let repo2 = working_copy::memory::Memory::new();
     let env2 = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn2 = env2.mut_txn_begin().unwrap();
+    let txn2 = env2.arc_txn_begin().unwrap();
     {
-        let mut channel = txn2.open_or_create_channel("main2").unwrap();
+        let channel = txn2.write().open_or_create_channel("main2").unwrap();
         for h in channel_changes.iter() {
             info!("applying {:?}", h);
-            apply::apply_change(&changes, &mut txn2, &mut channel, h).unwrap();
-            debug_to_file(&txn2, &channel.borrow(), "debug2").unwrap();
+            apply::apply_change(&changes, &mut *txn2.write(), &mut *channel.write(), h).unwrap();
             output::output_repository_no_pending(
-                &mut repo2,
-                &changes,
-                &mut txn2,
-                &mut channel,
-                "",
-                true,
-                None,
+                &repo2, &changes, &txn2, &channel, "", true, None, 1, 0,
             )
             .unwrap();
         }
@@ -86,45 +77,33 @@ fn clone_prefixes() -> Result<(), anyhow::Error> {
     repo.add_file("i/j/k/l", contents.to_vec());
 
     let env = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn = env.mut_txn_begin().unwrap();
+    let txn = env.arc_txn_begin().unwrap();
     let h = {
-        let mut channel = txn.open_or_create_channel("main").unwrap();
-        txn.add_file("a/b/c/d")?;
-        txn.add_file("e/f/g/h")?;
-        txn.add_file("i/j/k/l")?;
-        record_all(&mut repo, &changes, &mut txn, &mut channel, "")?
+        let channel = txn.write().open_or_create_channel("main").unwrap();
+        txn.write().add_file("a/b/c/d", 0)?;
+        txn.write().add_file("e/f/g/h", 0)?;
+        txn.write().add_file("i/j/k/l", 0)?;
+        record_all(&repo, &changes, &txn, &channel, "")?
     };
     let h2 = {
-        let mut channel = txn.open_or_create_channel("main").unwrap();
-        repo.write_file::<_, std::io::Error, _>("a/b/c/d", |w| {
-            w.write_all(b"edits\n")?;
-            Ok(())
-        })?;
-        repo.write_file::<_, std::io::Error, _>("e/f/g/h", |w| {
-            w.write_all(b"edits\n")?;
-            Ok(())
-        })?;
-        record_all(&mut repo, &changes, &mut txn, &mut channel, "a/b/c/d")?
+        let channel = txn.write().open_or_create_channel("main").unwrap();
+        repo.write_file("a/b/c/d").unwrap().write_all(b"edits\n")?;
+        repo.write_file("e/f/g/h").unwrap().write_all(b"edits\n")?;
+        record_all(&mut repo, &changes, &txn, &channel, "a/b/c/d")?
     };
 
     txn.commit().unwrap();
 
     // Cloning
     debug!("Cloning");
-    let mut repo2 = working_copy::memory::Memory::new();
+    let repo2 = working_copy::memory::Memory::new();
     let env2 = pristine::sanakirja::Pristine::new_anon()?;
-    let mut txn2 = env2.mut_txn_begin().unwrap();
+    let txn2 = env2.arc_txn_begin().unwrap();
     {
-        let mut channel = txn2.open_or_create_channel("main2").unwrap();
-        apply::apply_change(&changes, &mut txn2, &mut channel, &h).unwrap();
+        let channel = txn2.write().open_or_create_channel("main2").unwrap();
+        apply::apply_change(&changes, &mut *txn2.write(), &mut *channel.write(), &h).unwrap();
         output::output_repository_no_pending(
-            &mut repo2,
-            &changes,
-            &mut txn2,
-            &mut channel,
-            "e/f",
-            true,
-            None,
+            &repo2, &changes, &txn2, &channel, "e/f", true, None, 1, 0,
         )?;
         assert_eq!(
             repo2.list_files(),
@@ -134,15 +113,9 @@ fn clone_prefixes() -> Result<(), anyhow::Error> {
                 .collect::<Vec<_>>()
         );
 
-        apply::apply_change(&changes, &mut txn2, &mut channel, &h2).unwrap();
+        apply::apply_change(&changes, &mut *txn2.write(), &mut *channel.write(), &h2).unwrap();
         output::output_repository_no_pending(
-            &mut repo2,
-            &changes,
-            &mut txn2,
-            &mut channel,
-            "",
-            true,
-            None,
+            &repo2, &changes, &txn2, &channel, "", true, None, 1, 0,
         )?;
         let mut buf = Vec::new();
         repo2.read_file("a/b/c/d", &mut buf)?;

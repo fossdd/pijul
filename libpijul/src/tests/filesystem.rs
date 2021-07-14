@@ -1,39 +1,33 @@
 use super::*;
+use std::io::Write;
 
 #[test]
 fn filesystem() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let r = tempfile::tempdir()?;
-    let mut repo = working_copy::filesystem::FileSystem::from_root(r.path());
+    let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path());
 
-    repo.write_file::<_, std::io::Error, _>("dir/file", |f| {
-        Ok(f.write_all(&b"a\nb\nc\nd\ne\nf\n"[..])?)
-    })?;
+    repo.write_file("dir/file")
+        .unwrap()
+        .write_all(&b"a\nb\nc\nd\ne\nf\n"[..])
+        .unwrap();
 
     let f = tempfile::tempdir()?;
     let env = pristine::sanakirja::Pristine::new(f.path().join("pristine"))?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    txn.add_file("dir/file").unwrap();
+    let txn = env.arc_txn_begin().unwrap();
+    txn.write().add_file("dir/file", 0).unwrap();
 
-    let mut channel = txn.open_or_create_channel("main").unwrap();
-    let p = record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
-    let mut channel = txn.open_or_create_channel("main2").unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
+    let p = record_all(&repo, &changes, &txn, &channel, "").unwrap();
+    let channel = txn.write().open_or_create_channel("main2").unwrap();
     info!("applying");
-    apply::apply_change(&changes, &mut txn, &mut channel, &p)?;
-    output::output_repository_no_pending(
-        &mut repo,
-        &changes,
-        &mut txn,
-        &mut channel,
-        "",
-        true,
-        None,
-    )
-    .unwrap();
+    apply::apply_change_arc(&changes, &txn, &channel, &p)?;
+    output::output_repository_no_pending(&repo, &changes, &txn, &channel, "", true, None, 1, 0)
+        .unwrap();
 
     txn.commit().unwrap();
 
@@ -48,38 +42,31 @@ fn symlink() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let r = tempfile::tempdir()?;
-    let mut repo = working_copy::filesystem::FileSystem::from_root(r.path());
+    let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path());
 
-    repo.write_file::<_, std::io::Error, _>("dir/file", |f| {
-        Ok(f.write_all(&b"a\nb\nc\nd\ne\nf\n"[..])?)
-    })?;
+    repo.write_file("dir/file")
+        .unwrap()
+        .write_all(&b"a\nb\nc\nd\ne\nf\n"[..])
+        .unwrap();
     std::os::unix::fs::symlink(&r.path().join("dir/file"), &r.path().join("dir/link")).unwrap();
 
     let f = tempfile::tempdir()?;
     std::fs::create_dir_all(f.path())?;
     let env = pristine::sanakirja::Pristine::new(f.path().join("pristine"))?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    txn.add_file("dir/file").unwrap();
-    txn.add_file("dir/link").unwrap();
+    let txn = env.arc_txn_begin().unwrap();
+    txn.write().add_file("dir/file", 0).unwrap();
+    txn.write().add_file("dir/link", 0).unwrap();
 
-    let mut channel = txn.open_or_create_channel("main").unwrap();
-    let p = record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
+    let p = record_all(&repo, &changes, &txn, &channel, "").unwrap();
     info!("applying");
-    let mut channel = txn.open_or_create_channel("main2").unwrap();
-    apply::apply_change(&changes, &mut txn, &mut channel, &p)?;
-    output::output_repository_no_pending(
-        &mut repo,
-        &changes,
-        &mut txn,
-        &mut channel,
-        "",
-        true,
-        None,
-    )
-    .unwrap();
+    let channel = txn.write().open_or_create_channel("main2").unwrap();
+    apply::apply_change_arc(&changes, &txn, &channel, &p)?;
+    output::output_repository_no_pending(&repo, &changes, &txn, &channel, "", true, None, 1, 0)
+        .unwrap();
 
     txn.commit().unwrap();
 
@@ -94,7 +81,7 @@ fn record_dead_symlink() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let r = tempfile::tempdir()?;
-    let mut repo = working_copy::filesystem::FileSystem::from_root(r.path());
+    let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path());
@@ -105,24 +92,16 @@ fn record_dead_symlink() -> Result<(), anyhow::Error> {
     let f = tempfile::tempdir()?;
     std::fs::create_dir_all(f.path())?;
     let env = pristine::sanakirja::Pristine::new(f.path().join("pristine"))?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    txn.add_file("dir/link").unwrap();
+    let txn = env.arc_txn_begin().unwrap();
+    txn.write().add_file("dir/link", 0).unwrap();
 
-    let mut channel = txn.open_or_create_channel("main").unwrap();
-    let p = record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
+    let p = record_all(&repo, &changes, &txn, &channel, "").unwrap();
     info!("applying");
-    let mut channel = txn.open_or_create_channel("main2").unwrap();
-    apply::apply_change(&changes, &mut txn, &mut channel, &p)?;
-    output::output_repository_no_pending(
-        &mut repo,
-        &changes,
-        &mut txn,
-        &mut channel,
-        "",
-        true,
-        None,
-    )
-    .unwrap();
+    let channel = txn.write().open_or_create_channel("main2").unwrap();
+    apply::apply_change_arc(&changes, &txn, &channel, &p)?;
+    output::output_repository_no_pending(&repo, &changes, &txn, &channel, "", true, None, 1, 0)
+        .unwrap();
 
     txn.commit().unwrap();
     Ok(())
@@ -133,42 +112,35 @@ fn overwrite_dead_symlink() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let r = tempfile::tempdir()?;
-    let mut repo = working_copy::filesystem::FileSystem::from_root(r.path());
+    let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path());
 
-    repo.write_file::<_, std::io::Error, _>("dir/file", |f| {
-        Ok(f.write_all(&b"a\nb\nc\nd\ne\nf\n"[..])?)
-    })?;
+    repo.write_file("dir/file")
+        .unwrap()
+        .write_all(&b"a\nb\nc\nd\ne\nf\n"[..])
+        .unwrap();
 
     let f = tempfile::tempdir()?;
     std::fs::create_dir_all(f.path())?;
     let env = pristine::sanakirja::Pristine::new(f.path().join("pristine"))?;
-    let mut txn = env.mut_txn_begin().unwrap();
-    txn.add_file("dir/file").unwrap();
+    let txn = env.arc_txn_begin().unwrap();
+    txn.write().add_file("dir/file", 0).unwrap();
 
-    let mut channel = txn.open_or_create_channel("main").unwrap();
-    let p = record_all(&mut repo, &changes, &mut txn, &mut channel, "").unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
+    let p = record_all(&repo, &changes, &txn, &channel, "").unwrap();
     info!("applying");
-    let mut channel = txn.open_or_create_channel("main2").unwrap();
+    let channel = txn.write().open_or_create_channel("main2").unwrap();
 
     // Substitute dir/file with a dead symlink
     std::fs::remove_file(&r.path().join("dir/file")).unwrap();
     std::os::unix::fs::symlink("a/b/c/d/file", &r.path().join("dir/file")).unwrap();
     debug!("meta = {:?}", std::fs::metadata("dir/file"));
     // And output.
-    apply::apply_change(&changes, &mut txn, &mut channel, &p)?;
-    output::output_repository_no_pending(
-        &mut repo,
-        &changes,
-        &mut txn,
-        &mut channel,
-        "",
-        true,
-        None,
-    )
-    .unwrap();
+    apply::apply_change_arc(&changes, &txn, &channel, &p)?;
+    output::output_repository_no_pending(&repo, &changes, &txn, &channel, "", true, None, 1, 0)
+        .unwrap();
 
     txn.commit().unwrap();
     Ok(())

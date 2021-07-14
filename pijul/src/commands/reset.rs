@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use anyhow::bail;
 use canonical_path::CanonicalPathBuf;
@@ -38,14 +37,21 @@ impl Reset {
 
     async fn reset(self, overwrite_changes: bool) -> Result<(), anyhow::Error> {
         let has_repo_path = self.repo_path.is_some();
-        let repo = Repository::find_root(self.repo_path).await?;
-        let txn = repo.pristine.mut_txn_begin()?;
+        let repo = Repository::find_root(self.repo_path)?;
+        let txn = repo.pristine.arc_txn_begin()?;
 
-        let config_path = repo.config_path();
-        let mut config = repo.config;
-        let (channel_name, _) = config.get_current_channel(self.channel.as_deref());
+        let cur = txn
+            .read()
+            .current_channel()
+            .unwrap_or(crate::DEFAULT_CHANNEL)
+            .to_string();
+        let channel_name = if let Some(ref c) = self.channel {
+            c
+        } else {
+            cur.as_str()
+        };
         let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;
-        let channel = if let Some(channel) = txn.load_channel(&channel_name)? {
+        let channel = if let Some(channel) = txn.read().load_channel(&channel_name)? {
             channel
         } else {
             bail!("No such channel: {:?}", channel_name)
@@ -60,7 +66,8 @@ impl Reset {
                 let path = root.strip_prefix(&repo_path)?;
                 use path_slash::PathExt;
                 let path = path.to_slash_lossy();
-                txn.follow_oldest_path(&repo.changes, &channel, &path)?
+                txn.read()
+                    .follow_oldest_path(&repo.changes, &channel, &path)?
             } else {
                 let mut root = crate::current_dir()?;
                 root.push(&self.files[0]);
@@ -68,22 +75,25 @@ impl Reset {
                 let path = root.strip_prefix(&repo_path)?;
                 use path_slash::PathExt;
                 let path = path.to_slash_lossy();
-                txn.follow_oldest_path(&repo.changes, &channel, &path)?
+                txn.read()
+                    .follow_oldest_path(&repo.changes, &channel, &path)?
             };
             libpijul::output::output_file(
                 &repo.changes,
-                &txn,
-                &channel.read().unwrap(),
+                &*txn.read(),
+                &channel.read(),
                 pos,
                 &mut libpijul::vertex_buffer::Writer::new(std::io::stdout()),
             )?;
             return Ok(());
         }
 
-        let txn = Arc::new(RwLock::new(txn));
-
-        let (current_channel, _) = config.get_current_channel(None);
-        if self.channel.as_deref() == Some(current_channel) {
+        let current_channel = txn
+            .read()
+            .current_channel()
+            .unwrap_or(crate::DEFAULT_CHANNEL)
+            .to_string();
+        if self.channel.as_deref() == Some(&current_channel) {
             if !overwrite_changes {
                 return Ok(());
             }
@@ -92,8 +102,8 @@ impl Reset {
                 bail!("Cannot use --channel with individual paths. Did you mean --dry-run?")
             }
             let channel = {
-                let txn = txn.read().unwrap();
-                txn.load_channel(current_channel)?
+                let txn = txn.read();
+                txn.load_channel(&current_channel)?
             };
             if let Some(channel) = channel {
                 let mut state = libpijul::RecordBuilder::new();
@@ -101,7 +111,7 @@ impl Reset {
                     txn.clone(),
                     libpijul::Algorithm::default(),
                     channel.clone(),
-                    repo.working_copy.clone(),
+                    &repo.working_copy,
                     &repo.changes,
                     "",
                     num_cpus::get(),
@@ -116,37 +126,29 @@ impl Reset {
 
         let now = std::time::Instant::now();
         if self.files.is_empty() {
-            if self.channel.is_none() || self.channel.as_deref() == Some(current_channel) {
-                let last_modified = last_modified(&*txn.read().unwrap(), &*channel.read()?);
+            if self.channel.is_none() || self.channel.as_deref() == Some(&current_channel) {
+                let last_modified = last_modified(&*txn.read(), &*channel.read());
                 libpijul::output::output_repository_no_pending(
-                    repo.working_copy.clone(),
+                    &repo.working_copy,
                     &repo.changes,
-                    txn.clone(),
-                    channel.clone(),
+                    &txn,
+                    &channel,
                     "",
                     true,
                     Some(last_modified),
                     num_cpus::get(),
                     0,
                 )?;
-                let mut txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-                    txn.into_inner().unwrap()
-                } else {
-                    unreachable!()
-                };
-                txn.touch_channel(&mut *channel.write()?, None);
+                txn.write().touch_channel(&mut *channel.write(), None);
                 txn.commit()?;
                 return Ok(());
             }
             let mut inodes = HashSet::new();
-            let txn_ = txn.read().unwrap();
-            if let Some(cur) = txn_.load_channel(current_channel)? {
+            let mut txn_ = txn.write();
+            if let Some(cur) = txn_.load_channel(&current_channel)? {
                 let mut changediff = HashSet::new();
-                let (a, b, s) = libpijul::pristine::last_common_state(
-                    &*txn_,
-                    &*cur.read()?,
-                    &*channel.read()?,
-                )?;
+                let (a, b, s) =
+                    libpijul::pristine::last_common_state(&*txn_, &*cur.read(), &*channel.read())?;
                 let s: libpijul::Merkle = s.into();
                 debug!("last common state {:?}", s);
                 let (a, b) = if s == libpijul::Merkle::zero() {
@@ -154,18 +156,17 @@ impl Reset {
                 } else {
                     (Some(a), Some(b))
                 };
-                changes_after(&*txn_, &*cur.read()?, a, &mut changediff, &mut inodes)?;
-                changes_after(&*txn_, &*channel.read()?, b, &mut changediff, &mut inodes)?;
+                changes_after(&*txn_, &*cur.read(), a, &mut changediff, &mut inodes)?;
+                changes_after(&*txn_, &*channel.read(), b, &mut changediff, &mut inodes)?;
             }
 
-            if self.channel.is_some() {
-                config.current_channel = self.channel;
-                config.save(&config_path)?;
+            if let Some(ref c) = self.channel {
+                txn_.set_current_channel(c)?
             }
             let mut paths = Vec::with_capacity(inodes.len());
             for pos in inodes.iter() {
                 if let Some((path, _)) =
-                    libpijul::fs::find_path(&repo.changes, &*txn_, &*channel.read()?, false, *pos)?
+                    libpijul::fs::find_path(&repo.changes, &*txn_, &*channel.read(), false, *pos)?
                 {
                     paths.push(path)
                 } else {
@@ -184,10 +185,10 @@ impl Reset {
             for path in paths.iter() {
                 debug!("resetting {:?}", path);
                 libpijul::output::output_repository_no_pending(
-                    repo.working_copy.clone(),
+                    &repo.working_copy,
                     &repo.changes,
-                    txn.clone(),
-                    channel.clone(),
+                    &txn,
+                    &channel,
                     &path,
                     true,
                     None,
@@ -197,10 +198,10 @@ impl Reset {
             }
             if paths.is_empty() {
                 libpijul::output::output_repository_no_pending(
-                    repo.working_copy,
+                    &repo.working_copy,
                     &repo.changes,
-                    txn.clone(),
-                    channel,
+                    &txn,
+                    &channel,
                     "",
                     true,
                     None,
@@ -223,10 +224,10 @@ impl Reset {
                 use path_slash::PathExt;
                 let path = path.to_slash_lossy();
                 libpijul::output::output_repository_no_pending(
-                    repo.working_copy.clone(),
+                    &repo.working_copy,
                     &repo.changes,
-                    txn.clone(),
-                    channel.clone(),
+                    &txn,
+                    &channel,
                     &path,
                     true,
                     None,
@@ -236,11 +237,6 @@ impl Reset {
             }
             PROGRESS.join();
         }
-        let txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-            txn.into_inner().unwrap()
-        } else {
-            unreachable!()
-        };
         txn.commit()?;
         debug!("now = {:?}", now.elapsed());
         let locks = libpijul::TIMERS.lock().unwrap();

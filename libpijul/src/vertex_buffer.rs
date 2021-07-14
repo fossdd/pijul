@@ -136,6 +136,7 @@ pub struct Writer<W: std::io::Write> {
     w: W,
     buf: Vec<u8>,
     new_line: bool,
+    is_zombie: bool,
 }
 
 impl<W: std::io::Write> Writer<W> {
@@ -144,6 +145,7 @@ impl<W: std::io::Write> Writer<W> {
             w,
             new_line: true,
             buf: Vec::new(),
+            is_zombie: false,
         }
     }
     pub fn into_inner(self) -> W {
@@ -197,8 +199,21 @@ impl<W: std::io::Write> VertexBuffer for Writer<W> {
     fn begin_conflict(&mut self) -> Result<(), std::io::Error> {
         self.output_conflict_marker(START_MARKER)
     }
+    fn end_conflict(&mut self) -> Result<(), std::io::Error> {
+        self.is_zombie = false;
+        self.output_conflict_marker(END_MARKER)
+    }
     fn begin_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(START_MARKER)
+        if self.is_zombie {
+            Ok(())
+        } else {
+            self.is_zombie = true;
+            self.begin_conflict()
+        }
+    }
+    fn end_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
+        self.is_zombie = false;
+        self.output_conflict_marker(END_MARKER)
     }
     fn begin_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
         self.output_conflict_marker(START_MARKER)

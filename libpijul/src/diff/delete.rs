@@ -6,6 +6,7 @@ use crate::change;
 use crate::change::{Atom, EdgeMap, Hunk, Local, NewVertex};
 use crate::pristine::*;
 use crate::record::Recorded;
+use crate::text_encoding::Encoding;
 
 impl Recorded {
     pub(super) fn delete<T: GraphTxnT>(
@@ -18,9 +19,10 @@ impl Recorded {
         lines_a: &[Line],
         lines_b: &[Line],
         r: usize,
+        encoding: &Option<Encoding>,
     ) -> Result<(), TxnErr<T::GraphError>> {
         debug!("delete {:?}: {:?}", r, d[r]);
-        self.delete_lines(txn, channel, diff, d, lines_a, r)?;
+        self.delete_lines(txn, channel, diff, d, lines_a, r, encoding)?;
         let old = d[r].old;
         let len = d[r].old_len;
         self.order_conflict_sides(
@@ -52,6 +54,7 @@ impl Recorded {
         d: &super::diff::D,
         lines_a: &[Line],
         r: usize,
+        encoding: &Option<Encoding>,
     ) -> Result<(), TxnErr<T::GraphError>> {
         let deletion = delete_lines(txn, channel, diff, d, lines_a, r)?;
         if !deletion.edges.is_empty() {
@@ -64,6 +67,7 @@ impl Recorded {
                     line: d[r].new + 1,
                     path: diff.path.clone(),
                 },
+                encoding: encoding.clone(),
             })
         }
         if !deletion.resurrect.is_empty() {
@@ -76,6 +80,7 @@ impl Recorded {
                     line: d[r].new + 1,
                     path: diff.path.clone(),
                 },
+                encoding: encoding.clone(),
             })
         }
         Ok(())
@@ -99,7 +104,10 @@ fn delete_lines<T: GraphTxnT>(
     let mut pos = bytes_pos(lines_a, old);
     let end_pos = pos + bytes_len(lines_a, old, len);
     let first_vertex = diff.first_vertex_containing(pos).max(1);
-    debug!("first_vertex = {:?}, vertex = {:?}", first_vertex, diff.pos_a[first_vertex].vertex);
+    debug!(
+        "first_vertex = {:?}, vertex = {:?}",
+        first_vertex, diff.pos_a[first_vertex].vertex
+    );
     let mut solved_conflict_end = 0;
     let mut i = first_vertex;
     while pos < end_pos {
@@ -228,7 +236,7 @@ impl Recorded {
         }
         let up_context = super::replace::get_up_context(diff, conflict_contexts, lines_a, old);
 
-        let mut contents = self.contents.lock().unwrap();
+        let mut contents = self.contents.lock();
         contents.push(0);
         let pos = ChangePosition(contents.len().into());
         contents.push(0);

@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 use super::{make_changelist, parse_changelist};
 use anyhow::bail;
@@ -33,21 +32,27 @@ pub enum SubRemote {
 
 impl Remote {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = Repository::find_root(self.repo_path).await?;
+        let repo = Repository::find_root(self.repo_path)?;
         debug!("{:?}", repo.config);
         let mut stdout = std::io::stdout();
         match self.subcmd {
             None => {
                 let txn = repo.pristine.txn_begin()?;
-                for r in txn.iter_remotes("")? {
+                for r in txn.iter_remotes(&libpijul::pristine::RemoteId::nil())? {
                     let r = r?;
-                    writeln!(stdout, "  {}", r.name())?;
+                    writeln!(stdout, "  {}: {}", r.id(), r.lock().path.as_str())?;
                 }
             }
             Some(SubRemote::Delete { remote }) => {
+                let remote =
+                    if let Some(r) = libpijul::pristine::RemoteId::from_base32(remote.as_bytes()) {
+                        r
+                    } else {
+                        bail!("Could not parse identifier: {:?}", remote)
+                    };
                 let mut txn = repo.pristine.mut_txn_begin()?;
-                if !txn.drop_named_remote(&remote)? {
-                    writeln!(std::io::stderr(), "Remote not found: {:?}", remote)?
+                if !txn.drop_named_remote(remote)? {
+                    bail!("Remote not found: {:?}", remote)
                 } else {
                     txn.commit()?;
                 }
@@ -121,11 +126,19 @@ lazy_static! {
 impl Push {
     pub async fn run(self) -> Result<(), anyhow::Error> {
         let mut stderr = std::io::stderr();
-        let repo = Repository::find_root(self.repo_path).await?;
+        let repo = Repository::find_root(self.repo_path)?;
         debug!("{:?}", repo.config);
-        let (channel_name, _) = repo
-            .config
-            .get_current_channel(self.from_channel.as_deref());
+        let txn = repo.pristine.arc_txn_begin()?;
+        let cur = txn
+            .read()
+            .current_channel()
+            .unwrap_or(crate::DEFAULT_CHANNEL)
+            .to_string();
+        let channel_name = if let Some(ref c) = self.from_channel {
+            c
+        } else {
+            cur.as_str()
+        };
         let remote_name = if let Some(ref rem) = self.to {
             rem
         } else if let Some(ref def) = repo.config.default_remote {
@@ -153,50 +166,40 @@ impl Push {
                 &remote_name,
                 remote_channel,
                 self.no_cert_check,
+                true,
             )
             .await?;
-        let mut txn = repo.pristine.mut_txn_begin()?;
-        let remote_changes = remote.update_changelist(&mut txn, &self.path).await?;
-        let channel = txn.open_or_create_channel(channel_name)?;
+        let remote_changes = remote
+            .update_changelist(&mut *txn.write(), &self.path)
+            .await?;
+        let channel = txn.write().open_or_create_channel(&channel_name)?;
 
         let mut paths = HashSet::new();
         for path in self.path.iter() {
-            let (p, ambiguous) = txn.follow_oldest_path(&repo.changes, &channel, path)?;
+            let (p, ambiguous) = txn
+                .read()
+                .follow_oldest_path(&repo.changes, &channel, path)?;
             if ambiguous {
                 bail!("Ambiguous path: {:?}", path)
             }
             paths.insert(p);
             paths.extend(
-                libpijul::fs::iter_graph_descendants(&txn, &channel.read()?.graph, p)?
+                libpijul::fs::iter_graph_descendants(&*txn.read(), &channel.read().graph, p)?
                     .map(|x| x.unwrap()),
             );
         }
 
         let mut to_upload: Vec<Hash> = Vec::new();
-        for x in txn.reverse_log(&*channel.read()?, None)? {
-            let (_, (h, m)) = x?;
-            if let Some((_, ref remote_changes)) = remote_changes {
-                if txn.remote_has_state(remote_changes, &m)? {
-                    break;
-                }
-                let h_int = txn.get_internal(h)?.unwrap();
-                if !txn.remote_has_change(&remote_changes, &h)? {
-                    if paths.is_empty() {
-                        to_upload.push(h.into())
-                    } else {
-                        for p in paths.iter() {
-                            if txn.get_touched_files(p, Some(h_int))?.is_some() {
-                                to_upload.push(h.into());
-                                break;
-                            }
-                        }
+        {
+            let txn = txn.read();
+            for x in txn.reverse_log(&*channel.read(), None)? {
+                let (_, (h, m)) = x?;
+                if let Some((_, ref remote_changes)) = remote_changes {
+                    if txn.remote_has_state(remote_changes, &m)? {
+                        break;
                     }
-                }
-            } else if let crate::remote::RemoteRepo::LocalChannel(ref remote_channel) = remote {
-                if let Some(channel) = txn.load_channel(remote_channel)? {
-                    let channel = channel.read()?;
                     let h_int = txn.get_internal(h)?.unwrap();
-                    if txn.get_changeset(txn.changes(&channel), h_int)?.is_none() {
+                    if !txn.remote_has_change(&remote_changes, &h)? {
                         if paths.is_empty() {
                             to_upload.push(h.into())
                         } else {
@@ -208,6 +211,23 @@ impl Push {
                             }
                         }
                     }
+                } else if let crate::remote::RemoteRepo::LocalChannel(ref remote_channel) = remote {
+                    if let Some(channel) = txn.load_channel(remote_channel)? {
+                        let channel = channel.read();
+                        let h_int = txn.get_internal(h)?.unwrap();
+                        if txn.get_changeset(txn.changes(&channel), h_int)?.is_none() {
+                            if paths.is_empty() {
+                                to_upload.push(h.into())
+                            } else {
+                                for p in paths.iter() {
+                                    if txn.get_touched_files(p, Some(h_int))?.is_some() {
+                                        to_upload.push(h.into());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -215,6 +235,7 @@ impl Push {
 
         if to_upload.is_empty() {
             writeln!(stderr, "Nothing to push")?;
+            txn.commit()?;
             return Ok(());
         }
         to_upload.reverse();
@@ -222,6 +243,7 @@ impl Push {
         let to_upload = if !self.changes.is_empty() {
             let mut u: Vec<libpijul::Hash> = Vec::new();
             let mut not_found = Vec::new();
+            let txn = txn.read();
             for change in self.changes.iter() {
                 match txn.hash_from_prefix(change) {
                     Ok((hash, _)) => {
@@ -248,9 +270,10 @@ impl Push {
         } else {
             let mut o = make_changelist(&repo.changes, &to_upload, "push")?;
             let remote_changes = remote_changes.map(|x| x.1);
+            let txn = txn.read();
             loop {
                 let d = parse_changelist(&edit::edit_bytes(&o[..])?);
-                let comp = complete_deps(&txn, &remote_changes, &repo.changes, &to_upload, &d)?;
+                let comp = complete_deps(&*txn, &remote_changes, &repo.changes, &to_upload, &d)?;
                 if comp.len() == d.len() {
                     break comp;
                 }
@@ -261,11 +284,17 @@ impl Push {
 
         if to_upload.is_empty() {
             writeln!(stderr, "Nothing to push")?;
+            txn.commit()?;
             return Ok(());
         }
 
         remote
-            .upload_changes(&mut txn, repo.changes_dir.clone(), push_channel, &to_upload)
+            .upload_changes(
+                &mut *txn.write(),
+                repo.changes_dir.clone(),
+                push_channel,
+                &to_upload,
+            )
             .await?;
         txn.commit()?;
 
@@ -276,11 +305,20 @@ impl Push {
 
 impl Pull {
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let mut repo = Repository::find_root(self.repo_path).await?;
-        let mut txn = repo.pristine.mut_txn_begin()?;
-        let (channel_name, is_current_channel) =
-            repo.config.get_current_channel(self.to_channel.as_deref());
-        let mut channel = txn.open_or_create_channel(channel_name)?;
+        let mut repo = Repository::find_root(self.repo_path)?;
+        let txn = repo.pristine.arc_txn_begin()?;
+        let cur = txn
+            .read()
+            .current_channel()
+            .unwrap_or(crate::DEFAULT_CHANNEL)
+            .to_string();
+        let channel_name = if let Some(ref c) = self.to_channel {
+            c
+        } else {
+            cur.as_str()
+        };
+        let is_current_channel = channel_name == cur;
+        let mut channel = txn.write().open_or_create_channel(&channel_name)?;
         debug!("{:?}", repo.config);
         let remote_name = if let Some(ref rem) = self.from {
             rem
@@ -300,21 +338,25 @@ impl Pull {
                 &remote_name,
                 from_channel,
                 self.no_cert_check,
+                true,
             )
             .await?;
         debug!("downloading");
 
         let mut inodes: HashSet<libpijul::pristine::Position<libpijul::Hash>> = HashSet::new();
+        let remote_changes = remote
+            .update_changelist(&mut *txn.write(), &self.path)
+            .await?;
         let mut to_download = if self.changes.is_empty() {
-            let remote_changes = remote.update_changelist(&mut txn, &self.path).await?;
             debug!("changelist done");
             let mut to_download: Vec<Hash> = Vec::new();
-            if let Some((inodes_, remote_changes)) = remote_changes {
+            if let Some((inodes_, remote_changes)) = remote_changes.as_ref() {
                 inodes.extend(inodes_.into_iter());
-                for x in txn.iter_remote(&remote_changes.lock()?.remote, 0)? {
+                let txn = txn.read();
+                for x in txn.iter_remote(&remote_changes.lock().remote, 0)? {
                     let p = x?.1; // (h, m)
                     if txn
-                        .channel_has_state(txn.states(&*channel.read()?), &p.b)?
+                        .channel_has_state(txn.states(&*channel.read()), &p.b)?
                         .is_some()
                     {
                         break;
@@ -324,6 +366,7 @@ impl Pull {
                 }
             } else if let crate::remote::RemoteRepo::LocalChannel(ref remote_channel) = remote {
                 let mut inodes_ = HashSet::new();
+                let txn = txn.read();
                 for path in self.path.iter() {
                     let (p, ambiguous) = txn.follow_oldest_path(&repo.changes, &channel, path)?;
                     if ambiguous {
@@ -331,7 +374,7 @@ impl Pull {
                     }
                     inodes_.insert(p);
                     inodes_.extend(
-                        libpijul::fs::iter_graph_descendants(&txn, &channel.read()?.graph, p)?
+                        libpijul::fs::iter_graph_descendants(&*txn, &channel.read().graph, p)?
                             .map(|x| x.unwrap()),
                     );
                 }
@@ -340,18 +383,18 @@ impl Pull {
                     pos: x.pos,
                 }));
                 if let Some(remote_channel) = txn.load_channel(remote_channel)? {
-                    let remote_channel = remote_channel.read()?;
+                    let remote_channel = remote_channel.read();
                     for x in txn.reverse_log(&remote_channel, None)? {
                         let (h, m) = x?.1;
                         if txn
-                            .channel_has_state(txn.states(&*channel.read()?), &m)?
+                            .channel_has_state(txn.states(&*channel.read()), &m)?
                             .is_some()
                         {
                             break;
                         }
                         let h_int = txn.get_internal(h)?.unwrap();
                         if txn
-                            .get_changeset(txn.changes(&*channel.read()?), h_int)?
+                            .get_changeset(txn.changes(&*channel.read()), h_int)?
                             .is_none()
                         {
                             if inodes_.is_empty()
@@ -366,9 +409,14 @@ impl Pull {
                         }
                     }
                 }
+            } else {
+                inodes = remote
+                    .download_changelist_nocache(0, &self.path, &mut to_download)
+                    .await?
             }
             to_download
         } else {
+            let txn = txn.read();
             let r: Result<Vec<libpijul::Hash>, anyhow::Error> = self
                 .changes
                 .iter()
@@ -377,27 +425,25 @@ impl Pull {
             r?
         };
         debug!("recording");
-        let txn = Arc::new(RwLock::new(txn));
         let hash = super::pending(txn.clone(), &mut channel, &mut repo)?;
-        let mut txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-            txn.into_inner().unwrap()
-        } else {
-            unreachable!()
-        };
         let mut to_download = remote
             .pull(
                 &mut repo,
-                &mut txn,
+                &mut *txn.write(),
                 &mut channel,
                 &mut to_download,
                 &inodes,
                 self.all,
             )
             .await?;
+        if let Some((_, ref r)) = remote_changes {
+            remote.update_identities(&mut repo, r).await?;
+        }
 
         if to_download.is_empty() {
             let mut stderr = std::io::stderr();
             writeln!(stderr, "Nothing to pull")?;
+            txn.commit()?;
             return Ok(());
         }
 
@@ -405,7 +451,7 @@ impl Pull {
             let mut o = make_changelist(&repo.changes, &to_download, "pull")?;
             to_download = loop {
                 let d = parse_changelist(&edit::edit_bytes(&o[..])?);
-                let comp = complete_deps(&txn, &None, &repo.changes, &to_download, &d)?;
+                let comp = complete_deps(&*txn.read(), &None, &repo.changes, &to_download, &d)?;
                 if comp.len() == d.len() {
                     break comp;
                 }
@@ -420,7 +466,8 @@ impl Pull {
                 pre: "Applying".into(),
             });
             std::mem::drop(pro);
-            let mut channel = channel.write().unwrap();
+            let mut channel = channel.write();
+            let mut txn = txn.write();
             for h in to_download.iter() {
                 txn.apply_change_rec_ws(&repo.changes, &mut channel, h, &mut ws)?;
                 PROGRESS.borrow_mut().unwrap()[n].incr()
@@ -428,16 +475,17 @@ impl Pull {
         }
         debug!("completing changes");
         remote
-            .complete_changes(&repo, &txn, &mut channel, &to_download, self.full)
+            .complete_changes(&repo, &*txn.read(), &mut channel, &to_download, self.full)
             .await?;
         remote.finish().await?;
 
         debug!("inodes = {:?}", inodes);
         debug!("to_download: {:?}", to_download.len());
         let mut touched = HashSet::new();
+        let txn_ = txn.read();
         for d in to_download.iter() {
-            if let Some(int) = txn.get_internal(&d.into())? {
-                for inode in txn.iter_rev_touched(int)? {
+            if let Some(int) = txn_.get_internal(&d.into())? {
+                for inode in txn_.iter_rev_touched(int)? {
                     let (int_, inode) = inode?;
                     if int_ < int {
                         continue;
@@ -445,7 +493,7 @@ impl Pull {
                         break;
                     }
                     let ext = libpijul::pristine::Position {
-                        change: txn.get_external(&inode.change)?.unwrap().into(),
+                        change: txn_.get_external(&inode.change)?.unwrap().into(),
                         pos: inode.pos,
                     };
                     if inodes.is_empty() || inodes.contains(&ext) {
@@ -454,21 +502,20 @@ impl Pull {
                 }
             }
         }
-        let txn = Arc::new(RwLock::new(txn));
+        std::mem::drop(txn_);
         if is_current_channel {
             let mut touched_paths: Vec<_> = Vec::new();
-            for &i in touched.iter() {
-                if let Some((path, _)) = libpijul::fs::find_path(
-                    &repo.changes,
-                    &*txn.read().unwrap(),
-                    &*channel.read()?,
-                    false,
-                    i,
-                )? {
-                    touched_paths.push(path)
-                } else {
-                    touched_paths.clear();
-                    break;
+            {
+                let txn_ = txn.read();
+                for &i in touched.iter() {
+                    if let Some((path, _)) =
+                        libpijul::fs::find_path(&repo.changes, &*txn_, &*channel.read(), false, i)?
+                    {
+                        touched_paths.push(path)
+                    } else {
+                        touched_paths.clear();
+                        break;
+                    }
                 }
             }
             touched_paths.sort();
@@ -488,10 +535,10 @@ impl Pull {
                 debug!("path = {:?}", path);
                 conflicts.extend(
                     libpijul::output::output_repository_no_pending(
-                        repo.working_copy.clone(),
+                        &repo.working_copy,
                         &repo.changes,
-                        txn.clone(),
-                        channel.clone(),
+                        &txn,
+                        &channel,
                         path,
                         true,
                         None,
@@ -505,10 +552,10 @@ impl Pull {
             if touched_paths.is_empty() {
                 conflicts.extend(
                     libpijul::output::output_repository_no_pending(
-                        repo.working_copy.clone(),
+                        &repo.working_copy,
                         &repo.changes,
-                        txn.clone(),
-                        channel.clone(),
+                        &txn,
+                        &channel,
                         "",
                         true,
                         None,
@@ -520,13 +567,8 @@ impl Pull {
             }
             PROGRESS.join();
         }
-        let mut txn = if let Ok(txn) = Arc::try_unwrap(txn) {
-            txn.into_inner().unwrap()
-        } else {
-            unreachable!()
-        };
         if let Some(h) = hash {
-            txn.unrecord(&repo.changes, &mut channel, &h, 0)?;
+            txn.write().unrecord(&repo.changes, &mut channel, &h, 0)?;
             repo.changes.del_change(&h)?;
         }
 

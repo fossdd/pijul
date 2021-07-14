@@ -6,7 +6,10 @@ pub(crate) fn find_alive_down<T: GraphTxnT>(
     channel: &T::Graph,
     vertex0: Vertex<ChangeId>,
 ) -> Result<HashSet<Vertex<ChangeId>>, BlockError<T::GraphError>> {
-    let mut stack = vec![(SerializedEdge::empty(vertex0.start_pos(), ChangeId::ROOT), 0)];
+    let mut stack = vec![(
+        SerializedEdge::empty(vertex0.start_pos(), ChangeId::ROOT),
+        0,
+    )];
     let mut visited = HashSet::default();
     let mut alive = HashSet::default();
     while let Some((elt, len)) = stack.pop() {
@@ -29,7 +32,7 @@ pub(crate) fn find_alive_down<T: GraphTxnT>(
                 {
                     if *vertex == vertex0 {
                         assert!(alive.is_empty());
-                        return Ok(alive)
+                        return Ok(alive);
                     } else {
                         alive.insert(*vertex);
                         stack.truncate(elt_index);
