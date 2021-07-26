@@ -35,7 +35,7 @@ pub enum SubCommand {
 }
 
 impl Channel {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let mut stdout = std::io::stdout();
         match self.subcmd {
             None => {
@@ -72,8 +72,7 @@ impl Channel {
                     dry_run: false,
                     files: Vec::new(),
                 })
-                .switch()
-                .await?;
+                .switch()?;
             }
             Some(SubCommand::Rename { ref from, ref to }) => {
                 let repo = Repository::find_root(self.repo_path)?;

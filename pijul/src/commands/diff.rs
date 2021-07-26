@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -35,10 +35,21 @@ pub struct Diff {
 }
 
 impl Diff {
-    pub async fn run(mut self) -> Result<(), anyhow::Error> {
+    pub fn run(mut self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path.clone())?;
         let txn = repo.pristine.arc_txn_begin()?;
         let mut stdout = std::io::stdout();
+
+        if self.untracked && self.json {
+            let txn = txn.read();
+            serde_json::to_writer_pretty(
+                &mut std::io::stdout(),
+                &untracked(&repo, &*txn)?.collect::<Vec<_>>(),
+            )?;
+            writeln!(stdout)?;
+            return Ok(());
+        }
+
         let cur = txn
             .read()
             .current_channel()
@@ -77,6 +88,16 @@ impl Diff {
         }
         let rec = state.finish();
         if rec.actions.is_empty() {
+            let txn = txn.read();
+            if self.short {
+                for path in untracked(&repo, &*txn)? {
+                    writeln!(stdout, "U {}", path.to_str().unwrap())?;
+                }
+            } else if self.untracked {
+                for path in untracked(&repo, &*txn)? {
+                    writeln!(stdout, "{}", path.to_str().unwrap())?;
+                }
+            }
             return Ok(());
         }
         let txn = txn.write();
@@ -109,77 +130,95 @@ impl Diff {
 
         let colors = is_colored();
         if self.json {
-            if self.untracked {
-                serde_json::to_writer_pretty(
-                    &mut std::io::stdout(),
-                    &untracked(&repo, &*txn)?.collect::<Vec<_>>(),
-                )?;
-                writeln!(stdout)?;
-            } else {
-                let mut changes = BTreeMap::new();
-                for ch in change.changes.iter() {
-                    changes
-                        .entry(ch.path())
-                        .or_insert_with(Vec::new)
-                        .push(Status {
-                            operation: match ch {
-                                Hunk::FileMove { .. } => "file move",
-                                Hunk::FileDel { .. } => "file del",
-                                Hunk::FileUndel { .. } => "file undel",
-                                Hunk::SolveNameConflict { .. } => "solve name conflict",
-                                Hunk::UnsolveNameConflict { .. } => "unsolve name conflict",
-                                Hunk::FileAdd { .. } => "file add",
-                                Hunk::Edit { .. } => "edit",
-                                Hunk::Replacement { .. } => "replacement",
-                                Hunk::SolveOrderConflict { .. } => "solve order conflict",
-                                Hunk::UnsolveOrderConflict { .. } => "unsolve order conflict",
-                                Hunk::ResurrectZombies { .. } => "resurrect zombies",
-                            },
-                            line: ch.line(),
-                        });
-                }
-                serde_json::to_writer_pretty(&mut std::io::stdout(), &changes)?;
-                writeln!(stdout)?;
-            }
-        } else if self.short {
-            let mut changes = Vec::new();
+            let mut changes = BTreeMap::new();
             for ch in change.changes.iter() {
-                changes.push(match ch {
-                    Hunk::FileMove { path, .. } => format!("MV {}\n", path),
-                    Hunk::FileDel { path, .. } => format!("D  {}\n", path),
-                    Hunk::FileUndel { path, .. } => format!("UD {}\n", path),
-                    Hunk::FileAdd { path, .. } => format!("A  {}", path),
-                    Hunk::SolveNameConflict { path, .. } => format!("SC {}", path),
-                    Hunk::UnsolveNameConflict { path, .. } => format!("UC {}", path),
+                changes
+                    .entry(ch.path())
+                    .or_insert_with(Vec::new)
+                    .push(Status {
+                        operation: match ch {
+                            Hunk::FileMove { .. } => "file move",
+                            Hunk::FileDel { .. } => "file del",
+                            Hunk::FileUndel { .. } => "file undel",
+                            Hunk::SolveNameConflict { .. } => "solve name conflict",
+                            Hunk::UnsolveNameConflict { .. } => "unsolve name conflict",
+                            Hunk::FileAdd { .. } => "file add",
+                            Hunk::Edit { .. } => "edit",
+                            Hunk::Replacement { .. } => "replacement",
+                            Hunk::SolveOrderConflict { .. } => "solve order conflict",
+                            Hunk::UnsolveOrderConflict { .. } => "unsolve order conflict",
+                            Hunk::ResurrectZombies { .. } => "resurrect zombies",
+                        },
+                        line: ch.line(),
+                    });
+            }
+            serde_json::to_writer_pretty(&mut std::io::stdout(), &changes)?;
+            writeln!(stdout)?;
+        } else if self.short {
+            let mut changes = BTreeMap::new();
+            for ch in change.changes.iter() {
+                match ch {
+                    Hunk::FileMove { path, .. } => {
+                        changes.entry(path).or_insert(BTreeSet::new()).insert("MV")
+                    }
+                    Hunk::FileDel { path, .. } => {
+                        changes.entry(path).or_insert(BTreeSet::new()).insert("D")
+                    }
+                    Hunk::FileUndel { path, .. } => {
+                        changes.entry(path).or_insert(BTreeSet::new()).insert("UD")
+                    }
+                    Hunk::FileAdd { path, .. } => {
+                        changes.entry(path).or_insert(BTreeSet::new()).insert("A")
+                    }
+                    Hunk::SolveNameConflict { path, .. } => {
+                        changes.entry(path).or_insert(BTreeSet::new()).insert("SC")
+                    }
+                    Hunk::UnsolveNameConflict { path, .. } => {
+                        changes.entry(path).or_insert(BTreeSet::new()).insert("UC")
+                    }
                     Hunk::Edit {
                         local: Local { path, .. },
                         ..
-                    } => format!("M  {}", path),
+                    } => changes.entry(path).or_insert(BTreeSet::new()).insert("M"),
                     Hunk::Replacement {
                         local: Local { path, .. },
                         ..
-                    } => format!("R  {}", path),
+                    } => changes.entry(path).or_insert(BTreeSet::new()).insert("R"),
                     Hunk::SolveOrderConflict {
                         local: Local { path, .. },
                         ..
-                    } => format!("SC {}", path),
+                    } => changes.entry(path).or_insert(BTreeSet::new()).insert("SC"),
                     Hunk::UnsolveOrderConflict {
                         local: Local { path, .. },
                         ..
-                    } => format!("UC {}", path),
+                    } => changes.entry(path).or_insert(BTreeSet::new()).insert("SC"),
                     Hunk::ResurrectZombies {
                         local: Local { path, .. },
                         ..
-                    } => format!("RZ {}", path),
-                });
+                    } => changes.entry(path).or_insert(BTreeSet::new()).insert("RZ"),
+                };
             }
-            changes.sort_unstable();
-            changes.dedup();
-            for ch in changes {
-                writeln!(stdout, "{}", ch)?;
+            let al = changes
+                .iter()
+                .map(|(_, v)| v.iter().map(|x| x.len()).sum::<usize>() + v.len() - 1)
+                .max()
+                .unwrap_or(0);
+            let spaces: String = std::iter::repeat(' ').take(al).collect();
+            for (k, v) in changes.iter() {
+                let mut is_first = true;
+                for v in v.iter() {
+                    if is_first {
+                        write!(stdout, "{}", v)?;
+                    } else {
+                        write!(stdout, ",{}", v)?;
+                    }
+                    is_first = false;
+                }
+                let (sp, _) = spaces.split_at(al - v.len());
+                writeln!(stdout, "{} {}", sp, k)?;
             }
             for path in untracked(&repo, &*txn)? {
-                writeln!(stdout, "U  {}", path.to_str().unwrap())?;
+                writeln!(stdout, "U {}", path.to_str().unwrap())?;
             }
         } else if self.untracked {
             for path in untracked(&repo, &*txn)? {
@@ -316,13 +355,8 @@ fn untracked<'a, T: TxnTExt>(
         .iterate_prefix_rec(repo_path.clone(), repo_path.clone(), threads)?
         .filter_map(move |x| {
             let (path, _) = x.unwrap();
-            let path_ = if let Ok(path) = path.as_path().strip_prefix(&repo_path.as_path()) {
-                path
-            } else {
-                return None;
-            };
             use path_slash::PathExt;
-            let path_str = path_.to_slash_lossy();
+            let path_str = path.to_slash_lossy();
             if !txn.is_tracked(&path_str).unwrap() {
                 Some(path)
             } else {

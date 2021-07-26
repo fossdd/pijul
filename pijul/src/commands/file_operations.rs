@@ -20,7 +20,7 @@ pub struct Move {
 }
 
 impl Move {
-    pub async fn run(mut self) -> Result<(), anyhow::Error> {
+    pub fn run(mut self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(None)?;
         let to = if let Some(to) = self.paths.pop() {
             to
@@ -91,7 +91,7 @@ pub struct List {
 }
 
 impl List {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;
         let mut stdout = std::io::stdout();
@@ -116,7 +116,7 @@ pub struct Add {
 }
 
 impl Add {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(None)?;
         let txn = repo.pristine.arc_txn_begin()?;
         let threads = num_cpus::get();
@@ -175,7 +175,7 @@ pub struct Remove {
 }
 
 impl Remove {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(None)?;
         let mut txn = repo.pristine.mut_txn_begin()?;
         let repo_path = CanonicalPathBuf::canonicalize(&repo.path)?;

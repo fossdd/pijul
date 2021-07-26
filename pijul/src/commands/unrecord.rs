@@ -31,7 +31,7 @@ pub struct Unrecord {
 }
 
 impl Unrecord {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let mut repo = Repository::find_root(self.repo_path)?;
         debug!("{:?}", repo.config);
         let txn = repo.pristine.arc_txn_begin()?;

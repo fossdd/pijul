@@ -26,7 +26,7 @@ pub struct Apply {
 }
 
 impl Apply {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.arc_txn_begin()?;
         let cur = txn

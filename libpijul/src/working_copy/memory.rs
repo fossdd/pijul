@@ -263,7 +263,7 @@ impl WorkingCopy for Memory {
         Ok(m.last_modified)
     }
 
-    fn remove_path(&self, path: &str) -> Result<(), Self::Error> {
+    fn remove_path(&self, path: &str, _rec: bool) -> Result<(), Self::Error> {
         self.0.lock().remove_path_(path);
         Ok(())
     }

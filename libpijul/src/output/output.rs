@@ -164,7 +164,7 @@ where
         debug!("dead (line {}) = {:?}", line!(), dead);
         if !dead.is_empty() {
             let mut txn = txn.write();
-            kill_dead_files::<T, R, P>(&mut *txn, &repo, &dead)?;
+            kill_dead_files::<T, R, P>(&mut *txn, &channel, &repo, &dead)?;
         }
         is_first_none = false;
     }
@@ -284,7 +284,7 @@ where
                     debug!("dead (line {}) = {:?}", line!(), dead);
                     if !dead.is_empty() {
                         let mut txn = txn.write();
-                        kill_dead_files::<T, R, P>(&mut *txn, &repo, &dead)?;
+                        kill_dead_files::<T, R, P>(&mut *txn, &channel, &repo, &dead)?;
                     }
                     is_first_none = false;
                 }
@@ -542,24 +542,33 @@ fn collect_dead_files<T: TreeTxnT + GraphTxnT<GraphError = <T as TreeTxnT>::Tree
     Ok(dead)
 }
 
-fn kill_dead_files<T: TreeMutTxnT, W: WorkingCopy + Clone, C: ChangeStore>(
+fn kill_dead_files<
+    T: ChannelTxnT<GraphError = T::TreeError> + TreeMutTxnT,
+    W: WorkingCopy + Clone,
+    C: ChangeStore,
+>(
     txn: &mut T,
+    channel: &ChannelRef<T>,
     repo: &W,
     dead: &HashMap<OwnedPathId, (Inode, Option<String>)>,
 ) -> Result<(), OutputError<C::Error, T::TreeError, W::Error>> {
+    let channel = channel.read();
     for (fileid, (inode, ref name)) in dead.iter() {
         debug!("killing {:?} {:?} {:?}", fileid, inode, name);
         del_tree_with_rev(txn, &fileid, inode)?;
 
-        for i in txn.iter_inodes().unwrap() {
-            debug!("inodes = {:?}", i);
-        }
-
         if let Some(&vertex) = txn.get_inodes(inode, None)? {
             debug!("kill_dead_files {:?} {:?}", inode, vertex);
             del_inodes_with_rev(txn, inode, &vertex)?;
-            if let Some(name) = name {
-                repo.remove_path(&name).map_err(OutputError::WorkingCopy)?
+            if txn
+                .get_graph(txn.graph(&*channel), &vertex.inode_vertex(), None)
+                .map_err(|x| OutputError::Pristine(x.into()))?
+                .is_some()
+            {
+                if let Some(name) = name {
+                    repo.remove_path(&name, false)
+                        .map_err(OutputError::WorkingCopy)?
+                }
             }
         }
     }

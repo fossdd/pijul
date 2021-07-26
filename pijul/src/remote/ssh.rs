@@ -635,14 +635,14 @@ impl thrussh::client::Handler for SshClient {
                 } => {
                     debug!("data = {:?}", data);
                     if data.ends_with(&[10]) {
-                        let buf = if buf.is_empty() {
+                        let buf_ = if buf.is_empty() {
                             &data
                         } else {
                             buf.extend(&data);
                             &buf
                         };
-                        for data in data.split(|c| *c == 10) {
-                            if let Ok(p) = serde_json::from_slice(&buf) {
+                        for data in buf_.split(|c| *c == 10) {
+                            if let Ok(p) = serde_json::from_slice(data) {
                                 debug!("p = {:?}", p);
                                 if let Some(ref mut sender) = sender {
                                     sender.send(p).await?;
@@ -653,6 +653,7 @@ impl thrussh::client::Handler for SshClient {
                                 break;
                             }
                         }
+                        buf.clear()
                     } else {
                         buf.extend(&data);
                     }
@@ -885,6 +886,7 @@ impl Ssh {
 
     pub async fn upload_changes(
         &mut self,
+        pro_n: usize,
         mut local: PathBuf,
         to_channel: Option<&str>,
         changes: &[Hash],
@@ -909,6 +911,7 @@ impl Ssh {
                 .await?;
             self.c.data(&change[..]).await?;
             libpijul::changestore::filesystem::pop_filename(&mut local);
+            super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
         }
         Ok(())
     }

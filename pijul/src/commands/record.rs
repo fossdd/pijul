@@ -59,7 +59,7 @@ pub(crate) fn timestamp_validator(s: &str) -> Result<(), &'static str> {
 }
 
 impl Record {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path.clone())?;
         let mut stdout = std::io::stdout();
         let mut stderr = std::io::stderr();

@@ -48,7 +48,7 @@ pub enum SubCommand {
 }
 
 impl Tag {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let mut stdout = std::io::stdout();
         let mut repo = Repository::find_root(self.repo_path)?;
         match self.subcmd {

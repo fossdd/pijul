@@ -368,17 +368,30 @@ impl RemoteRepo {
         to_channel: Option<&str>,
         changes: &[Hash],
     ) -> Result<(), anyhow::Error> {
+        let pro_n = {
+            let mut pro = PROGRESS.borrow_mut().unwrap();
+            pro.push(crate::progress::Cursor::Bar {
+                i: 0,
+                n: changes.len(),
+                pre: "Uploading changes".into(),
+            })
+        };
+
         match self {
-            RemoteRepo::Local(ref mut l) => l.upload_changes(local, to_channel, changes),
-            RemoteRepo::Ssh(ref mut s) => s.upload_changes(local, to_channel, changes).await,
-            RemoteRepo::Http(ref h) => h.upload_changes(local, to_channel, changes).await,
+            RemoteRepo::Local(ref mut l) => l.upload_changes(pro_n, local, to_channel, changes)?,
+            RemoteRepo::Ssh(ref mut s) => {
+                s.upload_changes(pro_n, local, to_channel, changes).await?
+            }
+            RemoteRepo::Http(ref h) => h.upload_changes(pro_n, local, to_channel, changes).await?,
             RemoteRepo::LocalChannel(ref channel) => {
                 let mut channel = txn.open_or_create_channel(channel)?;
                 let store = libpijul::changestore::filesystem::FileSystem::from_changes(local);
-                local::upload_changes(&store, txn, &mut channel, changes)
+                local::upload_changes(pro_n, &store, txn, &mut channel, changes)?
             }
             RemoteRepo::None => unreachable!(),
         }
+        PROGRESS.join();
+        Ok(())
     }
 
     /// Start (and possibly complete) the download of a change.

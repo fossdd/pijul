@@ -17,7 +17,7 @@ pub struct Debug {
 }
 
 impl Debug {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;
         let channel_name = if let Some(ref c) = self.channel {

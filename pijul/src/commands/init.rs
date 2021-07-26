@@ -15,8 +15,8 @@ pub struct Init {
 }
 
 impl Init {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
-        let repo = Repository::init(self.path).await?;
+    pub fn run(self) -> Result<(), anyhow::Error> {
+        let repo = Repository::init(self.path)?;
         let mut txn = repo.pristine.mut_txn_begin()?;
         let channel_name = self
             .channel

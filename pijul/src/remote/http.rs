@@ -149,6 +149,7 @@ impl Http {
 
     pub async fn upload_changes(
         &self,
+        pro_n: usize,
         mut local: PathBuf,
         to_channel: Option<&str>,
         changes: &[libpijul::Hash],
@@ -182,6 +183,7 @@ impl Http {
                 .send()
                 .await?;
             libpijul::changestore::filesystem::pop_filename(&mut local);
+            super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
         }
         Ok(())
     }

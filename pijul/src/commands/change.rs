@@ -18,7 +18,7 @@ pub struct Change {
 }
 
 impl Change {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path.clone())?;
         let txn = repo.pristine.txn_begin()?;
         let changes = repo.changes;

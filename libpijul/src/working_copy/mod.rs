@@ -17,7 +17,7 @@ pub trait WorkingCopy {
     fn file_metadata(&self, file: &str) -> Result<InodeMetadata, Self::Error>;
     fn read_file(&self, file: &str, buffer: &mut Vec<u8>) -> Result<(), Self::Error>;
     fn modified_time(&self, file: &str) -> Result<std::time::SystemTime, Self::Error>;
-    fn remove_path(&self, name: &str) -> Result<(), Self::Error>;
+    fn remove_path(&self, name: &str, rec: bool) -> Result<(), Self::Error>;
     fn rename(&self, former: &str, new: &str) -> Result<(), Self::Error>;
     fn set_permissions(&self, name: &str, permissions: u16) -> Result<(), Self::Error>;
 

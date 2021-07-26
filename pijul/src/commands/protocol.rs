@@ -48,7 +48,7 @@ fn load_channel<T: MutTxnTExt>(txn: &T, name: &str) -> Result<ChannelRef<T>, any
 const PARTIAL_CHANGE_SIZE: u64 = 1 << 20;
 
 impl Protocol {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let mut repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.arc_txn_begin()?;
         let mut ws = libpijul::ApplyWorkspace::new();
@@ -255,64 +255,7 @@ impl Protocol {
                     continue;
                 };
                 for id in r {
-                    let id = id?;
-                    let m = id.metadata()?;
-                    let p = id.path();
-                    debug!("{:?}", p);
-                    let mod_ts = m
-                        .modified()?
-                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    if mod_ts >= last_touched {
-                        let mut done = HashSet::new();
-                        if p.file_name() == Some("publickey.json".as_ref()) {
-                            let public_key: libpijul::key::PublicKey =
-                                if let Some(mut dir) = crate::config::global_config_dir() {
-                                    dir.push("publickey.json");
-                                    let mut pkf = std::fs::File::open(&dir)?;
-                                    serde_json::from_reader(&mut pkf)?
-                                } else {
-                                    continue;
-                                };
-                            if !done.insert(public_key.key.clone()) {
-                                continue;
-                            }
-                            if let Ok((config, last_modified)) = crate::config::Global::load() {
-                                serde_json::to_writer(
-                                    &mut o,
-                                    &crate::Identity {
-                                        public_key,
-                                        email: config.author.email,
-                                        name: config.author.full_name,
-                                        login: config.author.name,
-                                        origin: String::new(),
-                                        last_modified,
-                                    },
-                                )
-                                .unwrap();
-                                writeln!(o)?;
-                                o.flush()?;
-                            } else {
-                                debug!("no global config");
-                            }
-                        } else {
-                            let mut idf = if let Ok(f) = std::fs::File::open(&p) {
-                                f
-                            } else {
-                                continue;
-                            };
-                            let id: Result<crate::Identity, _> = serde_json::from_reader(&mut idf);
-                            if let Ok(id) = id {
-                                if !done.insert(id.public_key.key.clone()) {
-                                    continue;
-                                }
-                                serde_json::to_writer(&mut o, &id).unwrap();
-                                writeln!(o)?;
-                                o.flush()?;
-                            }
-                        }
-                    }
+                    output_id(id, last_touched, &mut o).unwrap_or(());
                 }
                 writeln!(o)?;
                 o.flush()?;
@@ -340,4 +283,77 @@ impl Protocol {
         }
         Ok(())
     }
+}
+
+fn get_public_key() -> Result<libpijul::key::PublicKey, anyhow::Error> {
+    if let Some(mut dir) = crate::config::global_config_dir() {
+        dir.push("publickey.json");
+        if let Ok(mut pkf) = std::fs::File::open(&dir) {
+            if let Ok(pkf) = serde_json::from_reader(&mut pkf) {
+                return Ok(pkf);
+            }
+        }
+    }
+    bail!("No public key found")
+}
+
+fn output_id<W: Write>(
+    id: Result<std::fs::DirEntry, std::io::Error>,
+    last_touched: u64,
+    mut o: W,
+) -> Result<(), anyhow::Error> {
+    let id = id?;
+    let m = id.metadata()?;
+    let p = id.path();
+    debug!("{:?}", p);
+    let mod_ts = m
+        .modified()?
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    if mod_ts >= last_touched {
+        let mut done = HashSet::new();
+        if p.file_name() == Some("publickey.json".as_ref()) {
+            let public_key: libpijul::key::PublicKey = if let Ok(pk) = get_public_key() {
+                pk
+            } else {
+                return Ok(());
+            };
+            if !done.insert(public_key.key.clone()) {
+                return Ok(());
+            }
+            if let Ok((config, last_modified)) = crate::config::Global::load() {
+                serde_json::to_writer(
+                    &mut o,
+                    &crate::Identity {
+                        public_key,
+                        email: config.author.email,
+                        name: config.author.full_name,
+                        login: config.author.name,
+                        origin: String::new(),
+                        last_modified,
+                    },
+                )
+                .unwrap();
+                writeln!(o)?;
+            } else {
+                debug!("no global config");
+            }
+        } else {
+            let mut idf = if let Ok(f) = std::fs::File::open(&p) {
+                f
+            } else {
+                return Ok(());
+            };
+            let id: Result<crate::Identity, _> = serde_json::from_reader(&mut idf);
+            if let Ok(id) = id {
+                if !done.insert(id.public_key.key.clone()) {
+                    return Ok(());
+                }
+                serde_json::to_writer(&mut o, &id).unwrap();
+                writeln!(o)?;
+            }
+        }
+    }
+    Ok(())
 }

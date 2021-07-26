@@ -79,7 +79,7 @@ impl Repository {
         })
     }
 
-    pub async fn init(path: Option<std::path::PathBuf>) -> Result<Self, anyhow::Error> {
+    pub fn init(path: Option<std::path::PathBuf>) -> Result<Self, anyhow::Error> {
         let cur = if let Some(path) = path {
             path
         } else {

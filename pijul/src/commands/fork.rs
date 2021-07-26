@@ -22,7 +22,7 @@ pub struct Fork {
 }
 
 impl Fork {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path)?;
         debug!("{:?}", repo.config);
         let mut txn = repo.pristine.mut_txn_begin()?;

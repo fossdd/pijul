@@ -27,10 +27,16 @@ pub struct Log {
     /// Include full change description in the output
     #[clap(long = "description")]
     descriptions: bool,
+    /// Start after this many changes
+    #[clap(long = "offset")]
+    offset: Option<usize>,
+    /// Output at most this many changes
+    #[clap(long = "limit")]
+    limit: Option<usize>,
 }
 
 impl Log {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;
         let channel_name = if let Some(ref c) = self.channel {
@@ -46,8 +52,14 @@ impl Log {
         super::pager();
         let changes = repo.changes;
         let mut stdout = std::io::stdout();
+        let limit = self.limit.unwrap_or(std::usize::MAX);
+        let offset = self.offset.unwrap_or(0);
         if self.hash_only {
-            for h in txn.reverse_log(&*channel.read(), None)? {
+            for h in txn
+                .reverse_log(&*channel.read(), None)?
+                .skip(offset)
+                .take(limit)
+            {
                 let h: libpijul::Hash = (h?.1).0.into();
                 writeln!(stdout, "{}", h.to_base32())?
             }
@@ -57,7 +69,11 @@ impl Log {
             let mut id_path = repo.path.join(libpijul::DOT_DIR);
             id_path.push("identities");
 
-            for h in txn.reverse_log(&*channel.read(), None)? {
+            for h in txn
+                .reverse_log(&*channel.read(), None)?
+                .skip(offset)
+                .take(limit)
+            {
                 let (h, mrk) = h?.1;
                 let h: libpijul::Hash = h.into();
                 let mrk: libpijul::Merkle = mrk.into();

@@ -328,18 +328,33 @@ impl WorkingCopy for FileSystem {
         f.read_to_end(buffer)?;
         Ok(())
     }
+
+    #[cfg(not(unix))]
     fn modified_time(&self, file: &str) -> Result<std::time::SystemTime, Self::Error> {
         debug!("modified_time {:?}", file);
         let attr = std::fs::metadata(&self.path(file))?;
         Ok(attr.modified()?)
     }
 
-    fn remove_path(&self, path: &str) -> Result<(), Self::Error> {
+    #[cfg(unix)]
+    fn modified_time(&self, file: &str) -> Result<std::time::SystemTime, Self::Error> {
+        debug!("modified_time {:?}", file);
+        use std::os::unix::fs::MetadataExt;
+        let attr = std::fs::metadata(&self.path(file))?;
+        let ctime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(attr.ctime() as u64);
+        Ok(attr.modified()?.min(ctime))
+    }
+
+    fn remove_path(&self, path: &str, rec: bool) -> Result<(), Self::Error> {
         debug!("remove_path {:?}", path);
         let path = self.path(path);
         if let Ok(meta) = std::fs::metadata(&path) {
             if let Err(e) = if meta.is_dir() {
-                std::fs::remove_dir_all(&path)
+                if rec {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_dir(&path)
+                }
             } else {
                 std::fs::remove_file(&path)
             } {

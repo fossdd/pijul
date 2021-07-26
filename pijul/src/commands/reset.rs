@@ -27,15 +27,15 @@ pub struct Reset {
 }
 
 impl Reset {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
-        self.reset(true).await
+    pub fn run(self) -> Result<(), anyhow::Error> {
+        self.reset(true)
     }
 
-    pub async fn switch(self) -> Result<(), anyhow::Error> {
-        self.reset(false).await
+    pub fn switch(self) -> Result<(), anyhow::Error> {
+        self.reset(false)
     }
 
-    async fn reset(self, overwrite_changes: bool) -> Result<(), anyhow::Error> {
+    fn reset(self, overwrite_changes: bool) -> Result<(), anyhow::Error> {
         let has_repo_path = self.repo_path.is_some();
         let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.arc_txn_begin()?;

@@ -23,7 +23,7 @@ pub struct Credit {
 }
 
 impl Credit {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let has_repo_path = self.repo_path.is_some();
         let repo = Repository::find_root(self.repo_path)?;
         let txn = repo.pristine.txn_begin()?;

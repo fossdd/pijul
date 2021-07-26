@@ -31,7 +31,7 @@ pub enum SubRemote {
 }
 
 impl Remote {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = Repository::find_root(self.repo_path)?;
         debug!("{:?}", repo.config);
         let mut stdout = std::io::stdout();
@@ -443,6 +443,9 @@ impl Pull {
         if to_download.is_empty() {
             let mut stderr = std::io::stderr();
             writeln!(stderr, "Nothing to pull")?;
+            if let Some(ref h) = hash {
+                txn.write().unrecord(&repo.changes, &mut channel, h, 0)?;
+            }
             txn.commit()?;
             return Ok(());
         }

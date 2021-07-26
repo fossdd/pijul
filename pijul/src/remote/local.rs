@@ -111,6 +111,7 @@ impl Local {
 
     pub fn upload_changes(
         &mut self,
+        pro_n: usize,
         mut local: PathBuf,
         to_channel: Option<&str>,
         changes: &[Hash],
@@ -135,7 +136,7 @@ impl Local {
             libpijul::changestore::filesystem::pop_filename(&mut self.changes_dir);
         }
         let repo = libpijul::working_copy::filesystem::FileSystem::from_root(&self.root);
-        upload_changes(&store, &mut *txn.write(), &channel, changes)?;
+        upload_changes(pro_n, &store, &mut *txn.write(), &channel, changes)?;
         libpijul::output::output_repository_no_pending(
             &repo,
             &store,
@@ -215,6 +216,7 @@ impl Local {
 }
 
 pub fn upload_changes<T: MutTxnTExt, C: libpijul::changestore::ChangeStore>(
+    pro_n: usize,
     store: &C,
     txn: &mut T,
     channel: &libpijul::pristine::ChannelRef<T>,
@@ -224,6 +226,7 @@ pub fn upload_changes<T: MutTxnTExt, C: libpijul::changestore::ChangeStore>(
     let mut channel = channel.write();
     for c in changes {
         txn.apply_change_ws(store, &mut *channel, c, &mut ws)?;
+        super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
     }
     Ok(())
 }
