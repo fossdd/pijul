@@ -423,6 +423,7 @@ impl RemoteRepo {
         repo: &mut Repository,
         remote: &RemoteRef<T>,
     ) -> Result<(), anyhow::Error> {
+        debug!("Downloading identities");
         let mut id_path = repo.path.clone();
         id_path.push(DOT_DIR);
         id_path.push("identities");
@@ -547,7 +548,6 @@ impl RemoteRepo {
         std::mem::drop(recv);
         debug!("waiting for spawned process");
         *self = t.await??;
-        debug!("Downloading identities");
         debug!("join");
         PROGRESS.join();
         Ok(to_apply_inodes)

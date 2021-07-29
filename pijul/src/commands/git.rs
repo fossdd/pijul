@@ -40,11 +40,11 @@ use ::sanakirja::{Storable, UnsizedStorable};
 ::sanakirja::direct_repr!(Oid);
 
 impl Git {
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub fn run(self) -> Result<(), anyhow::Error> {
         let repo = if let Ok(repo) = Repository::find_root(self.repo_path.clone()) {
             repo
         } else {
-            Repository::init(self.repo_path.clone()).await?
+            Repository::init(self.repo_path.clone())?
         };
         let git = git2::Repository::open(&repo.path)?;
         let st = git.statuses(None)?;
@@ -85,7 +85,7 @@ impl Git {
             check: self.check,
             current_commit: None,
         };
-        import(&git, &mut env_git, &mut repo, &dag).await?;
+        import(&git, &mut env_git, &mut repo, &dag)?;
         Ok(())
     }
 }
@@ -240,7 +240,7 @@ impl Todo {
 }
 
 /// Import the entire Git DAG into Pijul.
-async fn import(
+fn import(
     git: &git2::Repository,
     env_git: &mut ::sanakirja::Env,
     repo: &mut OpenRepo,
@@ -734,23 +734,46 @@ fn record_apply<
 > {
     let mut state = libpijul::RecordBuilder::new();
     let num_cpus = num_cpus::get();
-    let result = working_copy.record_prefixes(
-        txn.clone(),
-        channel.clone(),
-        changes,
-        &mut state,
-        repo_path.clone(),
-        prefixes,
-        num_cpus,
-        0,
-    );
-    use libpijul::working_copy::filesystem::*;
-    match result {
-        Ok(_) => {}
-        Err(Error::Add(AddError::Fs(FsError::NotFound(_)))) => {}
-        Err(Error::Add(AddError::Fs(FsError::AlreadyInRepo(_)))) => {}
-        Err(e) => {
-            error!("While adding {:?}: {}", prefixes, e);
+    for p in prefixes.iter() {
+        use libpijul::working_copy::filesystem::*;
+        match working_copy.record_prefix(
+            txn.clone(),
+            channel.clone(),
+            changes,
+            &mut state,
+            repo_path.clone(),
+            p,
+            num_cpus,
+            0,
+        ) {
+            Ok(_) => {}
+            Err(Error::Add(AddError::Fs(FsError::NotFound(_)))) => {}
+            Err(Error::Add(AddError::Fs(FsError::AlreadyInRepo(_)))) => {}
+            Err(Error::Add(AddError::Io(e))) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                error!("While adding {:?}: {:?}", p, e);
+            }
+        }
+    }
+    if prefixes.is_empty() {
+        use libpijul::working_copy::filesystem::*;
+        match working_copy.record_prefix(
+            txn.clone(),
+            channel.clone(),
+            changes,
+            &mut state,
+            repo_path.clone(),
+            Path::new(""),
+            num_cpus,
+            0,
+        ) {
+            Ok(_) => {}
+            Err(Error::Add(AddError::Fs(FsError::NotFound(_)))) => {}
+            Err(Error::Add(AddError::Fs(FsError::AlreadyInRepo(_)))) => {}
+            Err(Error::Add(AddError::Io(e))) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                error!("While adding {:?}: {:?}", prefixes, e);
+            }
         }
     }
     let rec = state.finish();

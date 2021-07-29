@@ -341,7 +341,8 @@ impl WorkingCopy for FileSystem {
         debug!("modified_time {:?}", file);
         use std::os::unix::fs::MetadataExt;
         let attr = std::fs::metadata(&self.path(file))?;
-        let ctime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(attr.ctime() as u64);
+        let ctime =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(attr.ctime() as u64);
         Ok(attr.modified()?.min(ctime))
     }
 
