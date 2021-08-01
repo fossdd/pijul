@@ -1078,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "libpijul"
-version = "1.0.0-alpha.45"
+version = "1.0.0-alpha.46"
 dependencies = [
  "adler32",
  "aes",
@@ -1497,7 +1497,7 @@ checksum = "d4fd5641d01c8f18a23da7b6fe29298ff4b55afcccdf78973b24cf3175fee32e"
 
 [[package]]
 name = "pijul"
-version = "1.0.0-alpha.52"
+version = "1.0.0-alpha.53"
 dependencies = [
  "anyhow",
  "atty",
@@ -1824,9 +1824,9 @@ dependencies = [
 
 [[package]]
 name = "sanakirja"
-version = "1.2.5"
+version = "1.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5503ef92c94be580857160eb38b30d4f662a718ef89cdd59798fbab0e4450835"
+checksum = "dc00573bddeb9c73d282f9483bd02c3c2251c335860f0639d6ca1b812b5fb993"
 dependencies = [
  "crc32fast",
  "fs2",
@@ -1840,9 +1840,9 @@ dependencies = [
 
 [[package]]
 name = "sanakirja-core"
-version = "1.2.9"
+version = "1.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b75dcd53f6f27579419a2ad6e7225e565b9343878b8df65729c05014703b404"
+checksum = "a67f61894c881816d0d12d063fd872266572f17508bb42979f02510095051dd1"
 dependencies = [
  "crc32fast",
 ]

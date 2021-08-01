@@ -1,7 +1,7 @@
 [package]
 name = "libpijul"
 description = "Core library of Pijul, a distributed version control system based on a sound theory of collaborative work."
-version = "1.0.0-alpha.45"
+version = "1.0.0-alpha.46"
 
 repository = "https://nest.pijul.com/pijul/libpijul"
 documentation = "https://docs.rs/libpijul"
@@ -11,9 +11,12 @@ license = "GPL-2.0-or-later"
 include = [
 "Cargo.toml",
 "src/apply.rs",
+"src/apply/edge.rs",
+"src/apply/vertex.rs",
 "src/missing_context.rs",
 "src/vector2.rs",
 "src/path.rs",
+"src/key.rs",
 "src/chardetng/mod.rs",
 "src/chardetng/data.rs",
 "src/chardetng/tld.rs",
@@ -26,6 +29,7 @@ include = [
 "src/change.rs",
 "src/change/change_file.rs",
 "src/change/text_changes.rs",
+"src/change/noenc.rs",
 "src/alive/tarjan.rs",
 "src/alive/debug.rs",
 "src/alive/retrieve.rs",
@@ -53,6 +57,7 @@ include = [
 "src/pristine/inode_vertex.rs",
 "src/find_alive.rs",
 "src/tag.rs",
+"src/text_encoding.rs",
 "src/tests/performance.rs",
 "src/tests/file_conflicts.rs",
 "src/tests/filesystem.rs",
@@ -91,7 +96,7 @@ default = [ "ondisk-repos", "text-changes", "dump" ]
 tarball = [ "tar", "flate2" ]
 
 [dependencies]
-sanakirja = { version = "1.2.4", features = [ "crc32" ] }
+sanakirja = { version = "1.2.9", features = [ "crc32" ] }
 byteorder = "1.3"
 log = "0.4"
 serde = "1.0"
