@@ -38,12 +38,14 @@ impl Local {
         Ok(get_state(&txn, &channel, mid)?)
     }
 
-    pub fn get_id(&self) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+    pub fn get_id(&self) -> Result<libpijul::pristine::RemoteId, anyhow::Error> {
         let txn = self.pristine.txn_begin()?;
         if let Some(channel) = txn.load_channel(&self.channel)? {
-            Ok(Some(*txn.id(&*channel.read())))
+            Ok(*txn.id(&*channel.read()))
         } else {
-            Ok(None)
+            Err(anyhow::anyhow!(
+                "Unable to retrieve RemoteId for Local remote"
+            ))
         }
     }
 

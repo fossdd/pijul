@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use lazy_static::lazy_static;
-use libpijul::pristine::{Base32, ChannelRef, GraphIter, Hash, Merkle, MutTxnT, RemoteRef, TxnT};
+use libpijul::pristine::{
+    sanakirja::MutTxn, Base32, ChangeId, ChannelRef, GraphIter, Hash, Merkle, MutTxnT, RemoteRef,
+    TxnT,
+};
 use libpijul::DOT_DIR;
-use libpijul::{MutTxnTExt, TxnTExt};
+use libpijul::{ChannelTxnT, DepsTxnT, GraphTxnT, MutTxnTExt, TxnTExt};
 use log::{debug, info};
 
 use crate::repository::*;
@@ -109,6 +112,255 @@ pub async fn unknown_remote(
     }
 }
 
+// Extracting this saves a little bit of duplication.
+fn get_local_inodes(
+    txn: &mut MutTxn<()>,
+    channel: &ChannelRef<MutTxn<()>>,
+    repo: &Repository,
+    path: &[String],
+) -> Result<HashSet<Position<ChangeId>>, anyhow::Error> {
+    let mut paths = HashSet::new();
+    for path in path.iter() {
+        let (p, ambiguous) = txn.follow_oldest_path(&repo.changes, &channel, path)?;
+        if ambiguous {
+            bail!("Ambiguous path: {:?}", path)
+        }
+        paths.insert(p);
+        paths.extend(
+            libpijul::fs::iter_graph_descendants(txn, &channel.read().graph, p)?
+                .map(|x| x.unwrap()),
+        );
+    }
+    Ok(paths)
+}
+
+/// Embellished [`RemoteDelta`] that has information specific
+/// to a push operation. We want to know what our options are
+/// for changes to upload, whether the remote has unrecorded relevant changes,
+/// and whether the remote has changes we don't know about, since those might
+/// effect whether or not we actually want to go through with the push.
+pub(crate) struct PushDelta<T: MutTxnTExt + TxnTExt> {
+    pub to_upload: Vec<Hash>,
+    pub remote_ref: Option<RemoteRef<T>>,
+    pub remote_unrecs: Vec<(u64, Hash)>,
+    pub unknown_changes: Vec<Hash>,
+}
+
+/// For a [`RemoteRepo`] that's Local, Ssh, or Http
+/// (anything other than a LocalChannel),
+/// [`RemoteDelta`] contains data about the difference between
+/// the "actual" state of the remote ('theirs') and the last version of it
+/// that we cached ('ours'). The dichotomy is the last point at which the two
+/// were the same. `remote_unrecs` is a list of changes which used to be
+/// present in the remote, AND were present in the current channel we're
+/// pulling to or pushing from. The significance of that is that if we knew
+/// about a certain change but did not pull it, the user won't be notified
+/// if it's unrecorded in the remote.
+///
+/// If the remote we're pulling from or pushing to is a LocalChannel,
+/// (meaning it's just a different channel of the repo we're already in), then
+/// `ours_ge_dichotomy`, `theirs_ge_dichotomy`, and `remote_unrecs` will be empty
+/// since they have no meaning. If we're pulling from a LocalChannel,
+/// there's no cache to have diverged from, and if we're pushing to a LocalChannel,
+/// we're not going to suddenly be surprised by the presence of unknown changes.
+///
+/// This struct will be created by both a push and pull operation since both
+/// need to update the changelist and will at least try to update the local
+/// remote cache. For a push, this later gets turned into [`PushDelta`].
+pub(crate) struct RemoteDelta<T: MutTxnTExt + TxnTExt> {
+    pub inodes: HashSet<Position<Hash>>,
+    pub to_download: Vec<Hash>,
+    pub remote_ref: Option<RemoteRef<T>>,
+    pub ours_ge_dichotomy_set: HashSet<Hash>,
+    pub theirs_ge_dichotomy_set: HashSet<Hash>,
+    // Keep the Vec representation around as well so that notification
+    // for unknown changes during shows the hashes in order.
+    pub theirs_ge_dichotomy: Vec<(u64, Hash, Merkle)>,
+    pub remote_unrecs: Vec<(u64, Hash)>,
+}
+
+impl RemoteDelta<MutTxn<()>> {
+    /// Make a [`PushDelta`] from a [`RemoteDelta`]
+    /// when the remote is a [`RemoteRepo::LocalChannel`].
+    pub(crate) fn to_local_channel_push(
+        self,
+        remote_channel: &str,
+        txn: &mut MutTxn<()>,
+        path: &[String],
+        channel: &ChannelRef<MutTxn<()>>,
+        repo: &Repository,
+    ) -> Result<PushDelta<MutTxn<()>>, anyhow::Error> {
+        let mut to_upload = Vec::<Hash>::new();
+        let inodes = get_local_inodes(txn, channel, repo, path)?;
+
+        for x in txn.reverse_log(&*channel.read(), None)? {
+            let (_, (h, _)) = x?;
+            if let Some(channel) = txn.load_channel(remote_channel)? {
+                let channel = channel.read();
+                let h_int = txn.get_internal(h)?.unwrap();
+                if txn.get_changeset(txn.changes(&channel), h_int)?.is_none() {
+                    if inodes.is_empty() {
+                        to_upload.push(h.into())
+                    } else {
+                        for p in inodes.iter() {
+                            if txn.get_touched_files(p, Some(h_int))?.is_some() {
+                                to_upload.push(h.into());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(self.ours_ge_dichotomy_set.is_empty());
+        assert!(self.theirs_ge_dichotomy_set.is_empty());
+        let d = PushDelta {
+            to_upload: to_upload.into_iter().rev().collect(),
+            remote_ref: self.remote_ref,
+            remote_unrecs: self.remote_unrecs,
+            unknown_changes: Vec::new(),
+        };
+        assert!(d.remote_unrecs.is_empty());
+        Ok(d)
+    }
+
+    /// Make a [`PushDelta`] from a [`RemoteDelta`] when the remote
+    /// is not a LocalChannel.
+    pub(crate) fn to_remote_push(
+        self,
+        txn: &mut MutTxn<()>,
+        path: &[String],
+        channel: &ChannelRef<MutTxn<()>>,
+        repo: &Repository,
+    ) -> Result<PushDelta<MutTxn<()>>, anyhow::Error> {
+        let mut to_upload = Vec::<Hash>::new();
+        let inodes = get_local_inodes(txn, channel, repo, path)?;
+        if let Some(ref remote_ref) = self.remote_ref {
+            for x in txn.reverse_log(&*channel.read(), None)? {
+                let (_, (h, m)) = x?;
+                if txn.remote_has_state(remote_ref, &m)? {
+                    break;
+                }
+                let h_int = txn.get_internal(h)?.unwrap();
+                let h_deser = Hash::from(h);
+                // For elements that are in the uncached remote changes (theirs_ge_dichotomy),
+                // don't put those in to_upload since the remote we're pushing to
+                // already has those changes.
+                if !txn.remote_has_change(remote_ref, &h)?
+                    && !self.theirs_ge_dichotomy_set.contains(&h_deser)
+                {
+                    if inodes.is_empty() {
+                        to_upload.push(h_deser)
+                    } else {
+                        for p in inodes.iter() {
+                            if txn.get_touched_files(p, Some(h_int))?.is_some() {
+                                to_upload.push(h_deser);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // { h | h \in theirs_ge_dichotomy /\ ~(h \in ours_ge_dichotomy) }
+        // The set of their changes >= dichotomy that aren't
+        // already known to our set of changes after the dichotomy.
+        let unknown_changes = self
+            .theirs_ge_dichotomy
+            .iter()
+            .filter_map(|(_, h, _)| {
+                if self.ours_ge_dichotomy_set.contains(h)
+                    || txn.get_revchanges(&channel, h).unwrap().is_some()
+                {
+                    None
+                } else {
+                    Some(*h)
+                }
+            })
+            .collect::<Vec<Hash>>();
+
+        Ok(PushDelta {
+            to_upload: to_upload.into_iter().rev().collect(),
+            remote_ref: self.remote_ref,
+            remote_unrecs: self.remote_unrecs,
+            unknown_changes,
+        })
+    }
+}
+
+/// Create a [`RemoteDelta`] for a [`RemoteRepo::LocalChannel`].
+/// Since this case doesn't have a local remote cache to worry about,
+/// mainly just calculates the `to_download` list of changes.
+pub(crate) fn update_changelist_local_channel(
+    remote_channel: &str,
+    txn: &mut MutTxn<()>,
+    path: &[String],
+    current_channel: &ChannelRef<MutTxn<()>>,
+    repo: &Repository,
+    specific_changes: &[String],
+) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
+    if !specific_changes.is_empty() {
+        let to_download: Result<Vec<libpijul::Hash>, anyhow::Error> = specific_changes
+            .iter()
+            .map(|h| Ok(txn.hash_from_prefix(h)?.0))
+            .collect();
+        Ok(RemoteDelta {
+            inodes: HashSet::new(),
+            to_download: to_download?,
+            remote_ref: None,
+            ours_ge_dichotomy_set: HashSet::new(),
+            theirs_ge_dichotomy: Vec::new(),
+            theirs_ge_dichotomy_set: HashSet::new(),
+            remote_unrecs: Vec::new(),
+        })
+    } else {
+        let mut inodes = HashSet::new();
+        let inodes_ = get_local_inodes(txn, current_channel, repo, path)?;
+        let mut to_download = Vec::new();
+        inodes.extend(inodes_.iter().map(|x| libpijul::pristine::Position {
+            change: txn.get_external(&x.change).unwrap().unwrap().into(),
+            pos: x.pos,
+        }));
+        if let Some(remote_channel) = txn.load_channel(remote_channel)? {
+            let remote_channel = remote_channel.read();
+            for x in txn.reverse_log(&remote_channel, None)? {
+                let (h, m) = x?.1;
+                if txn
+                    .channel_has_state(txn.states(&*current_channel.read()), &m)?
+                    .is_some()
+                {
+                    break;
+                }
+                let h_int = txn.get_internal(h)?.unwrap();
+                if txn
+                    .get_changeset(txn.changes(&*current_channel.read()), h_int)?
+                    .is_none()
+                {
+                    if inodes_.is_empty()
+                        || inodes_.iter().any(|&inode| {
+                            txn.get_rev_touched_files(h_int, Some(&inode))
+                                .unwrap()
+                                .is_some()
+                        })
+                    {
+                        to_download.push(h.into())
+                    }
+                }
+            }
+        }
+        Ok(RemoteDelta {
+            inodes,
+            to_download,
+            remote_ref: None,
+            ours_ge_dichotomy_set: HashSet::new(),
+            theirs_ge_dichotomy: Vec::new(),
+            theirs_ge_dichotomy_set: HashSet::new(),
+            remote_unrecs: Vec::new(),
+        })
+    }
+}
+
 impl RemoteRepo {
     fn name(&self) -> Option<&str> {
         match *self {
@@ -166,12 +418,12 @@ impl RemoteRepo {
         path: &[String],
     ) -> Result<Option<(HashSet<Position<Hash>>, RemoteRef<T>)>, anyhow::Error> {
         debug!("update_changelist");
-        let id = if let Some(id) = self.get_id(txn).await? {
-            id
+        let id = self.get_id(txn).await?;
+        let mut remote = if let Some(name) = self.name() {
+            txn.open_or_create_remote(id, name)?
         } else {
             return Ok(None);
         };
-        let mut remote = txn.open_or_create_remote(id, self.name().unwrap()).unwrap();
         let n = self
             .dichotomy_changelist(txn, &remote.lock().remote)
             .await?;
@@ -197,6 +449,211 @@ impl RemoteRepo {
         Ok(Some((paths, remote)))
     }
 
+    /// Creates a [`RemoteDelta`].
+    ///
+    /// IF:
+    ///    the RemoteRepo is a [`RemoteRepo::LocalChannel`], delegate to
+    ///    the simpler method [`update_changelist_local_channel`], returning the
+    ///    `to_download` list of changes.
+    ///
+    /// ELSE:
+    ///    calculate the `to_download` list of changes. Additionally, if there are
+    ///    no remote unrecords, update the local remote cache. If there are remote unrecords,
+    ///    calculate and return information about the difference between our cached version
+    ///    of the remote, and their version of the remote.
+    pub(crate) async fn update_changelist_pushpull(
+        &mut self,
+        txn: &mut MutTxn<()>,
+        path: &[String],
+        current_channel: &ChannelRef<MutTxn<()>>,
+        force_cache: Option<bool>,
+        repo: &Repository,
+        specific_changes: &[String],
+    ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
+        debug!("update_changelist");
+        if let RemoteRepo::LocalChannel(c) = self {
+            return update_changelist_local_channel(
+                c,
+                txn,
+                path,
+                current_channel,
+                repo,
+                specific_changes,
+            );
+        }
+
+        let id = self.get_id(txn).await?;
+        let mut remote_ref = if let Some(name) = self.name() {
+            txn.open_or_create_remote(id, name).unwrap()
+        } else {
+            unreachable!()
+        };
+        let dichotomy_n = self
+            .dichotomy_changelist(txn, &remote_ref.lock().remote)
+            .await?;
+        let ours_ge_dichotomy: Vec<(u64, Hash)> = txn
+            .iter_remote(&remote_ref.lock().remote, dichotomy_n)?
+            .filter_map(|k| {
+                debug!("filter_map {:?}", k);
+                match k.unwrap() {
+                    (k, libpijul::pristine::Pair { a: hash, .. }) => {
+                        let (k, hash) = (u64::from(*k), Hash::from(*hash));
+                        if k >= dichotomy_n {
+                            Some((k, hash))
+                        } else {
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+        let (inodes, theirs_ge_dichotomy) =
+            self.download_changelist_nocache(dichotomy_n, path).await?;
+        let ours_ge_dichotomy_set = ours_ge_dichotomy
+            .iter()
+            .map(|(_, h)| h)
+            .copied()
+            .collect::<HashSet<Hash>>();
+        let theirs_ge_dichotomy_set = theirs_ge_dichotomy
+            .iter()
+            .map(|(_, h, _)| h)
+            .copied()
+            .collect::<HashSet<Hash>>();
+
+        // remote_unrecs = {x: (u64, Hash) | x \in ours_ge_dichot /\ ~(x \in theirs_ge_dichot) /\ x \in current_channel }
+        let mut remote_unrecs = Vec::new();
+        for (n, hash) in &ours_ge_dichotomy {
+            if theirs_ge_dichotomy_set.contains(hash) {
+                // If this change is still present in the remote, skip
+                continue;
+            } else if txn.get_revchanges(&current_channel, &hash)?.is_none() {
+                // If this unrecord wasn't in our current channel, skip
+                continue;
+            } else {
+                remote_unrecs.push((*n, *hash))
+            }
+        }
+        let should_cache = force_cache.unwrap_or_else(|| remote_unrecs.is_empty());
+        if should_cache {
+            for (k, _) in ours_ge_dichotomy.iter().copied() {
+                txn.del_remote(&mut remote_ref, k)?;
+            }
+            for (n, h, m) in theirs_ge_dichotomy.iter().copied() {
+                txn.put_remote(&mut remote_ref, n, (h, m))?;
+            }
+        }
+        let state_cond = |txn: &MutTxn<()>, merkle: &libpijul::pristine::SerializedMerkle| {
+            txn.channel_has_state(txn.states(&*current_channel.read()), merkle)
+                .map(|x| x.is_some())
+        };
+        let change_cond = |txn: &MutTxn<()>, hash: &Hash| {
+            txn.get_revchanges(&current_channel, hash)
+                .unwrap()
+                .is_none()
+        };
+
+        // IF:
+        //     The user only wanted to push/pull specific changes
+        // ELIF:
+        //     The user specified no changes and there were no remote unrecords
+        //     effecting the current channel means we can auto-cache
+        //     the local remote cache
+        // ELSE:
+        //     The user specified no changes but there were remote unrecords
+        //     effecting the current channel meaning we can't auto-cache
+        //     the local remote cache.
+        if !specific_changes.is_empty() {
+            let to_download = specific_changes
+                .iter()
+                .map(|h| Ok(txn.hash_from_prefix(h)?.0))
+                .collect::<Result<Vec<_>, anyhow::Error>>();
+            Ok(RemoteDelta {
+                inodes,
+                remote_ref: Some(remote_ref),
+                to_download: to_download?,
+                ours_ge_dichotomy_set,
+                theirs_ge_dichotomy,
+                theirs_ge_dichotomy_set,
+                remote_unrecs,
+            })
+        } else if should_cache {
+            let mut to_download: Vec<Hash> = Vec::new();
+            for thing in txn.iter_remote(&remote_ref.lock().remote, 0)? {
+                let (_, libpijul::pristine::Pair { a: hash, b: merkle }) = thing?;
+                if state_cond(txn, &merkle)? {
+                    break;
+                } else if change_cond(txn, &hash.into()) {
+                    to_download.push(Hash::from(hash));
+                }
+            }
+
+            Ok(RemoteDelta {
+                inodes,
+                remote_ref: Some(remote_ref),
+                to_download,
+                ours_ge_dichotomy_set,
+                theirs_ge_dichotomy,
+                theirs_ge_dichotomy_set,
+                remote_unrecs,
+            })
+        } else {
+            let mut to_download: Vec<Hash> = Vec::new();
+            for thing in txn.iter_remote(&remote_ref.lock().remote, 0)? {
+                let (n, libpijul::pristine::Pair { a: hash, b: merkle }) = thing?;
+                if u64::from(*n) < dichotomy_n {
+                    if state_cond(txn, &merkle)? {
+                        continue;
+                    } else if change_cond(txn, &hash.into()) {
+                        to_download.push(Hash::from(hash));
+                    }
+                }
+            }
+            for (_, hash, merkle) in &theirs_ge_dichotomy {
+                if state_cond(txn, &merkle.into())? {
+                    continue;
+                } else if change_cond(txn, &hash) {
+                    to_download.push(Hash::from(*hash));
+                }
+            }
+
+            Ok(RemoteDelta {
+                inodes,
+                remote_ref: Some(remote_ref),
+                to_download,
+                ours_ge_dichotomy_set,
+                theirs_ge_dichotomy,
+                theirs_ge_dichotomy_set,
+                remote_unrecs,
+            })
+        }
+    }
+
+    /// Get the list of the remote's changes that come after `from: u64`.
+    /// Instead of immediately updating the local cache of the remote, return
+    /// the change info without changing the cache.
+    pub async fn download_changelist_nocache(
+        &mut self,
+        from: u64,
+        paths: &[String],
+    ) -> Result<(HashSet<Position<Hash>>, Vec<(u64, Hash, Merkle)>), anyhow::Error> {
+        let mut v = Vec::new();
+        let f = |v: &mut Vec<(u64, Hash, Merkle)>, n, h, m| {
+            debug!("no cache: {:?}", h);
+            Ok(v.push((n, h, m)))
+        };
+        let r = match *self {
+            RemoteRepo::Local(ref mut l) => l.download_changelist(f, &mut v, from, paths)?,
+            RemoteRepo::Ssh(ref mut s) => s.download_changelist(f, &mut v, from, paths).await?,
+            RemoteRepo::Http(ref h) => h.download_changelist(f, &mut v, from, paths).await?,
+            RemoteRepo::LocalChannel(_) => HashSet::new(),
+            RemoteRepo::None => unreachable!(),
+        };
+        Ok((r, v))
+    }
+
+    /// Uses a binary search to find the integer identifier of the last point
+    /// at which our locally cached version of the remote was the same as the 'actual'
+    /// state of the remote.
     async fn dichotomy_changelist<T: MutTxnT + TxnTExt>(
         &mut self,
         txn: &T,
@@ -266,16 +723,18 @@ impl RemoteRepo {
     async fn get_id<T: libpijul::TxnTExt>(
         &mut self,
         txn: &T,
-    ) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+    ) -> Result<libpijul::pristine::RemoteId, anyhow::Error> {
         match *self {
             RemoteRepo::Local(ref l) => l.get_id(),
             RemoteRepo::Ssh(ref mut s) => s.get_id().await,
             RemoteRepo::Http(ref h) => h.get_id().await,
             RemoteRepo::LocalChannel(ref channel) => {
                 if let Some(channel) = txn.load_channel(&channel)? {
-                    Ok(Some(*txn.id(&*channel.read())))
+                    Ok(*txn.id(&*channel.read()))
                 } else {
-                    Ok(None)
+                    Err(anyhow::anyhow!(
+                        "Unable to retrieve RemoteId for LocalChannel remote"
+                    ))
                 }
             }
             RemoteRepo::None => unreachable!(),
@@ -339,26 +798,6 @@ impl RemoteRepo {
             RemoteRepo::LocalChannel(_) => Ok(HashSet::new()),
             RemoteRepo::None => unreachable!(),
         }
-    }
-
-    pub async fn download_changelist_nocache(
-        &mut self,
-        from: u64,
-        paths: &[String],
-        v: &mut Vec<Hash>,
-    ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
-        let f = |v: &mut Vec<Hash>, _n, h, _m| {
-            debug!("no cache: {:?}", h);
-            Ok(v.push(h))
-        };
-        let r = match *self {
-            RemoteRepo::Local(ref mut l) => l.download_changelist(f, v, from, paths)?,
-            RemoteRepo::Ssh(ref mut s) => s.download_changelist(f, v, from, paths).await?,
-            RemoteRepo::Http(ref h) => h.download_changelist(f, v, from, paths).await?,
-            RemoteRepo::LocalChannel(_) => HashSet::new(),
-            RemoteRepo::None => unreachable!(),
-        };
-        Ok(r)
     }
 
     pub async fn upload_changes<T: MutTxnTExt>(
@@ -627,7 +1066,7 @@ impl RemoteRepo {
         channel: &mut ChannelRef<T>,
         state: Merkle,
     ) -> Result<(), anyhow::Error> {
-        let id = self.get_id(txn).await?.unwrap();
+        let id = self.get_id(txn).await?;
         self.update_changelist(txn, &[]).await?;
         let remote = txn.open_or_create_remote(id, self.name().unwrap()).unwrap();
         let mut to_pull = Vec::new();

@@ -292,7 +292,7 @@ impl Http {
         }
     }
 
-    pub async fn get_id(&self) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
+    pub async fn get_id(&self) -> Result<libpijul::pristine::RemoteId, anyhow::Error> {
         debug!("get_state {:?}", self.url);
         let url = format!("{}/{}", self.url, super::DOT_DIR);
         let q = [("channel", self.channel.clone()), ("id", String::new())];
@@ -308,7 +308,8 @@ impl Http {
         }
         let resp = res.bytes().await?;
         debug!("resp = {:?}", resp);
-        Ok(libpijul::pristine::RemoteId::from_bytes(&resp))
+        libpijul::pristine::RemoteId::from_bytes(&resp)
+            .ok_or_else(|| anyhow::anyhow!("Unable to retrieve RemoteId for Http remote"))
     }
 
     pub async fn archive<W: std::io::Write + Send + 'static>(

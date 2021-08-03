@@ -7,11 +7,13 @@ use anyhow::bail;
 use clap::Clap;
 use lazy_static::lazy_static;
 use libpijul::changestore::ChangeStore;
+use libpijul::pristine::sanakirja::MutTxn;
 use libpijul::*;
 use log::debug;
 use regex::Regex;
 
 use crate::progress::PROGRESS;
+use crate::remote::{PushDelta, RemoteDelta, RemoteRepo};
 use crate::repository::Repository;
 
 #[derive(Clap, Debug)]
@@ -73,6 +75,10 @@ pub struct Push {
     /// Push all changes
     #[clap(long = "all", short = 'a', conflicts_with = "changes")]
     all: bool,
+    /// Force an update of the local remote cache. May effect some
+    /// reporting of unrecords/concurrent changes in the remote.
+    #[clap(long = "force-cache", short = 'f')]
+    force_cache: bool,
     /// Do not check certificates (HTTPS remotes only, this option might be dangerous)
     #[clap(short = 'k')]
     no_cert_check: bool,
@@ -100,6 +106,10 @@ pub struct Pull {
     /// Pull all changes
     #[clap(long = "all", short = 'a', conflicts_with = "changes")]
     all: bool,
+    /// Force an update of the local remote cache. May effect some
+    /// reporting of unrecords/concurrent changes in the remote.
+    #[clap(long = "force-cache", short = 'f')]
+    force_cache: bool,
     /// Do not check certificates (HTTPS remotes only, this option might be dangerous)
     #[clap(short = 'k')]
     no_cert_check: bool,
@@ -124,9 +134,42 @@ lazy_static! {
 }
 
 impl Push {
+    /// Gets the `to_upload` vector while trying to auto-update
+    /// the local cache if possible. Also calculates whether the remote
+    /// has any changes we don't know about.
+    async fn to_upload(
+        &self,
+        txn: &mut MutTxn<()>,
+        channel: &mut ChannelRef<MutTxn<()>>,
+        repo: &Repository,
+        remote: &mut RemoteRepo,
+    ) -> Result<PushDelta<MutTxn<()>>, anyhow::Error> {
+        let remote_delta = remote
+            .update_changelist_pushpull(
+                txn,
+                &self.path,
+                channel,
+                Some(self.force_cache),
+                repo,
+                self.changes.as_slice(),
+            )
+            .await?;
+        if let RemoteRepo::LocalChannel(ref remote_channel) = remote {
+            remote_delta.to_local_channel_push(
+                remote_channel,
+                txn,
+                self.path.as_slice(),
+                channel,
+                repo,
+            )
+        } else {
+            remote_delta.to_remote_push(txn, self.path.as_slice(), channel, repo)
+        }
+    }
+
     pub async fn run(self) -> Result<(), anyhow::Error> {
         let mut stderr = std::io::stderr();
-        let repo = Repository::find_root(self.repo_path)?;
+        let repo = Repository::find_root(self.repo_path.clone())?;
         debug!("{:?}", repo.config);
         let txn = repo.pristine.arc_txn_begin()?;
         let cur = txn
@@ -169,68 +212,18 @@ impl Push {
                 true,
             )
             .await?;
-        let remote_changes = remote
-            .update_changelist(&mut *txn.write(), &self.path)
+
+        let mut channel = txn.write().open_or_create_channel(&channel_name)?;
+
+        let PushDelta {
+            remote_ref,
+            to_upload,
+            remote_unrecs,
+            unknown_changes,
+        } = self
+            .to_upload(&mut *txn.write(), &mut channel, &repo, &mut remote)
             .await?;
-        let channel = txn.write().open_or_create_channel(&channel_name)?;
 
-        let mut paths = HashSet::new();
-        for path in self.path.iter() {
-            let (p, ambiguous) = txn
-                .read()
-                .follow_oldest_path(&repo.changes, &channel, path)?;
-            if ambiguous {
-                bail!("Ambiguous path: {:?}", path)
-            }
-            paths.insert(p);
-            paths.extend(
-                libpijul::fs::iter_graph_descendants(&*txn.read(), &channel.read().graph, p)?
-                    .map(|x| x.unwrap()),
-            );
-        }
-
-        let mut to_upload: Vec<Hash> = Vec::new();
-        {
-            let txn = txn.read();
-            for x in txn.reverse_log(&*channel.read(), None)? {
-                let (_, (h, m)) = x?;
-                if let Some((_, ref remote_changes)) = remote_changes {
-                    if txn.remote_has_state(remote_changes, &m)? {
-                        break;
-                    }
-                    let h_int = txn.get_internal(h)?.unwrap();
-                    if !txn.remote_has_change(&remote_changes, &h)? {
-                        if paths.is_empty() {
-                            to_upload.push(h.into())
-                        } else {
-                            for p in paths.iter() {
-                                if txn.get_touched_files(p, Some(h_int))?.is_some() {
-                                    to_upload.push(h.into());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } else if let crate::remote::RemoteRepo::LocalChannel(ref remote_channel) = remote {
-                    if let Some(channel) = txn.load_channel(remote_channel)? {
-                        let channel = channel.read();
-                        let h_int = txn.get_internal(h)?.unwrap();
-                        if txn.get_changeset(txn.changes(&channel), h_int)?.is_none() {
-                            if paths.is_empty() {
-                                to_upload.push(h.into())
-                            } else {
-                                for p in paths.iter() {
-                                    if txn.get_touched_files(p, Some(h_int))?.is_some() {
-                                        to_upload.push(h.into());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
         debug!("to_upload = {:?}", to_upload);
 
         if to_upload.is_empty() {
@@ -238,7 +231,9 @@ impl Push {
             txn.commit()?;
             return Ok(());
         }
-        to_upload.reverse();
+
+        notify_remote_unrecords(&repo, remote_unrecs.as_slice());
+        notify_unknown_changes(unknown_changes.as_slice());
 
         let to_upload = if !self.changes.is_empty() {
             let mut u: Vec<libpijul::Hash> = Vec::new();
@@ -269,11 +264,9 @@ impl Push {
             to_upload
         } else {
             let mut o = make_changelist(&repo.changes, &to_upload, "push")?;
-            let remote_changes = remote_changes.map(|x| x.1);
-            let txn = txn.read();
             loop {
                 let d = parse_changelist(&edit::edit_bytes(&o[..])?);
-                let comp = complete_deps(&*txn, &remote_changes, &repo.changes, &to_upload, &d)?;
+                let comp = complete_deps(&*txn.read(), &remote_ref, &repo.changes, &to_upload, &d)?;
                 if comp.len() == d.len() {
                     break comp;
                 }
@@ -304,8 +297,49 @@ impl Push {
 }
 
 impl Pull {
+    /// Gets the `to_download` vec and calculates any remote unrecords.
+    /// If the local remote cache can be auto-updated, it will be.
+    async fn to_download(
+        &self,
+        txn: &mut MutTxn<()>,
+        channel: &mut ChannelRef<MutTxn<()>>,
+        repo: &mut Repository,
+        remote: &mut RemoteRepo,
+    ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
+        let force_cache = if self.force_cache {
+            Some(self.force_cache)
+        } else {
+            None
+        };
+        let delta = remote
+            .update_changelist_pushpull(
+                txn,
+                &self.path,
+                channel,
+                force_cache,
+                repo,
+                self.changes.as_slice(),
+            )
+            .await?;
+        let to_download = remote
+            .pull(
+                repo,
+                txn,
+                channel,
+                delta.to_download.as_slice(),
+                &delta.inodes,
+                false,
+            )
+            .await?;
+
+        Ok(RemoteDelta {
+            to_download,
+            ..delta
+        })
+    }
+
     pub async fn run(self) -> Result<(), anyhow::Error> {
-        let mut repo = Repository::find_root(self.repo_path)?;
+        let mut repo = Repository::find_root(self.repo_path.clone())?;
         let txn = repo.pristine.arc_txn_begin()?;
         let cur = txn
             .read()
@@ -343,102 +377,23 @@ impl Pull {
             .await?;
         debug!("downloading");
 
-        let mut inodes: HashSet<libpijul::pristine::Position<libpijul::Hash>> = HashSet::new();
-        let remote_changes = remote
-            .update_changelist(&mut *txn.write(), &self.path)
+        let RemoteDelta {
+            inodes,
+            remote_ref,
+            mut to_download,
+            remote_unrecs,
+            ..
+        } = self
+            .to_download(&mut *txn.write(), &mut channel, &mut repo, &mut remote)
             .await?;
-        let mut to_download = if self.changes.is_empty() {
-            debug!("changelist done");
-            let mut to_download: Vec<Hash> = Vec::new();
-            if let Some((inodes_, remote_changes)) = remote_changes.as_ref() {
-                inodes.extend(inodes_.into_iter());
-                let txn = txn.read();
-                for x in txn.iter_remote(&remote_changes.lock().remote, 0)? {
-                    let p = x?.1; // (h, m)
-                    if txn
-                        .channel_has_state(txn.states(&*channel.read()), &p.b)?
-                        .is_some()
-                    {
-                        break;
-                    } else if txn.get_revchanges(&channel, &p.a.into())?.is_none() {
-                        to_download.push(p.a.into())
-                    }
-                }
-            } else if let crate::remote::RemoteRepo::LocalChannel(ref remote_channel) = remote {
-                let mut inodes_ = HashSet::new();
-                let txn = txn.read();
-                for path in self.path.iter() {
-                    let (p, ambiguous) = txn.follow_oldest_path(&repo.changes, &channel, path)?;
-                    if ambiguous {
-                        bail!("Ambiguous path: {:?}", path)
-                    }
-                    inodes_.insert(p);
-                    inodes_.extend(
-                        libpijul::fs::iter_graph_descendants(&*txn, &channel.read().graph, p)?
-                            .map(|x| x.unwrap()),
-                    );
-                }
-                inodes.extend(inodes_.iter().map(|x| libpijul::pristine::Position {
-                    change: txn.get_external(&x.change).unwrap().unwrap().into(),
-                    pos: x.pos,
-                }));
-                if let Some(remote_channel) = txn.load_channel(remote_channel)? {
-                    let remote_channel = remote_channel.read();
-                    for x in txn.reverse_log(&remote_channel, None)? {
-                        let (h, m) = x?.1;
-                        if txn
-                            .channel_has_state(txn.states(&*channel.read()), &m)?
-                            .is_some()
-                        {
-                            break;
-                        }
-                        let h_int = txn.get_internal(h)?.unwrap();
-                        if txn
-                            .get_changeset(txn.changes(&*channel.read()), h_int)?
-                            .is_none()
-                        {
-                            if inodes_.is_empty()
-                                || inodes_.iter().any(|&inode| {
-                                    txn.get_rev_touched_files(h_int, Some(&inode))
-                                        .unwrap()
-                                        .is_some()
-                                })
-                            {
-                                to_download.push(h.into())
-                            }
-                        }
-                    }
-                }
-            } else {
-                inodes = remote
-                    .download_changelist_nocache(0, &self.path, &mut to_download)
-                    .await?
-            }
-            to_download
-        } else {
-            let txn = txn.read();
-            let r: Result<Vec<libpijul::Hash>, anyhow::Error> = self
-                .changes
-                .iter()
-                .map(|h| Ok(txn.hash_from_prefix(h)?.0))
-                .collect();
-            r?
-        };
-        debug!("recording");
+
         let hash = super::pending(txn.clone(), &mut channel, &mut repo)?;
-        let mut to_download = remote
-            .pull(
-                &mut repo,
-                &mut *txn.write(),
-                &mut channel,
-                &mut to_download,
-                &inodes,
-                self.all,
-            )
-            .await?;
-        if let Some((_, ref r)) = remote_changes {
+
+        if let Some(ref r) = remote_ref {
             remote.update_identities(&mut repo, r).await?;
         }
+
+        notify_remote_unrecords(&repo, remote_unrecs.as_slice());
 
         if to_download.is_empty() {
             let mut stderr = std::io::stderr();
@@ -460,6 +415,10 @@ impl Pull {
                 }
                 o = make_changelist(&repo.changes, &comp, "pull")?
             };
+        }
+
+        {
+            // Now that .pull is always given `false` for `do_apply`...
             let mut ws = libpijul::ApplyWorkspace::new();
             debug!("to_download = {:#?}", to_download);
             let mut pro = PROGRESS.borrow_mut().unwrap();
@@ -476,6 +435,7 @@ impl Pull {
                 PROGRESS.borrow_mut().unwrap()[n].incr()
             }
         }
+
         debug!("completing changes");
         remote
             .complete_changes(&repo, &*txn.read(), &mut channel, &to_download, self.full)
@@ -633,4 +593,54 @@ fn check_deps<C: ChangeStore>(
         }
     }
     Ok(())
+}
+
+fn notify_remote_unrecords(repo: &Repository, remote_unrecs: &[(u64, Hash)]) {
+    use std::fmt::Write;
+    if !remote_unrecs.is_empty() {
+        let mut s = format!(
+            "# The following changes have been unrecorded in the remote.\n\
+            # This buffer is only being used to inform you of the remote change;\n\
+            # your push will continue when it is closed.\n"
+        );
+        for (_, hash) in remote_unrecs {
+            let header = &repo.changes.get_change(hash).unwrap().header;
+            s.push_str("#\n");
+            writeln!(&mut s, "#    {}", header.message).expect("Infallible write to String");
+            writeln!(&mut s, "#    {}", header.timestamp).expect("Infallible write to String");
+            writeln!(&mut s, "#    {}", hash.to_base32()).expect("Infallible write to String");
+        }
+        if let Err(e) = edit::edit(s.as_str()) {
+            log::error!(
+                "Notification of remote unrecords experienced an error: {}",
+                e
+            );
+        }
+    }
+}
+
+fn notify_unknown_changes(unknown_changes: &[Hash]) {
+    use std::fmt::Write;
+    if unknown_changes.is_empty() {
+        return;
+    } else {
+        let mut s = format!(
+            "# The following changes are new in the remote\n# (and are not yet known to your local copy):\n#\n"
+        );
+        let rest_len = unknown_changes.len().saturating_sub(5);
+        for hash in unknown_changes.iter().take(5) {
+            writeln!(&mut s, "#     {}", hash.to_base32()).expect("Infallible write to String");
+        }
+        if rest_len > 0 {
+            let plural = if rest_len == 1 { "" } else { "s" };
+            writeln!(&mut s, "#     ... plus {} more change{}", rest_len, plural)
+                .expect("Infallible write to String");
+        }
+        if let Err(e) = edit::edit(s.as_str()) {
+            log::error!(
+                "Notification of unknown changes experienced an error: {}",
+                e
+            );
+        }
+    }
 }

@@ -421,6 +421,15 @@ fn move_or_create<T: TreeMutTxnT, R: WorkingCopy, C: ChangeStore>(
                 }
                 put_inodes_with_rev(&mut *txn_, &inode, &output_item.pos)?;
                 put_tree_with_rev(&mut *txn_, &file_id, &inode)?;
+                // The directory marker is necessarily already there,
+                // since the path is in the tree.
+                if output_item.meta.is_dir() {
+                    let path_id = OwnedPathId {
+                        parent_inode: inode,
+                        basename: SmallString::new(),
+                    };
+                    assert_eq!(txn_.get_tree(&path_id, None).unwrap(), Some(&inode))
+                }
             }
         } else {
             debug!("no current name, inserting {:?} {:?}", file_id, inode);
@@ -432,6 +441,13 @@ fn move_or_create<T: TreeMutTxnT, R: WorkingCopy, C: ChangeStore>(
             }
             put_inodes_with_rev(&mut *txn_, &inode, &output_item.pos)?;
             put_tree_with_rev(&mut *txn_, &file_id, &inode)?;
+            if output_item.meta.is_dir() {
+                let path_id = OwnedPathId {
+                    parent_inode: inode,
+                    basename: SmallString::new(),
+                };
+                txn_.put_tree(&path_id, &inode)?;
+            }
         }
         Ok(inode)
     } else {
@@ -556,6 +572,12 @@ fn kill_dead_files<
     for (fileid, (inode, ref name)) in dead.iter() {
         debug!("killing {:?} {:?} {:?}", fileid, inode, name);
         del_tree_with_rev(txn, &fileid, inode)?;
+        // In case this is a directory, we also need to delete the marker:
+        let file_id_ = OwnedPathId {
+            parent_inode: *inode,
+            basename: SmallString::new(),
+        };
+        txn.del_tree(&file_id_, Some(&inode))?;
 
         if let Some(&vertex) = txn.get_inodes(inode, None)? {
             debug!("kill_dead_files {:?} {:?}", inode, vertex);
