@@ -1420,6 +1420,8 @@ impl Recorded {
                     *contents = Some(Atom::EdgeMap(e))
                 }
             }
+        } else {
+            unreachable!()
         }
         Ok(())
     }

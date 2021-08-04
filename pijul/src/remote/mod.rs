@@ -418,7 +418,11 @@ impl RemoteRepo {
         path: &[String],
     ) -> Result<Option<(HashSet<Position<Hash>>, RemoteRef<T>)>, anyhow::Error> {
         debug!("update_changelist");
-        let id = self.get_id(txn).await?;
+        let id = if let Some(id) = self.get_id(txn).await? {
+            id
+        } else {
+            return Ok(None);
+        };
         let mut remote = if let Some(name) = self.name() {
             txn.open_or_create_remote(id, name)?
         } else {
@@ -482,7 +486,26 @@ impl RemoteRepo {
             );
         }
 
-        let id = self.get_id(txn).await?;
+        let id = if let Some(id) = self.get_id(txn).await? {
+            id
+        } else {
+            let (inodes, theirs_ge_dichotomy) = self.download_changelist_nocache(0, path).await?;
+            let mut theirs_ge_dichotomy_set = HashSet::new();
+            let mut to_download = Vec::new();
+            for (_, h, _) in theirs_ge_dichotomy.iter() {
+                theirs_ge_dichotomy_set.insert(*h);
+                to_download.push(*h);
+            }
+            return Ok(RemoteDelta {
+                inodes,
+                remote_ref: None,
+                to_download,
+                ours_ge_dichotomy_set: HashSet::new(),
+                theirs_ge_dichotomy,
+                theirs_ge_dichotomy_set,
+                remote_unrecs: Vec::new(),
+            });
+        };
         let mut remote_ref = if let Some(name) = self.name() {
             txn.open_or_create_remote(id, name).unwrap()
         } else {
@@ -720,17 +743,20 @@ impl RemoteRepo {
         }
     }
 
+    /// This method might return `Ok(None)` in some cases, for example
+    /// if the remote wants to indicate not to store a cache. This is
+    /// the case for Nest channels, for example.
     async fn get_id<T: libpijul::TxnTExt>(
         &mut self,
         txn: &T,
-    ) -> Result<libpijul::pristine::RemoteId, anyhow::Error> {
+    ) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
         match *self {
-            RemoteRepo::Local(ref l) => l.get_id(),
+            RemoteRepo::Local(ref l) => Ok(Some(l.get_id()?)),
             RemoteRepo::Ssh(ref mut s) => s.get_id().await,
             RemoteRepo::Http(ref h) => h.get_id().await,
             RemoteRepo::LocalChannel(ref channel) => {
                 if let Some(channel) = txn.load_channel(&channel)? {
-                    Ok(*txn.id(&*channel.read()))
+                    Ok(Some(*txn.id(&*channel.read())))
                 } else {
                     Err(anyhow::anyhow!(
                         "Unable to retrieve RemoteId for LocalChannel remote"
@@ -1066,7 +1092,11 @@ impl RemoteRepo {
         channel: &mut ChannelRef<T>,
         state: Merkle,
     ) -> Result<(), anyhow::Error> {
-        let id = self.get_id(txn).await?;
+        let id = if let Some(id) = self.get_id(txn).await? {
+            id
+        } else {
+            return Ok(());
+        };
         self.update_changelist(txn, &[]).await?;
         let remote = txn.open_or_create_remote(id, self.name().unwrap()).unwrap();
         let mut to_pull = Vec::new();

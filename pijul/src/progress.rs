@@ -194,12 +194,7 @@ impl Cursor {
                         n /= 10;
                         nd += 1
                     }
-                    let mut n = *i;
-                    while n > 0 {
-                        n /= 10;
-                        nd += 1
-                    }
-                    nd
+                    nd * 2
                 };
                 let w = w - npre - npost - w_digits;
 

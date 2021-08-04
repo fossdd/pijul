@@ -125,33 +125,41 @@ impl Apply {
                     i: 0,
                     pre: "Outputting repository".into(),
                 });
+            let mut conflicts = Vec::new();
             for path in touched_files.iter() {
-                libpijul::output::output_repository_no_pending(
-                    &repo.working_copy,
-                    &repo.changes,
-                    &txn,
-                    &channel,
-                    &path,
-                    true,
-                    None,
-                    num_cpus::get(),
-                    0,
-                )?;
+                conflicts.extend(
+                    libpijul::output::output_repository_no_pending(
+                        &repo.working_copy,
+                        &repo.changes,
+                        &txn,
+                        &channel,
+                        &path,
+                        true,
+                        None,
+                        num_cpus::get(),
+                        0,
+                    )?
+                    .into_iter(),
+                );
             }
             if !touched_files.is_empty() {
-                libpijul::output::output_repository_no_pending(
-                    &repo.working_copy,
-                    &repo.changes,
-                    &txn,
-                    &channel,
-                    "",
-                    true,
-                    None,
-                    num_cpus::get(),
-                    0,
-                )?;
+                conflicts.extend(
+                    libpijul::output::output_repository_no_pending(
+                        &repo.working_copy,
+                        &repo.changes,
+                        &txn,
+                        &channel,
+                        "",
+                        true,
+                        None,
+                        num_cpus::get(),
+                        0,
+                    )?
+                    .into_iter(),
+                );
             }
             PROGRESS.join();
+            super::print_conflicts(&conflicts)?;
         }
         txn.commit()?;
         Ok(())

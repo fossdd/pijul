@@ -529,6 +529,8 @@ impl Pull {
                 );
             }
             PROGRESS.join();
+
+            super::print_conflicts(&conflicts)?;
         }
         if let Some(h) = hash {
             txn.write().unrecord(&repo.changes, &mut channel, &h, 0)?;

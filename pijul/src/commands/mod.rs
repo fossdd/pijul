@@ -294,3 +294,43 @@ fn find_hash(path: &mut std::path::PathBuf, hash: &str) -> Result<libpijul::Hash
     }
     bail!("Hash not found")
 }
+
+use libpijul::Conflict;
+fn print_conflicts(conflicts: &[Conflict]) -> Result<(), std::io::Error> {
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    let mut w = termcolor::StandardStream::stderr(termcolor::ColorChoice::Auto);
+    use std::io::Write;
+    use termcolor::*;
+    w.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+    writeln!(w, "\nThere were conflicts:\n")?;
+    w.set_color(ColorSpec::new().set_fg(None))?;
+    for c in conflicts.iter() {
+        match c {
+            Conflict::Name { ref path } => writeln!(w, "  - Name conflict on \"{}\"", path)?,
+            Conflict::ZombieFile { ref path } => {
+                writeln!(w, "  - Path deletion conflict \"{}\"", path)?
+            }
+            Conflict::MultipleNames { ref path, .. } => {
+                writeln!(w, "  - File has multiple names: \"{}\"", path)?
+            }
+            Conflict::Zombie { ref path, ref line } => writeln!(
+                w,
+                "  - Deletion conflict in \"{}\" starting on line {}",
+                path, line
+            )?,
+            Conflict::Cyclic { ref path, ref line } => writeln!(
+                w,
+                "  - Cycle conflict in \"{}\" starting on line {}",
+                path, line
+            )?,
+            Conflict::Order { ref path, ref line } => writeln!(
+                w,
+                "  - Order conflict in \"{}\" starting on line {}",
+                path, line
+            )?,
+        }
+    }
+    Ok(())
+}

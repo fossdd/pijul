@@ -735,7 +735,7 @@ impl Ssh {
         Ok(receiver.await?)
     }
 
-    pub async fn get_id(&mut self) -> Result<libpijul::pristine::RemoteId, anyhow::Error> {
+    pub async fn get_id(&mut self) -> Result<Option<libpijul::pristine::RemoteId>, anyhow::Error> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         *self.state.lock().await = State::Id {
             sender: Some(sender),
@@ -744,9 +744,7 @@ impl Ssh {
         self.c
             .data(format!("id {}\n", self.channel).as_bytes())
             .await?;
-        receiver
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Unable to retrieve RemoteId for Ssh remote"))
+        Ok(receiver.await?)
     }
 
     pub async fn prove(&mut self, key: libpijul::key::SKey) -> Result<(), anyhow::Error> {

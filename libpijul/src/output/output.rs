@@ -16,12 +16,28 @@ use std::sync::Arc;
 /// A structure representing a file with conflicts.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Conflict {
-    Name { path: String },
-    ZombieFile { path: String },
-    MultipleNames { pos: Position<ChangeId> },
-    Zombie { path: String, line: usize },
-    Cyclic { path: String, line: usize },
-    Order { path: String, line: usize },
+    Name {
+        path: String,
+    },
+    ZombieFile {
+        path: String,
+    },
+    MultipleNames {
+        pos: Position<ChangeId>,
+        path: String,
+    },
+    Zombie {
+        path: String,
+        line: usize,
+    },
+    Cyclic {
+        path: String,
+        line: usize,
+    },
+    Order {
+        path: String,
+        line: usize,
+    },
 }
 
 /// Output updates the working copy after applying changes, including
@@ -185,7 +201,7 @@ where
     }
     debug!("done collecting: {:?}", files);
     let mut done_inodes = HashSet::default();
-    let mut done_vertices = HashMap::default();
+    let mut done_vertices: HashMap<_, (Vertex<ChangeId>, String)> = HashMap::default();
     // Actual moves is used to avoid a situation where have two files
     // a and b, first rename a -> b, and then b -> c.
     let mut actual_moves = Vec::new();
@@ -210,20 +226,19 @@ where
             }
             let mut is_first_name = true;
             for (name_key, mut output_item) in b {
-                match done_vertices.entry(output_item.pos) {
+                let name_entry = match done_vertices.entry(output_item.pos) {
                     Entry::Occupied(e) => {
                         debug!("pos already visited: {:?} {:?}", a, output_item.pos);
-                        if *e.get() != name_key {
+                        if e.get().0 != name_key {
                             conflicts.push(Conflict::MultipleNames {
                                 pos: output_item.pos,
+                                path: e.get().1.clone(),
                             });
                         }
                         continue;
                     }
-                    Entry::Vacant(e) => {
-                        e.insert(name_key);
-                    }
-                }
+                    Entry::Vacant(e) => e,
+                };
 
                 let output_item_inode = {
                     let txn = txn.read();
@@ -258,6 +273,9 @@ where
                 };
                 let file_name = path::file_name(&name).unwrap();
                 path::push(&mut output_item.path, file_name);
+
+                name_entry.insert((name_key, output_item.path.clone()));
+
                 if let Some(ref mut tmp) = output_item.tmp {
                     path::push(tmp, file_name);
                 }
@@ -514,6 +532,32 @@ fn output_item<T: ChannelMutTxnT + GraphMutTxnT, P: ChangeStore, W: WorkingCopy>
     Ok(())
 }
 
+fn is_alive_or_zombie<T: GraphTxnT>(
+    txn: &T,
+    channel: &T::Graph,
+    a: &Vertex<ChangeId>,
+) -> Result<bool, TxnErr<T::GraphError>> {
+    if a.is_root() {
+        return Ok(true);
+    }
+    for e in iter_adjacent(
+        txn,
+        channel,
+        *a,
+        EdgeFlags::PARENT,
+        EdgeFlags::all() - EdgeFlags::DELETED,
+    )? {
+        let e = e?;
+        let zf = EdgeFlags::pseudof();
+        if (e.flag() & zf != EdgeFlags::PSEUDO)
+            && (e.flag().contains(EdgeFlags::BLOCK) || a.is_empty())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn collect_dead_files<T: TreeTxnT + GraphTxnT<GraphError = <T as TreeTxnT>::TreeError>>(
     txn: &T,
     channel: &T::Graph,
@@ -537,14 +581,15 @@ fn collect_dead_files<T: TreeTxnT + GraphTxnT<GraphError = <T as TreeTxnT>::Tree
                 if id.parent_inode > inode {
                     break;
                 }
-                let is_dead = parent_is_dead || {
-                    if let Some(vertex) = txn.get_inodes(&inode_, None)? {
-                        vertex.change != pending_change_id
-                            && !is_alive(txn, channel, &vertex.inode_vertex())?
-                    } else {
-                        true
-                    }
-                };
+                let is_dead = parent_is_dead
+                    || (!id.basename.is_empty() && {
+                        if let Some(vertex) = txn.get_inodes(&inode_, None)? {
+                            vertex.change != pending_change_id
+                                && !is_alive_or_zombie(txn, channel, &vertex.inode_vertex())?
+                        } else {
+                            true
+                        }
+                    });
                 if is_dead {
                     dead.insert(id.to_owned(), (*inode_, inode_filename(txn, *inode_)?));
                 }

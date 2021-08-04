@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::bail;
@@ -137,13 +136,7 @@ impl Archive {
                 let channel = txn.load_channel(&channel_name)?.unwrap();
                 txn.archive(&repo.changes, &channel, &mut tarball)?
             };
-            if !conflicts.is_empty() {
-                writeln!(
-                    std::io::stderr(),
-                    "There were {} conflicts",
-                    conflicts.len()
-                )?
-            }
+            super::print_conflicts(&conflicts)?;
         }
         Ok(())
     }

@@ -160,7 +160,7 @@ pub(crate) fn archive<
         &mut files,
     )?;
 
-    let mut done = HashMap::default();
+    let mut done: HashMap<_, (Vertex<ChangeId>, String)> = HashMap::default();
     let mut done_inodes = HashSet::default();
     while !files.is_empty() {
         debug!("files {:?}", files.len());
@@ -179,20 +179,19 @@ pub(crate) fn archive<
             });
             let mut is_first_name = true;
             for (name_key, mut output_item) in b {
-                match done.entry(output_item.pos) {
+                let name_entry = match done.entry(output_item.pos) {
                     Entry::Occupied(e) => {
                         debug!("pos already visited: {:?} {:?}", a, output_item.pos);
-                        if *e.get() != name_key {
+                        if e.get().0 != name_key {
                             conflicts.push(Conflict::MultipleNames {
                                 pos: output_item.pos,
+                                path: e.get().1.clone(),
                             });
                         }
                         continue;
                     }
-                    Entry::Vacant(e) => {
-                        e.insert(name_key);
-                    }
-                }
+                    Entry::Vacant(e) => e,
+                };
                 if !done_inodes.insert(output_item.pos) {
                     debug!("inode already visited: {:?} {:?}", a, output_item.pos);
                     continue;
@@ -208,6 +207,9 @@ pub(crate) fn archive<
                 };
                 let file_name = path::file_name(&name).unwrap();
                 path::push(&mut output_item.path, file_name);
+
+                name_entry.insert((name_key, output_item.path.clone()));
+
                 let path = std::mem::replace(&mut output_item.path, String::new());
                 let (_, latest_touch) =
                     crate::fs::get_latest_touch(txn, &channel, &output_item.pos)?;

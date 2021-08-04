@@ -231,6 +231,115 @@ where
     Ok(())
 }
 
+/// If we're deleting a folder edge, there is a possibility that this
+/// solves a "zombie conflict", by removing the last child of a folder
+/// that was a zombie, in which case that parent folder can finally
+/// rest in peace.
+///
+/// This function takes care of this for the entire change, by
+/// removing all obsolete folder conflict edges.
+pub(crate) fn detect_folder_conflict_resolutions<T: GraphMutTxnT>(
+    txn: &mut T,
+    channel: &mut T::Graph,
+    ws: &mut Workspace,
+    change_id: ChangeId,
+    change: &Change,
+) -> Result<(), MissingError<T::GraphError>> {
+    for change_ in change.changes.iter() {
+        for change_ in change_.iter() {
+            if let Atom::EdgeMap(ref n) = *change_ {
+                for edge in n.edges.iter() {
+                    if !edge.flag.contains(EdgeFlags::DELETED) {
+                        continue;
+                    }
+                    detect_folder_conflict_resolution(txn, channel, ws, change_id, &n.inode, edge)?
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn detect_folder_conflict_resolution<T: GraphMutTxnT>(
+    txn: &mut T,
+    channel: &mut T::Graph,
+    ws: &mut Workspace,
+    change_id: ChangeId,
+    inode: &Position<Option<Hash>>,
+    e: &NewEdge<Option<Hash>>,
+) -> Result<(), MissingError<T::GraphError>> {
+    let mut stack = vec![if e.flag.contains(EdgeFlags::FOLDER) {
+        if e.to.is_empty() {
+            internal_pos(txn, &e.to.start_pos(), change_id)?
+        } else {
+            internal_pos(txn, &e.from, change_id)?
+        }
+    } else {
+        internal_pos(txn, &inode, change_id)?
+    }];
+    let len = ws.pseudo.len();
+    while let Some(pos) = stack.pop() {
+        let dest_vertex = if let Ok(&dest_vertex) = txn.find_block_end(&channel, pos) {
+            if !dest_vertex.is_empty() {
+                continue;
+            }
+            dest_vertex
+        } else {
+            continue;
+        };
+        // Is `dest_vertex` alive? If so, stop this path.
+        let f0 = EdgeFlags::FOLDER | EdgeFlags::PARENT;
+        let f1 = EdgeFlags::FOLDER | EdgeFlags::PARENT | EdgeFlags::BLOCK;
+        if let Some(e) = iter_adjacent(txn, channel, dest_vertex, f0, f1)?
+            .filter_map(|e| e.ok())
+            .filter(|e| !e.flag().contains(EdgeFlags::PSEUDO))
+            .next()
+        {
+            debug!("is_alive: {:?}", e);
+            continue;
+        }
+        // Does `dest_vertex` have alive or zombie descendants? If
+        // so, stop this path.
+        let f0 = EdgeFlags::empty();
+        let f1 = EdgeFlags::FOLDER | EdgeFlags::BLOCK | EdgeFlags::PSEUDO;
+        if let Some(e) = iter_adjacent(txn, channel, dest_vertex, f0, f1)?.next() {
+            debug!("child is_alive: {:?}", e);
+            continue;
+        }
+        // Else, `dest_vertex` is dead. We should remove its
+        // pseudo-parents.
+        let f = EdgeFlags::FOLDER | EdgeFlags::PARENT | EdgeFlags::PSEUDO;
+        for e in iter_adjacent(txn, channel, dest_vertex, f, f)? {
+            let e = e?;
+            ws.pseudo.push((dest_vertex, *e));
+            let gr = *txn.find_block_end(&channel, e.dest()).unwrap();
+            for e in iter_adjacent(txn, channel, gr, f, f)? {
+                let e = e?;
+                ws.pseudo.push((gr, *e));
+                stack.push(e.dest())
+            }
+        }
+    }
+    // Finally, we were only squatting the `.pseudo` field of the
+    // workspace, since that field is normally used for missing
+    // children, and pseudo-edges from that field are treated in a
+    // special way (by `delete_pseudo_edges` in this module).
+    //
+    // Therefore, we need to delete our folder-pseudo-edges now.
+    for (v, e) in ws.pseudo.drain(len..) {
+        let p = *txn.find_block_end(channel, e.dest())?;
+        del_graph_with_rev(
+            txn,
+            channel,
+            e.flag() - EdgeFlags::PARENT,
+            p,
+            v,
+            e.introduced_by(),
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct Workspace {
     pub(crate) unknown_parents: Vec<(

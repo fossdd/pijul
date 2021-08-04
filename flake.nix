@@ -1,7 +1,7 @@
 {
   description = "pijul, the sound distributed version control system";
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-20.09";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-21.05";
   inputs.mozilla = { url = "github:mozilla/nixpkgs-mozilla"; flake = false; };
 
   outputs =
@@ -18,8 +18,8 @@
       rustOverlay = final: prev:
         let
           rustChannel = prev.rustChannelOf {
-            channel = "1.49.0";
-            sha256 = "sha256-KCh2UBGtdlBJ/4UOqZlxUtcyefv7MH1neoVNV4z0nWs=";
+            channel = "1.52.0";
+            sha256 = "sha256-fcaq7+4shIvAy0qMuC3nnYGd0ZikkR5ln/rAruHA6mM=";
           };
         in
         {

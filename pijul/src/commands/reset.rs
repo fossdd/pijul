@@ -125,6 +125,7 @@ impl Reset {
         }
 
         let now = std::time::Instant::now();
+        let mut conflicts = Vec::new();
         if self.files.is_empty() {
             if self.channel.is_none() || self.channel.as_deref() == Some(&current_channel) {
                 let last_modified = last_modified(&*txn.read(), &*channel.read());
@@ -184,30 +185,36 @@ impl Reset {
             std::mem::drop(txn_);
             for path in paths.iter() {
                 debug!("resetting {:?}", path);
-                libpijul::output::output_repository_no_pending(
-                    &repo.working_copy,
-                    &repo.changes,
-                    &txn,
-                    &channel,
-                    &path,
-                    true,
-                    None,
-                    num_cpus::get(),
-                    0,
-                )?;
+                conflicts.extend(
+                    libpijul::output::output_repository_no_pending(
+                        &repo.working_copy,
+                        &repo.changes,
+                        &txn,
+                        &channel,
+                        &path,
+                        true,
+                        None,
+                        num_cpus::get(),
+                        0,
+                    )?
+                    .into_iter(),
+                );
             }
             if paths.is_empty() {
-                libpijul::output::output_repository_no_pending(
-                    &repo.working_copy,
-                    &repo.changes,
-                    &txn,
-                    &channel,
-                    "",
-                    true,
-                    None,
-                    num_cpus::get(),
-                    0,
-                )?;
+                conflicts.extend(
+                    libpijul::output::output_repository_no_pending(
+                        &repo.working_copy,
+                        &repo.changes,
+                        &txn,
+                        &channel,
+                        "",
+                        true,
+                        None,
+                        num_cpus::get(),
+                        0,
+                    )?
+                    .into_iter(),
+                );
             }
             PROGRESS.join();
         } else {
@@ -223,20 +230,24 @@ impl Reset {
                 let path = root.strip_prefix(&repo_path)?;
                 use path_slash::PathExt;
                 let path = path.to_slash_lossy();
-                libpijul::output::output_repository_no_pending(
-                    &repo.working_copy,
-                    &repo.changes,
-                    &txn,
-                    &channel,
-                    &path,
-                    true,
-                    None,
-                    num_cpus::get(),
-                    0,
-                )?;
+                conflicts.extend(
+                    libpijul::output::output_repository_no_pending(
+                        &repo.working_copy,
+                        &repo.changes,
+                        &txn,
+                        &channel,
+                        &path,
+                        true,
+                        None,
+                        num_cpus::get(),
+                        0,
+                    )?
+                    .into_iter(),
+                );
             }
             PROGRESS.join();
         }
+        super::print_conflicts(&conflicts)?;
         txn.commit()?;
         debug!("now = {:?}", now.elapsed());
         let locks = libpijul::TIMERS.lock().unwrap();

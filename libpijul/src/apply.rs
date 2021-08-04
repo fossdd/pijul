@@ -292,6 +292,15 @@ fn apply_change_to_channel<T: ChannelMutTxnT>(
 
     info!("repairing missing contexts");
     repair_missing_contexts(txn, T::graph_mut(channel), ws, change_id, change)?;
+    detect_folder_conflict_resolutions(
+        txn,
+        T::graph_mut(channel),
+        &mut ws.missing_context,
+        change_id,
+        change,
+    )
+    .map_err(LocalApplyError::from_missing)?;
+
     repair_cyclic_paths(txn, T::graph_mut(channel), ws)?;
     info!("done applying change");
     Ok((n, merkle))
