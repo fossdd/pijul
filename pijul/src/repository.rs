@@ -17,6 +17,14 @@ pub struct Repository {
 pub const PRISTINE_DIR: &str = "pristine";
 pub const CHANGES_DIR: &str = "changes";
 pub const CONFIG_FILE: &str = "config";
+const DEFAULT_IGNORE: [&[u8]; 2] = [b".git", b".DS_Store"];
+// Static KV map of names for project kinds |-> elements
+// that should go in the `.ignore` file by default.
+const IGNORE_KINDS: &[(&[&str], &[&[u8]])] = &[
+    (&["rust"], &[b"/target", b"Cargo.lock"]),
+    (&["node", "nodejs"], &[b"node_modules"]),
+    (&["lean"], &[b"/build"]),
+];
 
 impl Repository {
     fn find_root_(cur: Option<PathBuf>, dot_dir: &str) -> Result<PathBuf, anyhow::Error> {
@@ -79,20 +87,30 @@ impl Repository {
         })
     }
 
-    pub fn init(path: Option<std::path::PathBuf>) -> Result<Self, anyhow::Error> {
+    pub fn init(
+        path: Option<std::path::PathBuf>,
+        kind: Option<&String>,
+    ) -> Result<Self, anyhow::Error> {
         let cur = if let Some(path) = path {
             path
         } else {
             current_dir()?
         };
-        let mut pristine_dir = cur.clone();
-        pristine_dir.push(DOT_DIR);
-        pristine_dir.push(PRISTINE_DIR);
+        let pristine_dir = {
+            let mut base = cur.clone();
+            base.push(DOT_DIR);
+            base.push(PRISTINE_DIR);
+            base
+        };
         if std::fs::metadata(&pristine_dir).is_err() {
             std::fs::create_dir_all(&pristine_dir)?;
-            let mut changes_dir = cur.clone();
-            changes_dir.push(DOT_DIR);
-            changes_dir.push(CHANGES_DIR);
+            init_dot_ignore(cur.clone(), kind)?;
+            let changes_dir = {
+                let mut base = cur.clone();
+                base.push(DOT_DIR);
+                base.push(CHANGES_DIR);
+                base
+            };
             Ok(Repository {
                 pristine: libpijul::pristine::sanakirja::Pristine::new(&pristine_dir.join("db"))?,
                 working_copy: libpijul::working_copy::filesystem::FileSystem::from_root(&cur),
@@ -105,4 +123,60 @@ impl Repository {
             bail!("Already in a repository")
         }
     }
+}
+
+/// Create and populate an initial `.ignore` file for the repository.
+/// The default elements are defined in the constant [`DEFAULT_IGNORE`].
+fn init_dot_ignore(
+    base_path: std::path::PathBuf,
+    kind: Option<&String>,
+) -> Result<(), anyhow::Error> {
+    use std::io::Write;
+    let dot_ignore_path = {
+        let mut base = base_path.clone();
+        base.push(".ignore");
+        base
+    };
+
+    let mut dot_ignore = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(dot_ignore_path)?;
+
+    for default_ignore in DEFAULT_IGNORE {
+        dot_ignore.write_all(default_ignore)?;
+        dot_ignore.write_all(b"\n")?;
+    }
+    ignore_specific(&mut dot_ignore, kind)
+}
+
+/// if `kind` matches any of the known project kinds, add the associated
+/// .ignore entries to the default `.ignore` file.
+fn ignore_specific(
+    dot_ignore: &mut std::fs::File,
+    kind: Option<&String>,
+) -> Result<(), anyhow::Error> {
+    use std::io::Write;
+    if let Some(kind) = kind {
+        if let Ok((config, _)) = crate::config::Global::load() {
+            let ignore_kinds = config.ignore_kinds.as_ref();
+            if let Some(kinds) = ignore_kinds.and_then(|x| x.get(kind)) {
+                for entry in kinds.iter() {
+                    writeln!(dot_ignore, "{}", entry)?;
+                }
+                return Ok(());
+            }
+        }
+        let entries = IGNORE_KINDS
+            .iter()
+            .find(|(names, _)| names.iter().any(|x| kind.eq_ignore_ascii_case(x)))
+            .into_iter()
+            .flat_map(|(_, v)| v.iter());
+        for entry in entries {
+            dot_ignore.write_all(entry)?;
+            dot_ignore.write_all(b"\n")?;
+        }
+    }
+    Ok(())
 }

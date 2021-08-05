@@ -12,6 +12,7 @@ use libpijul::*;
 use log::debug;
 use regex::Regex;
 
+use crate::config::Direction;
 use crate::progress::PROGRESS;
 use crate::remote::{PushDelta, RemoteDelta, RemoteRepo};
 use crate::repository::Repository;
@@ -208,6 +209,7 @@ impl Push {
                 Some(&repo.path),
                 &remote_name,
                 remote_channel,
+                Direction::Push,
                 self.no_cert_check,
                 true,
             )
@@ -371,6 +373,7 @@ impl Pull {
                 Some(&repo.path),
                 &remote_name,
                 from_channel,
+                Direction::Pull,
                 self.no_cert_check,
                 true,
             )

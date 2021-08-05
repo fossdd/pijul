@@ -1,6 +1,6 @@
 [package]
 name = "pijul"
-description = "The sound distributed version control system."
+description = "A distributed version control system."
 version = "1.0.0-alpha.53"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 edition = "2018"

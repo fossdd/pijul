@@ -12,6 +12,7 @@ use libpijul::DOT_DIR;
 use libpijul::{ChannelTxnT, DepsTxnT, GraphTxnT, MutTxnTExt, TxnTExt};
 use log::{debug, info};
 
+use crate::config::*;
 use crate::repository::*;
 
 pub mod ssh;
@@ -39,11 +40,19 @@ impl Repository {
         self_path: Option<&Path>,
         name: &str,
         channel: &str,
+        direction: Direction,
         no_cert_check: bool,
         with_path: bool,
     ) -> Result<RemoteRepo, anyhow::Error> {
         if let Some(name) = self.config.remotes.get(name) {
-            unknown_remote(self_path, name, channel, no_cert_check, with_path).await
+            unknown_remote(
+                self_path,
+                name.with_dir(direction),
+                channel,
+                no_cert_check,
+                with_path,
+            )
+            .await
         } else {
             unknown_remote(self_path, name, channel, no_cert_check, with_path).await
         }

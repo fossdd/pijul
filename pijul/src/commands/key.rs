@@ -92,7 +92,14 @@ impl Key {
                 let mut remote = if let Ok(repo) = Repository::find_root(None) {
                     use crate::remote::*;
                     if let RemoteRepo::Ssh(ssh) = repo
-                        .remote(None, &remote, crate::DEFAULT_CHANNEL, no_cert_check, false)
+                        .remote(
+                            None,
+                            &remote,
+                            crate::DEFAULT_CHANNEL,
+                            Direction::Pull,
+                            no_cert_check,
+                            false,
+                        )
                         .await?
                     {
                         ssh

@@ -72,7 +72,7 @@ impl Clone {
         })
         .unwrap_or(());
 
-        let mut repo = Repository::init(Some(path))?;
+        let mut repo = Repository::init(Some(path), None)?;
         let txn = repo.pristine.arc_txn_begin()?;
         let mut channel = txn.write().open_or_create_channel(&self.channel)?;
         if let Some(ref change) = self.change {

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 use clap::{AppSettings, Clap};
+use env_logger::fmt::Color;
 use human_panic::setup_panic;
 
 use crate::commands::*;
@@ -138,8 +139,7 @@ pub enum SubCommand {
 #[tokio::main]
 async fn main() {
     setup_panic!();
-    env_logger::init();
-
+    env_logger_init();
     let opts = Opts::parse();
 
     if let Err(e) = run(opts).await {
@@ -153,6 +153,40 @@ async fn main() {
     } else {
         std::process::exit(0);
     }
+}
+
+fn env_logger_init() {
+    let mut builder = env_logger::builder();
+    builder.filter(Some("pijul::commands::git"), log::LevelFilter::Info);
+    builder.format(|buf, record| {
+        let target = record.metadata().target();
+        if target == "pijul::commands::git" {
+            let mut level_style = buf.style();
+            level_style.set_color(Color::Green);
+            writeln!(
+                buf,
+                "{} {}",
+                level_style.value(record.level()),
+                record.args()
+            )
+        } else {
+            let mut level_style = buf.style();
+            level_style.set_color(Color::Black).set_intense(true);
+            let op = level_style.value("[");
+            let cl = level_style.value("]");
+            writeln!(
+                buf,
+                "{}{} {} {}{} {}",
+                op,
+                buf.timestamp(),
+                buf.default_styled_level(record.level()),
+                target,
+                cl,
+                record.args()
+            )
+        }
+    });
+    builder.init();
 }
 
 #[cfg(unix)]
@@ -183,10 +217,11 @@ fn run_external_command(mut command: Vec<OsString>) -> Result<(), std::io::Error
 }
 
 fn report_external_command_error(cmd: &OsString, err: std::io::Error) -> ! {
-    if err.kind() == std::io::ErrorKind::NotFound {
-        writeln!(std::io::stderr(), "No such subcommand: {:?}", cmd).unwrap_or(());
-    } else {
-        writeln!(std::io::stderr(), "Error while running {:?}: {}", cmd, err).unwrap_or(());
+    match err.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+            writeln!(std::io::stderr(), "No such subcommand: {:?}", cmd).unwrap_or(())
+        }
+        _ => writeln!(std::io::stderr(), "Error while running {:?}: {}", cmd, err).unwrap_or(()),
     }
     std::process::exit(1)
 }

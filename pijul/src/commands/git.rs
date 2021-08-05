@@ -44,7 +44,7 @@ impl Git {
         let repo = if let Ok(repo) = Repository::find_root(self.repo_path.clone()) {
             repo
         } else {
-            Repository::init(self.repo_path.clone())?
+            Repository::init(self.repo_path.clone(), None)?
         };
         let git = git2::Repository::open(&repo.path)?;
         let st = git.statuses(None)?;
@@ -65,7 +65,7 @@ impl Git {
             bail!("There were uncommitted files")
         }
         let head = git.head()?;
-        info!("Loading history…");
+        info!("Loading Git history…");
         let oid = head.target().unwrap();
         let mut path_git = repo.path.join(libpijul::DOT_DIR);
         path_git.push("git");
@@ -74,7 +74,7 @@ impl Git {
         let dag = Dag::dfs(&git, oid, &mut env_git)?;
 
         trace!(target: "dag", "{:?}", dag);
-        info!("Done");
+        debug!("Done");
         let mut pristine = repo.path.join(DOT_DIR);
         pristine.push(PRISTINE_DIR);
         std::fs::create_dir_all(&pristine)?;

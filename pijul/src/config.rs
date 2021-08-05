@@ -13,6 +13,7 @@ pub struct Global {
     pub colors: Option<Choice>,
     pub pager: Option<Choice>,
     pub template: Option<Templates>,
+    pub ignore_kinds: Option<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,17 +95,87 @@ impl Global {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 pub struct Config {
     pub default_remote: Option<String>,
     #[serde(default)]
     pub extra_dependencies: Vec<String>,
     #[serde(default)]
-    pub remotes: HashMap<String, String>,
+    pub remotes: HashMap<String, RemoteName>,
     #[serde(default)]
     pub hooks: Hooks,
     pub colors: Option<Choice>,
     pub pager: Option<Choice>,
+}
+
+#[derive(Debug)]
+pub enum RemoteName {
+    Name(String),
+    Split(SplitRemote),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Direction {
+    Push,
+    Pull,
+}
+
+impl RemoteName {
+    pub fn with_dir(&self, d: Direction) -> &str {
+        match (self, d) {
+            (RemoteName::Name(ref s), _) => s,
+            (RemoteName::Split(ref s), Direction::Pull) => &s.pull,
+            (RemoteName::Split(ref s), Direction::Push) => &s.push,
+        }
+    }
+}
+
+use serde::de::{self, MapAccess, Visitor};
+use serde::de::{Deserialize, Deserializer};
+use std::fmt;
+use std::marker::PhantomData;
+
+impl<'de> Deserialize<'de> for RemoteName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StringOrStruct(PhantomData<fn() -> RemoteName>);
+        impl<'de> Visitor<'de> for StringOrStruct {
+            type Value = RemoteName;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("string or map")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(RemoteName::Name(value.to_string()))
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                // `MapAccessDeserializer` is a wrapper that turns a `MapAccess`
+                // into a `Deserializer`, allowing it to be used as the input to T's
+                // `Deserialize` implementation. T then deserializes itself using
+                // the entries from the map visitor.
+                Ok(RemoteName::Split(Deserialize::deserialize(
+                    de::value::MapAccessDeserializer::new(map),
+                )?))
+            }
+        }
+        deserializer.deserialize_any(StringOrStruct(PhantomData))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SplitRemote {
+    pub pull: String,
+    pub push: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
