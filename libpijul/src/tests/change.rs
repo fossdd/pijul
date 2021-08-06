@@ -117,7 +117,7 @@ fn text() -> Result<(), anyhow::Error> {
     let change1 = store.get_change(&h1).unwrap();
     text_test(&store, &change1, h1);
 
-    repo.remove_path("file2")?;
+    repo.remove_path("file2", false)?;
     let h2 = record_all(&repo, &store, &txn, &channel, "")?;
     let change2 = store.get_change(&h2).unwrap();
     text_test(&store, &change2, h2);

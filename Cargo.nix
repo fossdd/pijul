@@ -3063,7 +3063,7 @@ rec {
       };
       "libpijul" = rec {
         crateName = "libpijul";
-        version = "1.0.0-alpha.46";
+        version = "1.0.0-alpha.47";
         edition = "2018";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./libpijul; };
         authors = [

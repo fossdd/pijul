@@ -32,8 +32,8 @@ fn filesystem() -> Result<(), anyhow::Error> {
     txn.commit().unwrap();
 
     repo.rename("dir/file", "dir/file.old")?;
-    repo.remove_path("dir/file.old")?;
-    repo.remove_path("dir")?;
+    repo.remove_path("dir/file.old", false)?;
+    repo.remove_path("dir", true)?;
     Ok(())
 }
 
@@ -71,8 +71,8 @@ fn symlink() -> Result<(), anyhow::Error> {
     txn.commit().unwrap();
 
     repo.rename("dir/file", "dir/file.old")?;
-    repo.remove_path("dir/file.old")?;
-    repo.remove_path("dir")?;
+    repo.remove_path("dir/file.old", false)?;
+    repo.remove_path("dir", true)?;
     Ok(())
 }
 

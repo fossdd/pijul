@@ -149,7 +149,7 @@ impl SKey {
                     version: VERSION,
                     algorithm: Algorithm::Ed25519,
                     expires: expires.clone(),
-                    key: bs58::encode(&key.public.clone().to_bytes()).into_string(),
+                    key: bs58::encode(key.public.as_bytes()).into_string(),
                     signature: bs58::encode(&sig.to_bytes()).into_string(),
                 }
             }

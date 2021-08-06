@@ -430,7 +430,7 @@ fn file_conflicts_same_name_and_two_names() -> Result<(), anyhow::Error> {
     let mut files_alice = repo_alice.list_files();
     files_alice.sort();
     debug!("files_alice {:?}", files_alice);
-    repo_alice.remove_path(&files_alice[1]).unwrap();
+    repo_alice.remove_path(&files_alice[1], false).unwrap();
     let _alice_solution =
         record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
@@ -450,7 +450,7 @@ fn file_conflicts_same_name_and_two_names() -> Result<(), anyhow::Error> {
     )?;
     let files_bob = repo_bob.list_files();
     debug!("files_bob {:?}", files_bob);
-    repo_bob.remove_path(&files_bob[1]).unwrap();
+    repo_bob.remove_path(&files_bob[1], false).unwrap();
     let _bob_solution =
         record_all(&mut repo_bob, &changes, &mut txn_bob, &mut channel_bob, "").unwrap();
     Ok(())
@@ -494,7 +494,7 @@ fn zombie_file_test() -> Result<(), anyhow::Error> {
     )?;
 
     // Alice deletes "file"
-    repo_alice.remove_path("a/b")?;
+    repo_alice.remove_path("a/b", true)?;
     let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob edits "file"
@@ -606,7 +606,7 @@ fn rename_zombie_file() -> Result<(), anyhow::Error> {
     )?;
 
     // Alice deletes "file"
-    repo_alice.remove_path("a/b")?;
+    repo_alice.remove_path("a/b", true)?;
     let alice_h = record_all(
         &mut repo_alice,
         &changes,
@@ -643,8 +643,8 @@ fn rename_zombie_file() -> Result<(), anyhow::Error> {
     let files_alice = repo_alice.list_files();
     debug!("Alice records {:?}", files_alice);
     repo_alice.rename("a/b/c/file", "a/b/c/file2").unwrap_or(());
-    // repo_alice.remove_path("a/b/c/file").unwrap_or(());
-    // repo_alice.remove_path("a/b/c/file2").unwrap_or(());
+    // repo_alice.remove_path("a/b/c/file", false).unwrap_or(());
+    // repo_alice.remove_path("a/b/c/file2", false).unwrap_or(());
 
     txn_alice
         .write()
@@ -731,7 +731,7 @@ fn rename_zombie_dir() -> Result<(), anyhow::Error> {
     )?;
 
     // Alice deletes "file"
-    repo_alice.remove_path("a/b")?;
+    repo_alice.remove_path("a/b", true)?;
     let alice_h = record_all(
         &mut repo_alice,
         &changes,
@@ -874,7 +874,7 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
     }
 
     // Alice deletes "file"
-    repo_alice.remove_path("a/b")?;
+    repo_alice.remove_path("a/b", true)?;
     let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap();
 
     // Bob edits "file"
@@ -1054,7 +1054,7 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
     )?;
 
     // Bob deletes "file"
-    repo_bob.remove_path("a/b/c/file")?;
+    repo_bob.remove_path("a/b/c/file", false)?;
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
     apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_h).unwrap();
     let conflicts = output::output_repository_no_pending(
@@ -1134,7 +1134,7 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
     }
 
     debug!("Charlie applies Alice's move and deletes");
-    repo_charlie.remove_path("a/b/c/alice")?;
+    repo_charlie.remove_path("a/b/c/alice", false)?;
     let charlie_h =
         record_all(&repo_charlie, &changes, &txn_charlie, &channel_charlie, "").unwrap();
 
@@ -1245,7 +1245,7 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob deletes "file"
-    repo_bob.remove_path("file").unwrap_or(());
+    repo_bob.remove_path("file", false).unwrap_or(());
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Bob applies Alice's change
@@ -1273,9 +1273,9 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     }
     let files = repo_bob.list_files();
     if files.iter().any(|f| f == "alice/file") {
-        repo_bob.remove_path("bob").unwrap()
+        repo_bob.remove_path("bob", false).unwrap()
     } else {
-        repo_bob.remove_path("alice").unwrap()
+        repo_bob.remove_path("alice", false).unwrap()
     }
     let resolution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
     let conflicts = output::output_repository_no_pending(
@@ -1384,7 +1384,7 @@ fn delete_zombie_test() -> Result<(), anyhow::Error> {
     // "file".
     repo_bob.write_file("file").unwrap().write_all(b"a\nd\n")?;
     let bob_h1 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
-    repo_bob.remove_path("file").unwrap_or(());
+    repo_bob.remove_path("file", false).unwrap_or(());
     let bob_h2 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Alice applies Bob's changes.
@@ -1476,7 +1476,7 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
     let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob deletes "dir"
-    repo_bob.remove_path("dir").unwrap_or(());
+    repo_bob.remove_path("dir", true).unwrap_or(());
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Bob applies Alice's change

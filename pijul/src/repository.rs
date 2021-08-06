@@ -144,7 +144,7 @@ fn init_dot_ignore(
         .create(true)
         .open(dot_ignore_path)?;
 
-    for default_ignore in DEFAULT_IGNORE {
+    for default_ignore in DEFAULT_IGNORE.iter() {
         dot_ignore.write_all(default_ignore)?;
         dot_ignore.write_all(b"\n")?;
     }

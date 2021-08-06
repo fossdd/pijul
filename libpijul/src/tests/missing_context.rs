@@ -67,7 +67,7 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
             .write_all(alice.as_bytes())
             .unwrap();
     } else {
-        repo_alice.remove_path("file")?;
+        repo_alice.remove_path("file", false)?;
     }
     let alice_h = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 

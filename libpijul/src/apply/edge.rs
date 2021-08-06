@@ -83,6 +83,10 @@ where
             .find_block(graph, target.end_pos())
             .map_err(LocalApplyError::from)?;
         assert_ne!(source, target);
+
+        if !n.flag.contains(EdgeFlags::BLOCK) {
+            break
+        }
     }
     if n.flag.contains(EdgeFlags::DELETED) {
         collect_zombie_context(txn, graph, &mut ws.missing_context, inode, n, change, known)

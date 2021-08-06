@@ -113,7 +113,7 @@ fn del_file_test() {
             .collect();
         assert_eq!(files, vec!["dir", "dir/file"]);
 
-        repo.remove_path("dir/file").unwrap();
+        repo.remove_path("dir/file", false).unwrap();
         txn.write().remove_file("dir").unwrap();
 
         let files: Vec<_> = crate::fs::iter_working_copy(&*txn.read(), Inode::ROOT)
@@ -170,7 +170,7 @@ fn del_obsolete_test() -> Result<(), anyhow::Error> {
         .collect();
     assert_eq!(files, vec!["a", "a/b", "a/b/c", "a/b/c/d", "a/b/c/d/e"]);
 
-    repo.remove_path("a/b/c")?;
+    repo.remove_path("a/b/c", true)?;
     debug!("Recording the deletion");
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
 
@@ -325,7 +325,7 @@ fn move_file_test() -> Result<(), anyhow::Error> {
     debug_inodes(&*txn_alice.read());
     debug!("{:?}", repo_alice);
 
-    repo_alice.remove_path("dir/file2")?;
+    repo_alice.remove_path("dir/file2", false)?;
     debug!("{:?}", repo_alice);
     let alice2 = record_all(&repo_alice, &changes, &txn_alice, &channel, "")?;
     txn_alice.commit().unwrap();
@@ -453,7 +453,7 @@ fn move_back_test_(resolve_by_deleting: bool) -> Result<(), anyhow::Error> {
         1,
         0,
     )?;
-    repo_bob.remove_path("a")?;
+    repo_bob.remove_path("a", false)?;
     let bob1 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
     (&mut *txn_bob.write())
         .apply_change(&changes, &mut *channel_bob.write(), &alice2)
@@ -626,7 +626,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
     repo_alice.add_dir("dir2");
     repo_alice.rename("dir/file", "dir2/file")?;
     repo_alice.rename("dir/file2", "dir2/file2")?;
-    repo_alice.remove_path("dir")?;
+    repo_alice.remove_path("dir", true)?;
     txn_alice.write().move_file("dir/file", "dir2/file", 0)?;
     txn_alice.write().move_file("dir/file2", "dir2/file2", 0)?;
 
@@ -654,7 +654,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
         .write()
         .move_file("dir2/file2", "dir/file2", 0)
         .unwrap_or(());
-    repo_alice.remove_path("dir2")?;
+    repo_alice.remove_path("dir2", true)?;
 
     let mut state = Builder::new();
     debug!("recording in dir");
@@ -739,7 +739,7 @@ fn file_becomes_dir_test() -> Result<(), anyhow::Error> {
     let channel = (&mut *txn.write()).open_or_create_channel("main").unwrap();
     record_all(&repo, &changes, &txn, &channel, "").unwrap();
 
-    repo.remove_path("filedir").unwrap();
+    repo.remove_path("filedir", true).unwrap();
     repo.add_file("filedir/file", b"a\nb\nc\nd\ne\nf\n".to_vec());
     txn.write().add_file("filedir/file", 0).unwrap();
     record_all(&repo, &changes, &txn, &channel, "").unwrap();

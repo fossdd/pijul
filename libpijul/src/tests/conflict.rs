@@ -2577,7 +2577,7 @@ fn tree_inodes_test() -> Result<(), anyhow::Error> {
     // Bob moves and deletes a/b
     repo_bob.rename("a/b/file", "c/d/file")?;
     txn_bob.write().move_file("a/b/file", "c/d/file", 0)?;
-    repo_bob.remove_path("a")?;
+    repo_bob.remove_path("a", true)?;
     txn_bob.write().remove_file("a")?;
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 

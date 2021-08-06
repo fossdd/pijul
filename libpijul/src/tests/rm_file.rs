@@ -38,7 +38,7 @@ fn remove_file() -> Result<(), anyhow::Error> {
     )?;
 
     // Bob removes a/b and records
-    repo_bob.remove_path("a/b/c")?;
+    repo_bob.remove_path("a/b/c", true)?;
     debug!("repo_bob = {:?}", repo_bob.list_files());
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 

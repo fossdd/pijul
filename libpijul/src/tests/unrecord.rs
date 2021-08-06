@@ -176,7 +176,7 @@ fn reconnect_(delete_file: bool) -> Result<(), anyhow::Error> {
 
     ///////////
     if delete_file {
-        repo.remove_path("file")?;
+        repo.remove_path("file", false)?;
     } else {
         repo.write_file("file")?.write_all(b"a\nd\n")?;
     }
@@ -235,7 +235,7 @@ fn zombie_(file: Option<&[u8]>) -> Result<(), anyhow::Error> {
     if let Some(file) = file {
         repo.write_file("file")?.write_all(file)?;
     } else {
-        repo.remove_path("file")?;
+        repo.remove_path("file", false)?;
     }
     let h1 = record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
 
@@ -310,10 +310,10 @@ fn zombie_dir() -> Result<(), anyhow::Error> {
     let channel = txn.write().open_or_create_channel("main")?;
     record_all(&repo, &changes, &txn, &channel, "")?;
 
-    repo.remove_path("a/b/c/d")?;
+    repo.remove_path("a/b/c/d", false)?;
     let h1 = record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
 
-    repo.remove_path("a/b")?;
+    repo.remove_path("a/b", true)?;
     let _h2 = record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
     output::output_repository_no_pending(&repo, &changes, &txn, &channel, "", true, None, 1, 0)?;
     let files = repo.list_files();
@@ -432,7 +432,7 @@ fn file_del() -> Result<(), anyhow::Error> {
     txn.write().add_file("file", 0)?;
     let h0 = record_all(&repo, &changes, &txn, &channel, "")?;
 
-    repo.remove_path("file")?;
+    repo.remove_path("file", false)?;
     let h = record_all(&repo, &changes, &txn, &channel, "")?;
 
     debug!("unrecord h");
@@ -578,7 +578,7 @@ fn rollback_(delete_file: bool) -> Result<(), anyhow::Error> {
 
     // Delete -b-
     if delete_file {
-        repo.remove_path("file")?
+        repo.remove_path("file", false)?
     } else {
         repo.write_file("file")?.write_all(b"a\nd\n")?;
     }
@@ -792,7 +792,7 @@ fn double_file() -> Result<(), anyhow::Error> {
     apply::apply_change_arc(&changes, &txn, &channel2, &h0)?;
 
     // First deletion
-    repo.remove_path("file")?;
+    repo.remove_path("file", false)?;
     let h1 = record_all(&repo, &changes, &txn, &channel, "")?;
     debug!("h1 = {:?}", h1);
     // Second deletion

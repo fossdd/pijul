@@ -869,7 +869,10 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
             }
             Err(BlockError::Txn(t)) => return Err(crate::output::FileError::Txn(t)),
         };
-        assert_eq!(*inode_vertex, v.inode_vertex());
+        if *inode_vertex != v.inode_vertex() {
+            info!("find_path: {:?} != {:?}, this may be due to a corrupt change", inode_vertex, v.inode_vertex());
+            return Ok(None)
+        }
         for name in iter_adjacent(txn, txn.graph(channel), v.inode_vertex(), flag0, flag1)? {
             let name = name?;
             if !name.flag().contains(EdgeFlags::PARENT) {
