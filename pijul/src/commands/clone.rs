@@ -18,7 +18,7 @@ pub struct Clone {
     #[clap(long = "state", conflicts_with = "change")]
     state: Option<String>,
     /// Clone this path only
-    #[clap(long = "path", multiple(true))]
+    #[clap(long = "path")]
     partial_paths: Vec<String>,
     /// Do not check certificates (HTTPS remotes only, this option might be dangerous)
     #[clap(short = 'k')]

@@ -628,7 +628,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         P<Vertex<ChangeId>, SerializedEdge>,
     >;
 
-    fn iter_graph(
+    fn graph_cursor(
         &self,
         g: &Self::Graph,
         s: Option<&Vertex<ChangeId>>,

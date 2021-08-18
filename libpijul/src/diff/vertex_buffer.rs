@@ -12,7 +12,6 @@ pub(super) struct Diff {
     pub marker: HashMap<usize, ConflictMarker>,
     conflict_stack: Vec<Conflict>,
     pub conflict_ends: Vec<ConflictEnds>,
-    pub solved_conflicts: HashSet<usize>,
     pub cyclic_conflict_bytes: Vec<(usize, usize)>,
 }
 
@@ -80,7 +79,6 @@ impl Diff {
                 conflict_type: ConflictType::Root,
             }],
             cyclic_conflict_bytes: Vec::new(),
-            solved_conflicts: HashSet::default(),
         }
     }
 }

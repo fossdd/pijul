@@ -786,7 +786,10 @@ impl RemoteRepo {
         match *self {
             RemoteRepo::Local(ref mut l) => {
                 debug!("archiving local repo");
-                let changes = libpijul::changestore::filesystem::FileSystem::from_root(&l.root);
+                let changes = libpijul::changestore::filesystem::FileSystem::from_root(
+                    &l.root,
+                    crate::repository::max_files(),
+                );
                 let mut tarball = libpijul::output::Tarball::new(w, prefix, umask);
                 let conflicts = if let Some((state, extra)) = state {
                     let mut txn = l.pristine.mut_txn_begin()?;
@@ -859,7 +862,10 @@ impl RemoteRepo {
             RemoteRepo::Http(ref h) => h.upload_changes(pro_n, local, to_channel, changes).await?,
             RemoteRepo::LocalChannel(ref channel) => {
                 let mut channel = txn.open_or_create_channel(channel)?;
-                let store = libpijul::changestore::filesystem::FileSystem::from_changes(local);
+                let store = libpijul::changestore::filesystem::FileSystem::from_changes(
+                    local,
+                    crate::repository::max_files(),
+                );
                 local::upload_changes(pro_n, &store, txn, &mut channel, changes)?
             }
             RemoteRepo::None => unreachable!(),
@@ -1191,8 +1197,7 @@ impl RemoteRepo {
             };
             let channel = local_channel.read();
             let graph = txn.graph(&channel);
-            let mut it = txn.iter_graph(graph, Some(&v))?;
-            while let Some(x) = txn.next_graph(&graph, &mut it) {
+            for x in txn.iter_graph(graph, Some(&v))? {
                 let (v, e) = x?;
                 if v.change > change {
                     break;

@@ -26,6 +26,22 @@ const IGNORE_KINDS: &[(&[&str], &[&[u8]])] = &[
     (&["lean"], &[b"/build"]),
 ];
 
+#[cfg(unix)]
+pub fn max_files() -> usize {
+    let n = if let Ok((n, _)) = rlimit::getrlimit(rlimit::Resource::NOFILE) {
+        (n as usize / (2 * num_cpus::get())).max(1)
+    } else {
+        256
+    };
+    debug!("max_files = {:?}", n);
+    n
+}
+
+#[cfg(not(unix))]
+pub fn max_files() -> usize {
+    1
+}
+
 impl Repository {
     fn find_root_(cur: Option<PathBuf>, dot_dir: &str) -> Result<PathBuf, anyhow::Error> {
         let mut cur = if let Some(cur) = cur {
@@ -80,7 +96,10 @@ impl Repository {
             working_copy: libpijul::working_copy::filesystem::FileSystem::from_root(
                 &working_copy_dir,
             ),
-            changes: libpijul::changestore::filesystem::FileSystem::from_root(&working_copy_dir),
+            changes: libpijul::changestore::filesystem::FileSystem::from_root(
+                &working_copy_dir,
+                crate::repository::max_files(),
+            ),
             config,
             path: working_copy_dir,
             changes_dir,
@@ -114,7 +133,10 @@ impl Repository {
             Ok(Repository {
                 pristine: libpijul::pristine::sanakirja::Pristine::new(&pristine_dir.join("db"))?,
                 working_copy: libpijul::working_copy::filesystem::FileSystem::from_root(&cur),
-                changes: libpijul::changestore::filesystem::FileSystem::from_root(&cur),
+                changes: libpijul::changestore::filesystem::FileSystem::from_root(
+                    &cur,
+                    max_files(),
+                ),
                 config: config::Config::default(),
                 path: cur,
                 changes_dir,

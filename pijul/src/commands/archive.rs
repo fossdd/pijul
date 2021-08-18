@@ -25,7 +25,7 @@ pub struct Archive {
     #[clap(long = "state")]
     state: Option<String>,
     /// Apply these changes after switching to the channel
-    #[clap(long = "change", multiple = true)]
+    #[clap(long = "change")]
     change: Vec<String>,
     /// Append this path in front of each path inside the archive
     #[clap(long = "prefix")]

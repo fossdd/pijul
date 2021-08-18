@@ -59,7 +59,10 @@ impl Local {
         from: u64,
         paths: &[String],
     ) -> Result<HashSet<Position<Hash>>, anyhow::Error> {
-        let store = libpijul::changestore::filesystem::FileSystem::from_root(&self.root);
+        let store = libpijul::changestore::filesystem::FileSystem::from_root(
+            &self.root,
+            crate::repository::max_files(),
+        );
         let remote_txn = self.pristine.txn_begin()?;
         let remote_channel = if let Some(channel) = remote_txn.load_channel(&self.channel)? {
             channel
@@ -118,7 +121,10 @@ impl Local {
         to_channel: Option<&str>,
         changes: &[Hash],
     ) -> Result<(), anyhow::Error> {
-        let store = libpijul::changestore::filesystem::FileSystem::from_root(&self.root);
+        let store = libpijul::changestore::filesystem::FileSystem::from_root(
+            &self.root,
+            crate::repository::max_files(),
+        );
         let txn = self.pristine.arc_txn_begin()?;
         let channel = txn
             .write()

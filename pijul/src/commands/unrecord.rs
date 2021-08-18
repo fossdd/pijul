@@ -26,7 +26,6 @@ pub struct Unrecord {
     #[clap(long = "show-changes", value_name = "N", conflicts_with("change-id"))]
     show_changes: Option<usize>,
     /// The hash of a change (unambiguous prefixes are accepted)
-    #[clap(multiple = true)]
     change_id: Vec<String>,
 }
 

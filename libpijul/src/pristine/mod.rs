@@ -475,7 +475,7 @@ pub trait ChannelTxnT: GraphTxnT {
 
 pub trait GraphIter: GraphTxnT {
     type GraphCursor;
-    fn iter_graph(
+    fn graph_cursor(
         &self,
         g: &Self::Graph,
         s: Option<&Vertex<ChangeId>>,
@@ -485,6 +485,31 @@ pub trait GraphIter: GraphTxnT {
         g: &Self::Graph,
         a: &mut Self::GraphCursor,
     ) -> Option<Result<(&'txn Vertex<ChangeId>, &'txn SerializedEdge), TxnErr<Self::GraphError>>>;
+
+    fn iter_graph<'a>(
+        &'a self,
+        g: &'a Self::Graph,
+        s: Option<&Vertex<ChangeId>>,
+    ) -> Result<GraphIterator<'a, Self>, TxnErr<Self::GraphError>> {
+        Ok(GraphIterator {
+            cursor: self.graph_cursor(g, s)?,
+            txn: self,
+            g: g,
+        })
+    }
+}
+
+pub struct GraphIterator<'a, T: GraphIter> {
+    txn: &'a T,
+    g: &'a T::Graph,
+    cursor: T::GraphCursor,
+}
+
+impl<'a, T: GraphIter> Iterator for GraphIterator<'a, T> {
+    type Item = Result<(&'a Vertex<ChangeId>, &'a SerializedEdge), TxnErr<T::GraphError>>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.txn.next_graph(self.g, &mut self.cursor)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -1062,7 +1087,7 @@ pub fn debug<W: Write, T: GraphIter>(
     channel: &T::Graph,
     mut f: W,
 ) -> Result<bool, std::io::Error> {
-    let mut cursor = txn.iter_graph(&channel, None).unwrap();
+    let mut cursor = txn.graph_cursor(&channel, None).unwrap();
     writeln!(f, "digraph {{")?;
     let mut keys = std::collections::HashSet::new();
     let mut at_least_one = false;
@@ -1110,7 +1135,7 @@ pub fn check_alive<T: ChannelTxnT + GraphIter>(
 
     // Find the alive
     let mut alive_unreachable = HashMap::default();
-    let mut cursor = txn.iter_graph(&channel, None).unwrap();
+    let mut cursor = txn.graph_cursor(&channel, None).unwrap();
 
     let mut visited = HashSet::default();
     let mut k0 = Vertex::ROOT;
