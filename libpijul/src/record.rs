@@ -1014,6 +1014,7 @@ where
     let mut alive = HashMap::default();
     let mut previous_name = Vec::new();
     let mut last_alive_meta = None;
+    let mut is_first_parent = true;
     for parent in iter_adjacent(
         txn,
         channel,
@@ -1133,7 +1134,11 @@ where
                         .or_insert_with(Vec::new);
                     v.push(Some(grandparent.introduced_by()))
                 }
-            } else if grandparent_changed || name_changed || (meta_changed && cfg!(unix)) {
+            } else if grandparent_changed
+                || name_changed
+                || (meta_changed && cfg!(unix))
+                || !is_first_parent
+            {
                 moved.edges.push(NewEdge {
                     previous: parent.flag() - EdgeFlags::PARENT,
                     flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK | EdgeFlags::DELETED,
@@ -1158,6 +1163,9 @@ where
                     .or_insert_with(Vec::new);
                 v.push(Some(grandparent.introduced_by()));
                 moved.need_new_name = false
+            }
+            if !grandparent.flag().contains(EdgeFlags::DELETED) {
+                is_first_parent = false;
             }
         }
     }
