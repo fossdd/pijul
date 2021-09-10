@@ -28,6 +28,8 @@ pub enum FsError<T: std::error::Error + 'static> {
     AlreadyInRepo(String),
     #[error(transparent)]
     Txn(T),
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
 }
 
 #[derive(Debug, Error)]
@@ -235,13 +237,13 @@ fn make_new_child<T: TreeMutTxnT>(
     }
 }
 
-pub(crate) fn add_inode<T: TreeMutTxnT>(
+pub fn add_inode<T: TreeMutTxnT>(
     txn: &mut T,
     inode: Option<Inode>,
     path: &str,
     is_dir: bool,
     salt: u64,
-) -> Result<(), FsError<T::TreeError>> {
+) -> Result<Inode, FsError<T::TreeError>> {
     debug!("add_inode");
     if let Some(parent) = crate::path::parent(path) {
         let (current_inode, unrecorded_path) = closest_in_repo_ancestor(txn, parent)?;
@@ -254,8 +256,10 @@ pub(crate) fn add_inode<T: TreeMutTxnT>(
         let file_name = crate::path::file_name(path).unwrap();
         debug!("add_inode: file_name = {:?}", file_name);
         make_new_child(txn, current_inode, file_name, is_dir, inode, salt)?;
+        Ok(current_inode)
+    } else {
+        Err(FsError::InvalidPath(path.to_string()))
     }
-    Ok(())
 }
 
 /// Move an inode (file or directory) from `origin` to `destination`,
@@ -870,8 +874,12 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
             Err(BlockError::Txn(t)) => return Err(crate::output::FileError::Txn(t)),
         };
         if *inode_vertex != v.inode_vertex() {
-            info!("find_path: {:?} != {:?}, this may be due to a corrupt change", inode_vertex, v.inode_vertex());
-            return Ok(None)
+            info!(
+                "find_path: {:?} != {:?}, this may be due to a corrupt change",
+                inode_vertex,
+                v.inode_vertex()
+            );
+            return Ok(None);
         }
         for name in iter_adjacent(txn, txn.graph(channel), v.inode_vertex(), flag0, flag1)? {
             let name = name?;

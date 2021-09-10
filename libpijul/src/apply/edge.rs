@@ -85,7 +85,7 @@ where
         assert_ne!(source, target);
 
         if !n.flag.contains(EdgeFlags::BLOCK) {
-            break
+            break;
         }
     }
     if n.flag.contains(EdgeFlags::DELETED) {

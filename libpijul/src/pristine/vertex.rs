@@ -46,7 +46,7 @@ impl Vertex<ChangeId> {
         self == &Vertex::ROOT
     }
 
-    pub(crate) fn to_option(&self) -> Vertex<Option<ChangeId>> {
+    pub fn to_option(&self) -> Vertex<Option<ChangeId>> {
         Vertex {
             change: Some(self.change),
             start: self.start,
@@ -193,7 +193,7 @@ impl Position<ChangeId> {
         self.change.is_root()
     }
 
-    pub(crate) fn to_option(&self) -> Position<Option<ChangeId>> {
+    pub fn to_option(&self) -> Position<Option<ChangeId>> {
         Position {
             change: Some(self.change),
             pos: self.pos,

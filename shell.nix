@@ -8,6 +8,7 @@ stdenv.mkDerivation {
     libsodium
     openssl
     pkgconfig
+    libiconv
   ] ++ lib.optionals stdenv.isDarwin
     (with darwin.apple_sdk.frameworks; [
       CoreServices

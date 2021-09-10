@@ -174,7 +174,7 @@ impl FileSystem {
             use path_slash::PathExt;
             let path_str = path.to_slash_lossy();
             match txn.add(&path_str, is_dir, salt) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(crate::fs::FsError::AlreadyInRepo(_)) => {}
                 Err(e) => return Err(e.into()),
             }
@@ -308,12 +308,8 @@ impl FileSystem {
     }
 }
 
-impl WorkingCopy for FileSystem {
+impl WorkingCopyRead for FileSystem {
     type Error = std::io::Error;
-    fn create_dir_all(&self, file: &str) -> Result<(), Self::Error> {
-        debug!("create_dir_all {:?}", file);
-        Ok(std::fs::create_dir_all(&self.path(file))?)
-    }
     fn file_metadata(&self, file: &str) -> Result<InodeMetadata, Self::Error> {
         debug!("metadata {:?}", file);
         let attr = std::fs::metadata(&self.path(file))?;
@@ -344,6 +340,13 @@ impl WorkingCopy for FileSystem {
         let ctime =
             std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(attr.ctime() as u64);
         Ok(attr.modified()?.min(ctime))
+    }
+}
+
+impl WorkingCopy for FileSystem {
+    fn create_dir_all(&self, file: &str) -> Result<(), Self::Error> {
+        debug!("create_dir_all {:?}", file);
+        Ok(std::fs::create_dir_all(&self.path(file))?)
     }
 
     fn remove_path(&self, path: &str, rec: bool) -> Result<(), Self::Error> {

@@ -160,17 +160,22 @@ fn init_dot_ignore(
         base
     };
 
-    let mut dot_ignore = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(dot_ignore_path)?;
+    // Don't replace/modify an existing `.ignore` file.
+    if dot_ignore_path.exists() {
+        Ok(())
+    } else {
+        let mut dot_ignore = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(dot_ignore_path)?;
 
-    for default_ignore in DEFAULT_IGNORE.iter() {
-        dot_ignore.write_all(default_ignore)?;
-        dot_ignore.write_all(b"\n")?;
+        for default_ignore in DEFAULT_IGNORE.iter() {
+            dot_ignore.write_all(default_ignore)?;
+            dot_ignore.write_all(b"\n")?;
+        }
+        ignore_specific(&mut dot_ignore, kind)
     }
-    ignore_specific(&mut dot_ignore, kind)
 }
 
 /// if `kind` matches any of the known project kinds, add the associated

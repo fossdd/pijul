@@ -360,7 +360,6 @@ impl Record {
             }
         }
 
-        let file_name = |local: &Local, _| -> String { format!("{}:{}", local.path, local.line) };
         debug!("has_binary = {:?}", rec.has_binary_files);
         let mut change = if self.all {
             change
@@ -369,7 +368,7 @@ impl Record {
         } else {
             let mut o = Vec::new();
             debug!("write change");
-            change.write(changes, None, file_name, true, &mut o)?;
+            change.write(changes, None, true, &mut o)?;
             debug!("write change done");
 
             let mut with_errors: Option<Vec<u8>> = None;

@@ -5,7 +5,7 @@ pub use crate::diff::Algorithm;
 use crate::path::{components, Components};
 use crate::pristine::*;
 use crate::small_string::SmallString;
-use crate::working_copy::WorkingCopy;
+use crate::working_copy::WorkingCopyRead;
 use crate::{alive::retrieve, text_encoding::Encoding};
 use crate::{change::*, changestore::FileMetadata};
 use crate::{HashMap, HashSet};
@@ -273,7 +273,7 @@ struct Tasks {
 impl Builder {
     pub fn record<
         T,
-        W: WorkingCopy + Clone + Send + Sync + 'static,
+        W: WorkingCopyRead + Clone + Send + Sync + 'static,
         C: ChangeStore + Clone + Send + 'static,
     >(
         &mut self,
@@ -292,7 +292,7 @@ impl Builder {
             + Sync
             + 'static,
         T::Channel: Send + Sync,
-        <W as WorkingCopy>::Error: 'static,
+        <W as WorkingCopyRead>::Error: 'static,
     {
         let work = Arc::new(Mutex::new(Tasks {
             t: VecDeque::new(),
@@ -469,7 +469,7 @@ impl Builder {
 
     fn delete_obsolete_children<
         T: GraphTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopy,
+        W: WorkingCopyRead,
         C: ChangeStore,
     >(
         &mut self,
@@ -481,7 +481,7 @@ impl Builder {
         v: Position<ChangeId>,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
-        <W as WorkingCopy>::Error: 'static,
+        <W as WorkingCopyRead>::Error: 'static,
     {
         if self.ignore_missing {
             return Ok(());
@@ -541,7 +541,7 @@ impl Builder {
     fn push_children<
         'a,
         T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopy,
+        W: WorkingCopyRead,
         C: ChangeStore,
     >(
         &mut self,
@@ -556,7 +556,7 @@ impl Builder {
         changes: &C,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
-        <W as crate::working_copy::WorkingCopy>::Error: 'static,
+        <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
         debug!("push_children, item = {:?}", item);
         let comp = components.next();
@@ -620,7 +620,7 @@ impl Builder {
     }
 }
 
-fn modified_since_last_commit<T: ChannelTxnT, W: WorkingCopy>(
+fn modified_since_last_commit<T: ChannelTxnT, W: WorkingCopyRead>(
     txn: &T,
     channel: &T::Channel,
     working_copy: &W,
@@ -644,7 +644,7 @@ fn modified_since_last_commit<T: ChannelTxnT, W: WorkingCopy>(
 }
 
 impl Recorded {
-    fn add_file<W: WorkingCopy>(
+    fn add_file<W: WorkingCopyRead>(
         &mut self,
         working_copy: &W,
         item: RecordItem,
@@ -740,7 +740,7 @@ impl Recorded {
 
     fn record_existing_file<
         T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopy + Clone,
+        W: WorkingCopyRead + Clone,
         C: ChangeStore,
     >(
         &mut self,
@@ -754,7 +754,7 @@ impl Recorded {
         vertex: Position<ChangeId>,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
-        <W as crate::working_copy::WorkingCopy>::Error: 'static,
+        <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
         debug!(
             "record_existing_file {:?}: {:?} {:?}",
@@ -898,7 +898,7 @@ impl Recorded {
         Ok(())
     }
 
-    fn record_moved_file<T: ChannelTxnT, C: ChangeStore, W: WorkingCopy>(
+    fn record_moved_file<T: ChannelTxnT, C: ChangeStore, W: WorkingCopyRead>(
         &mut self,
         changes: &C,
         txn: &T,
@@ -909,7 +909,7 @@ impl Recorded {
         encoding: Option<Encoding>,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
-        <W as crate::working_copy::WorkingCopy>::Error: 'static,
+        <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
         debug!("record_moved_file {:?}", item);
         let mut contents = self.contents.lock();
@@ -991,7 +991,7 @@ struct MovedEdges {
     need_new_name: bool,
 }
 
-fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopy>(
+fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopyRead>(
     txn: &T,
     changes: &C,
     channel: &T::Graph,
@@ -1001,7 +1001,7 @@ fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopy>(
     name: &str,
 ) -> Result<MovedEdges, RecordError<C::Error, W::Error, T::GraphError>>
 where
-    <W as crate::working_copy::WorkingCopy>::Error: 'static,
+    <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
 {
     debug!("collect_moved_edges {:?}", current_pos);
     let mut moved = MovedEdges {
@@ -1208,7 +1208,7 @@ where
 impl Recorded {
     fn record_deleted_file<
         T: GraphTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopy,
+        W: WorkingCopyRead,
         C: ChangeStore,
     >(
         &mut self,
@@ -1220,7 +1220,7 @@ impl Recorded {
         changes: &C,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
-        <W as WorkingCopy>::Error: 'static,
+        <W as WorkingCopyRead>::Error: 'static,
     {
         debug!("record_deleted_file {:?} {:?}", current_vertex, full_path);
         let mut stack = vec![(current_vertex.inode_vertex(), None)];
@@ -1297,7 +1297,7 @@ impl Recorded {
         Ok(())
     }
 
-    fn delete_inode_vertex<T: GraphTxnT, C: ChangeStore, W: WorkingCopy>(
+    fn delete_inode_vertex<T: GraphTxnT, C: ChangeStore, W: WorkingCopyRead>(
         &mut self,
         changes: &C,
         txn: &T,
@@ -1307,7 +1307,7 @@ impl Recorded {
         path: &str,
     ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
     where
-        <W as WorkingCopy>::Error: 'static,
+        <W as WorkingCopyRead>::Error: 'static,
     {
         debug!("delete_inode_vertex {:?}", path);
         let mut edges = Vec::new();

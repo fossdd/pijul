@@ -85,15 +85,10 @@ impl LocalChange<Hunk<Option<Hash>, Local>, Author> {
         Ok(())
     }
 
-    pub fn write<
-        W: WriteChangeLine,
-        C: ChangeStore,
-        F: FnMut(&Local, Position<Option<Hash>>) -> String,
-    >(
+    pub fn write<W: WriteChangeLine, C: ChangeStore>(
         &self,
         changes: &C,
         hash: Option<Hash>,
-        mut file_name: F,
         write_header: bool,
         mut w: W,
     ) -> Result<(), TextSerError<C::Error>> {
@@ -152,7 +147,7 @@ impl LocalChange<Hunk<Option<Hash>, Local>, Author> {
             w.write_all(Self::HUNKS_LINE.as_bytes())?;
             for (n, rec) in self.changes.iter().enumerate() {
                 write!(w, "\n{}. ", n + 1)?;
-                rec.write(changes, &mut file_name, &hashes, &self.contents, &mut w)?
+                rec.write(changes, &hashes, &self.contents, &mut w)?
             }
         }
         Ok(())
@@ -309,19 +304,60 @@ impl Change {
 
 const BINARY_LABEL: &str = "binary";
 
+struct Escaped<'a>(&'a str);
+
+impl<'a> std::fmt::Display for Escaped<'a> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "\"")?;
+        for c in self.0.chars() {
+            if c == '"' {
+                write!(fmt, "\\{}", c)?
+            } else if c == '\\' {
+                write!(fmt, "\\\\")?
+            } else {
+                write!(fmt, "{}", c)?
+            }
+        }
+        write!(fmt, "\"")?;
+        Ok(())
+    }
+}
+
+fn unescape(s: &str) -> std::borrow::Cow<str> {
+    let mut b = 0;
+    let mut result = String::new();
+    let mut ch = s.chars();
+    while let Some(c) = ch.next() {
+        if c == '\\' {
+            if result.is_empty() {
+                result = s.split_at(b).0.to_string();
+            }
+            if let Some(c) = ch.next() {
+                result.push(c)
+            }
+        } else if !result.is_empty() {
+            result.push(c)
+        }
+        b += c.len_utf8()
+    }
+    if result.is_empty() {
+        s.into()
+    } else {
+        result.into()
+    }
+}
+
 impl Hunk<Option<Hash>, Local> {
-    fn write<
-        W: WriteChangeLine,
-        C: ChangeStore,
-        F: FnMut(&Local, Position<Option<Hash>>) -> String,
-    >(
+    fn write<W: WriteChangeLine, C: ChangeStore>(
         &self,
         changes: &C,
-        mut file_name: F,
         hashes: &HashMap<Hash, usize>,
         change_contents: &[u8],
         mut w: &mut W,
     ) -> Result<(), TextSerError<C::Error>> {
+
+        // let file_name = |local: &Local, _| -> String { format!("{}:{}", local.path, local.line) };
+
         use self::text_changes::*;
         match self {
             Hunk::FileMove { del, add, path } => match add {
@@ -333,9 +369,9 @@ impl Hunk<Option<Hash>, Local> {
                     } = FileMetadata::read(&change_contents[add.start.0.into()..add.end.0.into()]);
                     write!(
                         w,
-                        "Moved: {:?} {:?} {}",
-                        path,
-                        name,
+                        "Moved: {} {} {}",
+                        Escaped(&path),
+                        Escaped(&name),
                         if perms.0 & 0o1000 == 0o1000 {
                             "+dx "
                         } else if perms.0 & 0o100 == 0o100 {
@@ -375,7 +411,7 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("file del");
-                write!(w, "File deletion: {:?} ", path,)?;
+                write!(w, "File deletion: {} ", Escaped(path))?;
                 write_pos(&mut w, hashes, del.inode())?;
                 writeln!(w, " {:?}", encoding_label(encoding))?;
 
@@ -395,7 +431,7 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("file undel");
-                write!(w, "File un-deletion: {:?} ", path,)?;
+                write!(w, "File un-deletion: {} ", Escaped(path))?;
                 write_pos(&mut w, hashes, undel.inode())?;
                 writeln!(w, " {:?}", encoding_label(encoding))?;
                 write_atom(&mut w, hashes, &undel)?;
@@ -431,9 +467,9 @@ impl Hunk<Option<Hash>, Local> {
                     };
                     write!(
                         w,
-                        "File addition: {:?} in {:?}{} {:?}\n  up",
-                        name,
-                        parent,
+                        "File addition: {} in {}{} \"{}\"\n  up",
+                        Escaped(name),
+                        Escaped(parent),
                         if perms.0 & 0o1000 == 0o1000 {
                             " +dx"
                         } else if perms.0 & 0o100 == 0o100 {
@@ -464,7 +500,7 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("edit");
-                write!(w, "Edit in {} ", file_name(&local, change.inode()))?;
+                write!(w, "Edit in {}:{} ", Escaped(&local.path), local.line)?;
                 write_pos(&mut w, hashes, change.inode())?;
                 write!(w, " {:?}", encoding_label(encoding))?;
                 writeln!(w)?;
@@ -478,7 +514,7 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("replacement");
-                write!(w, "Replacement in {} ", file_name(&local, change.inode()))?;
+                write!(w, "Replacement in {}:{} ", Escaped(&local.path), local.line)?;
                 write_pos(&mut w, hashes, change.inode())?;
                 write!(w, " {:?}", encoding_label(encoding))?;
                 writeln!(w)?;
@@ -488,7 +524,7 @@ impl Hunk<Option<Hash>, Local> {
                 print_change_contents(w, changes, replacement, change_contents, encoding)?;
             }
             Hunk::SolveNameConflict { name, path } => {
-                write!(w, "Solving a name conflict in {:?} ", path)?;
+                write!(w, "Solving a name conflict in {} ", Escaped(path))?;
                 write_pos(&mut w, hashes, name.inode())?;
                 write!(w, ": ")?;
                 write_deleted_names(&mut w, changes, name)?;
@@ -496,7 +532,7 @@ impl Hunk<Option<Hash>, Local> {
                 write_atom(&mut w, hashes, &name)?;
             }
             Hunk::UnsolveNameConflict { name, path } => {
-                write!(w, "Un-solving a name conflict in {:?} ", path)?;
+                write!(w, "Un-solving a name conflict in {} ", Escaped(path))?;
                 write_pos(&mut w, hashes, name.inode())?;
                 write!(w, ": ")?;
                 write_deleted_names(&mut w, changes, name)?;
@@ -507,8 +543,9 @@ impl Hunk<Option<Hash>, Local> {
                 debug!("solve order conflict");
                 write!(
                     w,
-                    "Solving an order conflict in {} ",
-                    file_name(&local, change.inode())
+                    "Solving an order conflict in {}:{} ",
+                    Escaped(&local.path),
+                    local.line,
                 )?;
                 write_pos(&mut w, hashes, change.inode())?;
                 writeln!(w)?;
@@ -519,8 +556,9 @@ impl Hunk<Option<Hash>, Local> {
                 debug!("unsolve order conflict");
                 write!(
                     w,
-                    "Un-solving an order conflict in {} ",
-                    file_name(&local, change.inode())
+                    "Un-solving an order conflict in {}:{} ",
+                    Escaped(&local.path),
+                    local.line,
                 )?;
                 write_pos(&mut w, hashes, change.inode())?;
                 writeln!(w)?;
@@ -535,11 +573,12 @@ impl Hunk<Option<Hash>, Local> {
                 debug!("resurrect zombies");
                 write!(
                     w,
-                    "Resurrecting zombie lines in {:?}:{} ",
-                    local.path, local.line
+                    "Resurrecting zombie lines in {}:{} ",
+                    Escaped(&local.path),
+                    local.line
                 )?;
                 write_pos(&mut w, hashes, change.inode())?;
-                write!(w, " {:?}", encoding_label(encoding))?;
+                write!(w, " \"{}\"", encoding_label(encoding))?;
                 writeln!(w)?;
                 write_atom(&mut w, hashes, &change)?;
                 print_change_contents(w, changes, change, change_contents, encoding)?;
@@ -604,14 +643,14 @@ impl Hunk<Option<Hash>, Local> {
             let mut add_name = default_newvertex();
             add_name.start = ChangePosition(contents_.len().into());
             add_name.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
-            let name = &cap.name("name").unwrap().as_str();
+            let name = unescape(&cap.name("name").unwrap().as_str());
             let path = {
                 let parent = cap.name("parent").unwrap().as_str();
                 (if parent == "/" {
                     String::new()
                 } else {
-                    parent.to_string() + "/"
-                }) + name
+                    unescape(&parent).to_string() + "/"
+                }) + &name
             };
             debug!("cap = {:?}", cap);
             let meta = if let Some(perm) = cap.name("perm") {
@@ -629,7 +668,7 @@ impl Hunk<Option<Hash>, Local> {
             let encoding = encoding_from_label(cap);
             let meta = FileMetadata {
                 metadata: InodeMetadata(meta),
-                basename: name,
+                basename: &name,
                 encoding: encoding.clone(),
             };
             meta.write(contents_);
@@ -759,7 +798,7 @@ impl Hunk<Option<Hash>, Local> {
             let mut add = default_newvertex();
             add.start = ChangePosition(contents_.len().into());
             add.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
-            let name = cap.name("new").unwrap().as_str();
+            let name = unescape(cap.name("new").unwrap().as_str());
             let meta = if let Some(perm) = cap.name("perm") {
                 debug!("perm = {:?}", perm.as_str());
                 if perm.as_str() == "+dx " {
@@ -774,7 +813,7 @@ impl Hunk<Option<Hash>, Local> {
             };
             let meta = FileMetadata {
                 metadata: InodeMetadata(meta),
-                basename: name,
+                basename: &name,
                 encoding: None,
             };
             meta.write(contents_);

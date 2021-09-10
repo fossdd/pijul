@@ -631,9 +631,9 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
             use path_slash::PathExt;
             let p = p.to_slash_lossy();
             if m.is_dir() {
-                txn_.add_dir(&p, 0).unwrap_or(());
+                txn_.add_dir(&p, 0).map(|_| ()).unwrap_or(());
             } else {
-                txn_.add_file(&p, 0).unwrap_or(());
+                txn_.add_file(&p, 0).map(|_| ()).unwrap_or(());
             }
         }
     }

@@ -213,28 +213,8 @@ pub enum Error {
     NotFound { path: String },
 }
 
-impl WorkingCopy for Memory {
+impl WorkingCopyRead for Memory {
     type Error = Error;
-    fn create_dir_all(&self, file: &str) -> Result<(), Self::Error> {
-        let not_already_exists = {
-            let m = self.0.lock();
-            m.get_file(file).is_none()
-        };
-        if not_already_exists {
-            let last = SystemTime::now();
-            self.add_inode(
-                file,
-                Inode::Directory {
-                    meta: InodeMetadata::new(0o100, true),
-                    children: FileTree {
-                        children: HashMap::default(),
-                    },
-                    last_modified: last,
-                },
-            );
-        }
-        Ok(())
-    }
     fn file_metadata(&self, file: &str) -> Result<InodeMetadata, Self::Error> {
         let m = self.0.lock();
         match m.get_file(file) {
@@ -261,6 +241,29 @@ impl WorkingCopy for Memory {
     fn modified_time(&self, _file: &str) -> Result<std::time::SystemTime, Self::Error> {
         let m = self.0.lock();
         Ok(m.last_modified)
+    }
+}
+
+impl WorkingCopy for Memory {
+    fn create_dir_all(&self, file: &str) -> Result<(), Self::Error> {
+        let not_already_exists = {
+            let m = self.0.lock();
+            m.get_file(file).is_none()
+        };
+        if not_already_exists {
+            let last = SystemTime::now();
+            self.add_inode(
+                file,
+                Inode::Directory {
+                    meta: InodeMetadata::new(0o100, true),
+                    children: FileTree {
+                        children: HashMap::default(),
+                    },
+                    last_modified: last,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn remove_path(&self, path: &str, _rec: bool) -> Result<(), Self::Error> {

@@ -153,6 +153,7 @@ impl<'a> Remote<'a> {
         let mut agent = match thrussh_keys::agent::client::AgentClient::connect_env().await {
             Ok(agent) => agent,
             Err(thrussh_keys::Error::EnvVar(_)) => return Ok(false),
+            Err(thrussh_keys::Error::AgentFailure) => return Ok(false),
             Err(e) => return Err(e.into()),
         };
         let identities = if let Some(ref file) = self.config.identity_file {

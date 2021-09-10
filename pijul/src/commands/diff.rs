@@ -228,9 +228,6 @@ impl Diff {
             match change.write(
                 &repo.changes,
                 None,
-                |local: &libpijul::change::Local, _| -> String {
-                    format!("{}:{}", local.path, local.line)
-                },
                 true,
                 Colored {
                     w: termcolor::StandardStream::stdout(termcolor::ColorChoice::Auto),

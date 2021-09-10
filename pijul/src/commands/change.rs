@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::Clap;
-use libpijul::change::Local;
 use libpijul::changestore::ChangeStore;
 use libpijul::*;
 
@@ -40,12 +39,10 @@ impl Change {
             }
         };
         let change = changes.get_change(&hash).unwrap();
-        let file_name = |l: &Local, _| format!("{}:{}", l.path, l.line);
         let colors = super::diff::is_colored();
         change.write(
             &changes,
             Some(hash),
-            file_name,
             true,
             super::diff::Colored {
                 w: termcolor::StandardStream::stdout(termcolor::ColorChoice::Auto),

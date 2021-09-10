@@ -228,7 +228,13 @@ where
             for (name_key, mut output_item) in b {
                 let name_entry = match done_vertices.entry(output_item.pos) {
                     Entry::Occupied(e) => {
-                        debug!("pos already visited: {:?} {:?}", a, output_item.pos);
+                        debug!(
+                            "pos already visited: {:?} {:?} {:?} {:?}",
+                            a,
+                            output_item.pos,
+                            e.get(),
+                            name_key
+                        );
                         if e.get().0 != name_key {
                             conflicts.push(Conflict::MultipleNames {
                                 pos: output_item.pos,
@@ -237,7 +243,10 @@ where
                         }
                         continue;
                     }
-                    Entry::Vacant(e) => e,
+                    Entry::Vacant(e) => {
+                        debug!("first visit {:?} {:?}", a, output_item.pos);
+                        e
+                    }
                 };
 
                 let output_item_inode = {

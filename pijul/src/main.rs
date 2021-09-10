@@ -123,7 +123,7 @@ pub enum SubCommand {
     /// Creates an archive of the repository
     Archive(Archive),
 
-    /// Shows which patch last affected each line of the every file
+    /// Shows which change last affected each line of the given file(s)
     Credit(Credit),
 
     /// Manage tags (create tags, check out a tag)

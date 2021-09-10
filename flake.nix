@@ -18,8 +18,8 @@
       rustOverlay = final: prev:
         let
           rustChannel = prev.rustChannelOf {
-            channel = "1.52.0";
-            sha256 = "sha256-fcaq7+4shIvAy0qMuC3nnYGd0ZikkR5ln/rAruHA6mM=";
+            channel = "1.54.0";
+            sha256 = "sha256-2NfCJiH3wk7sR1XlRf8+IZfY3S9sYKdL8TpMqk82Bq0=";
           };
         in
         {

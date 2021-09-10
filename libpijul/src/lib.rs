@@ -73,7 +73,22 @@ pub use crate::record::{Algorithm, InodeUpdate};
 pub use crate::unrecord::UnrecordError;
 
 // Making hashmaps deterministic (for testing)
-pub type Hasher = std::hash::BuildHasherDefault<twox_hash::XxHash64>;
+pub struct Xxh64(xxhash_rust::xxh64::Xxh64);
+impl std::hash::Hasher for Xxh64 {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.write(bytes)
+    }
+    fn finish(&self) -> u64 {
+        self.0.finish()
+    }
+}
+impl Default for Xxh64 {
+    fn default() -> Self {
+        Xxh64(xxhash_rust::xxh64::Xxh64::new(0))
+    }
+}
+
+pub type Hasher = std::hash::BuildHasherDefault<Xxh64>;
 pub type HashMap<K, V> = std::collections::HashMap<K, V, Hasher>;
 pub type HashSet<K> = std::collections::HashSet<K, Hasher>;
 // pub type HashMap<K, V> = std::collections::HashMap<K, V, std::collections::hash_map::RandomState>;
@@ -163,53 +178,6 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         crate::apply::apply_local_change(self, channel, change, hash, inode_updates)
     }
 
-    /*
-    fn record<W: crate::working_copy::WorkingCopy, C: crate::changestore::ChangeStore>(
-        &mut self,
-        builder: &mut RecordBuilder,
-        diff_algorithm: Algorithm,
-        channel: &mut pristine::ChannelRef<Self>,
-        working_copy: &mut W,
-        changes: &C,
-        prefix: &str,
-    ) -> Result<(), crate::record::RecordError<C::Error, W::Error, Self::GraphError>>
-    where
-        <W as crate::working_copy::WorkingCopy>::Error: 'static,
-    {
-        builder.record(
-            self,
-            diff_algorithm,
-            &mut channel.lock().unwrap(),
-            working_copy,
-            changes,
-            prefix,
-        )
-    }
-
-    fn record_all<W: crate::working_copy::WorkingCopy, C: crate::changestore::ChangeStore>(
-        &mut self,
-        diff_algorithm: Algorithm,
-        channel: &pristine::ChannelRef<Self>,
-        working_copy: &mut W,
-        changes: &C,
-        prefix: &str,
-    ) -> Result<record::Recorded, crate::record::RecordError<C::Error, W::Error, Self::GraphError>>
-    where
-        <W as crate::working_copy::WorkingCopy>::Error: 'static,
-    {
-        let mut builder = crate::record::Builder::new();
-        builder.record(
-            self,
-            diff_algorithm,
-            &mut channel.lock().unwrap(),
-            working_copy,
-            changes,
-            prefix,
-        )?;
-        Ok(builder.finish())
-    }
-    */
-
     fn apply_recorded<C: changestore::ChangeStore>(
         &mut self,
         channel: &mut pristine::ChannelRef<Self>,
@@ -258,33 +226,10 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         unrecord::unrecord(self, channel, changes, hash, salt)
     }
 
-    /*
-    fn output_repository_no_pending<R: working_copy::WorkingCopy, C: changestore::ChangeStore>(
-        &mut self,
-        repo: &mut R,
-        changes: &C,
-        channel: &mut pristine::ChannelRef<Self>,
-        prefix: &str,
-        output_name_conflicts: bool,
-        if_modified_since: Option<std::time::SystemTime>,
-    ) -> Result<Vec<output::Conflict>, output::OutputError<C::Error, Self::GraphError, R::Error>>
-    {
-        output::output_repository_no_pending(
-            repo,
-            changes,
-            self,
-            channel,
-            prefix,
-            output_name_conflicts,
-            if_modified_since,
-        )
-    }
-    */
-
     /// Register a file in the working copy, where the file is given by
     /// its path from the root of the repository, where the components of
     /// the path are separated by `/` (example path: `a/b/c`).
-    fn add_file(&mut self, path: &str, salt: u64) -> Result<(), fs::FsError<Self::GraphError>> {
+    fn add_file(&mut self, path: &str, salt: u64) -> Result<Inode, fs::FsError<Self::GraphError>> {
         fs::add_inode(self, None, path, false, salt)
     }
 
@@ -292,7 +237,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
     /// given by its path from the root of the repository, where the
     /// components of the path are separated by `/` (example path:
     /// `a/b/c`).
-    fn add_dir(&mut self, path: &str, salt: u64) -> Result<(), fs::FsError<Self::GraphError>> {
+    fn add_dir(&mut self, path: &str, salt: u64) -> Result<Inode, fs::FsError<Self::GraphError>> {
         fs::add_inode(self, None, path, true, salt)
     }
 
@@ -304,7 +249,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         path: &str,
         is_dir: bool,
         salt: u64,
-    ) -> Result<(), fs::FsError<Self::GraphError>> {
+    ) -> Result<Inode, fs::FsError<Self::GraphError>> {
         fs::add_inode(self, None, path, is_dir, salt)
     }
 
