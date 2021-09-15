@@ -1,5 +1,5 @@
 use super::*;
-use crate::working_copy::WorkingCopy;
+use crate::working_copy::{WorkingCopy, WorkingCopyRead};
 use std::io::Write;
 
 /// Add a file, write to it, then fork the branch and unrecord once on

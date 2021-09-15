@@ -461,7 +461,7 @@ impl thrussh::client::Handler for SshClient {
                     }
                 }
                 State::Id { ref mut sender } => {
-                    debug!("state: Id {:?}", data);
+                    debug!("state: Id {:?}", std::str::from_utf8(&data));
                     if let Some(sender) = sender.take() {
                         let line = if data.len() >= 16 && data.last() == Some(&10) {
                             libpijul::pristine::RemoteId::from_base32(&data[..data.len() - 1])
@@ -557,7 +557,7 @@ impl thrussh::client::Handler for SshClient {
                         debug!("log done");
                         sender.send(None).await.unwrap_or(())
                     } else {
-                        debug!("{:?}", data);
+                        trace!("{:?}", data);
                         let mut p = 0;
                         while let Some(i) = (&data[p..]).iter().position(|i| *i == b'\n') {
                             let line = if !pending.is_empty() {

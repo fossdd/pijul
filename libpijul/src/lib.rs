@@ -73,22 +73,7 @@ pub use crate::record::{Algorithm, InodeUpdate};
 pub use crate::unrecord::UnrecordError;
 
 // Making hashmaps deterministic (for testing)
-pub struct Xxh64(xxhash_rust::xxh64::Xxh64);
-impl std::hash::Hasher for Xxh64 {
-    fn write(&mut self, bytes: &[u8]) {
-        self.0.write(bytes)
-    }
-    fn finish(&self) -> u64 {
-        self.0.finish()
-    }
-}
-impl Default for Xxh64 {
-    fn default() -> Self {
-        Xxh64(xxhash_rust::xxh64::Xxh64::new(0))
-    }
-}
-
-pub type Hasher = std::hash::BuildHasherDefault<Xxh64>;
+pub type Hasher = std::hash::BuildHasherDefault<twox_hash::XxHash64>;
 pub type HashMap<K, V> = std::collections::HashMap<K, V, Hasher>;
 pub type HashSet<K> = std::collections::HashSet<K, Hasher>;
 // pub type HashMap<K, V> = std::collections::HashMap<K, V, std::collections::hash_map::RandomState>;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::pristine::GraphIter;
 use crate::working_copy::WorkingCopy;
 use std::io::Write;
 
@@ -43,10 +44,10 @@ fn quadratic_pseudo_edges() -> Result<(), anyhow::Error> {
     record_all(&repo, &changes, &txn, &channel, "").unwrap();
     // Test that not too many edges have been inserted.
     {
-        let channel = channel.read();
+        let graph = &channel.read().graph;
         let mut m = 0;
-        let mut it = txn.read().iter_graph(&channel.graph, None).unwrap();
-        while let Some(Ok(_)) = txn.read().next_graph(&channel.graph, &mut it) {
+        let mut cursor = txn.read().graph_cursor(graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(graph, &mut cursor) {
             m += 1
         }
         let m0 = n * 8 + 6;
@@ -135,10 +136,10 @@ fn linear_context_repair() {
 
     // Test that not too many edges have been inserted.
     {
-        let channel = channel.read();
+        let graph = &channel.read().graph;
         let mut m = 0;
-        let mut it = txn.read().iter_graph(&channel.graph, None).unwrap();
-        while let Some(Ok(_)) = txn.read().next_graph(&channel.graph, &mut it) {
+        let mut cursor = txn.read().graph_cursor(graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(graph, &mut cursor) {
             m += 1
         }
         debug!("m (channel, alice) = {:?}", m);
@@ -148,10 +149,10 @@ fn linear_context_repair() {
         }
     }
     {
-        let channel = channel2.read();
+        let graph = &channel2.read().graph;
         let mut m = 0;
-        let mut it = txn.read().iter_graph(&channel.graph, None).unwrap();
-        while let Some(Ok(_)) = txn.read().next_graph(&channel.graph, &mut it) {
+        let mut cursor = txn.read().graph_cursor(graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(graph, &mut cursor) {
             m += 1
         }
         debug!("m (channel2, bob) = {:?}", m);

@@ -148,9 +148,8 @@ fn get_local_inodes(
 /// for changes to upload, whether the remote has unrecorded relevant changes,
 /// and whether the remote has changes we don't know about, since those might
 /// effect whether or not we actually want to go through with the push.
-pub(crate) struct PushDelta<T: MutTxnTExt + TxnTExt> {
+pub(crate) struct PushDelta {
     pub to_upload: Vec<Hash>,
-    pub remote_ref: Option<RemoteRef<T>>,
     pub remote_unrecs: Vec<(u64, Hash)>,
     pub unknown_changes: Vec<Hash>,
 }
@@ -198,7 +197,7 @@ impl RemoteDelta<MutTxn<()>> {
         path: &[String],
         channel: &ChannelRef<MutTxn<()>>,
         repo: &Repository,
-    ) -> Result<PushDelta<MutTxn<()>>, anyhow::Error> {
+    ) -> Result<PushDelta, anyhow::Error> {
         let mut to_upload = Vec::<Hash>::new();
         let inodes = get_local_inodes(txn, channel, repo, path)?;
 
@@ -225,7 +224,6 @@ impl RemoteDelta<MutTxn<()>> {
         assert!(self.theirs_ge_dichotomy_set.is_empty());
         let d = PushDelta {
             to_upload: to_upload.into_iter().rev().collect(),
-            remote_ref: self.remote_ref,
             remote_unrecs: self.remote_unrecs,
             unknown_changes: Vec::new(),
         };
@@ -241,7 +239,7 @@ impl RemoteDelta<MutTxn<()>> {
         path: &[String],
         channel: &ChannelRef<MutTxn<()>>,
         repo: &Repository,
-    ) -> Result<PushDelta<MutTxn<()>>, anyhow::Error> {
+    ) -> Result<PushDelta, anyhow::Error> {
         let mut to_upload = Vec::<Hash>::new();
         let inodes = get_local_inodes(txn, channel, repo, path)?;
         if let Some(ref remote_ref) = self.remote_ref {
@@ -291,7 +289,6 @@ impl RemoteDelta<MutTxn<()>> {
 
         Ok(PushDelta {
             to_upload: to_upload.into_iter().rev().collect(),
-            remote_ref: self.remote_ref,
             remote_unrecs: self.remote_unrecs,
             unknown_changes,
         })
@@ -310,13 +307,16 @@ pub(crate) fn update_changelist_local_channel(
     specific_changes: &[String],
 ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
     if !specific_changes.is_empty() {
-        let to_download: Result<Vec<libpijul::Hash>, anyhow::Error> = specific_changes
-            .iter()
-            .map(|h| Ok(txn.hash_from_prefix(h)?.0))
-            .collect();
+        let mut to_download = Vec::new();
+        for h in specific_changes {
+            let h = txn.hash_from_prefix(h)?.0;
+            if txn.get_revchanges(current_channel, &h)?.is_none() {
+                to_download.push(h)
+            }
+        }
         Ok(RemoteDelta {
             inodes: HashSet::new(),
-            to_download: to_download?,
+            to_download,
             remote_ref: None,
             ours_ge_dichotomy_set: HashSet::new(),
             theirs_ge_dichotomy: Vec::new(),
@@ -483,7 +483,7 @@ impl RemoteRepo {
         repo: &Repository,
         specific_changes: &[String],
     ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
-        debug!("update_changelist");
+        debug!("update_changelist_pushpull");
         if let RemoteRepo::LocalChannel(c) = self {
             return update_changelist_local_channel(
                 c,
@@ -496,14 +496,18 @@ impl RemoteRepo {
         }
 
         let id = if let Some(id) = self.get_id(txn).await? {
+            debug!("id = {:?}", id);
             id
         } else {
+            debug!("no id, starting from scratch");
             let (inodes, theirs_ge_dichotomy) = self.download_changelist_nocache(0, path).await?;
             let mut theirs_ge_dichotomy_set = HashSet::new();
             let mut to_download = Vec::new();
             for (_, h, _) in theirs_ge_dichotomy.iter() {
                 theirs_ge_dichotomy_set.insert(*h);
-                to_download.push(*h);
+                if txn.get_revchanges(current_channel, h)?.is_none() {
+                    to_download.push(*h);
+                }
             }
             return Ok(RemoteDelta {
                 inodes,

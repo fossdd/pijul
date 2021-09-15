@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 /// A file system change store.
 pub struct FileSystem {
-    change_cache: RefCell<lru_cache::LruCache<ChangeId, ChangeFile>>,
+    change_cache: RefCell<lru_cache::LruCache<ChangeId, ChangeFile<'static>>>,
     changes_dir: PathBuf,
 }
 
@@ -79,7 +79,7 @@ impl FileSystem {
         hash: F,
         change: ChangeId,
     ) -> Result<
-        std::cell::RefMut<lru_cache::LruCache<ChangeId, ChangeFile>>,
+        std::cell::RefMut<lru_cache::LruCache<ChangeId, ChangeFile<'static>>>,
         crate::change::ChangeError,
     > {
         let mut change_cache = self.change_cache.borrow_mut();

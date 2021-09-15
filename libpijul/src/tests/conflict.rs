@@ -1,3 +1,5 @@
+use crate::working_copy::WorkingCopyRead;
+
 use super::*;
 use std::io::Write;
 

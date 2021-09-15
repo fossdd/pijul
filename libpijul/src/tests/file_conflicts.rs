@@ -1,5 +1,5 @@
 use super::*;
-use crate::working_copy::WorkingCopy;
+use crate::working_copy::{WorkingCopy, WorkingCopyRead};
 use std::io::Write;
 
 /// Rename conflict
@@ -766,7 +766,7 @@ fn rename_zombie_dir() -> Result<(), anyhow::Error> {
     )?;
     let files_alice = repo_alice.list_files();
     if files_alice.iter().any(|x| x == "a/b/d/file") {
-        txn_alice.write().add_file("a/b/d/file", 0).unwrap_or(());
+        let _ = txn_alice.write().add_file("a/b/d/file", 0);
     } else {
         assert!(files_alice.iter().any(|x| x == "a/b/c/file"));
         txn_alice.write().move_file("a/b/c", "a/b/d", 0).unwrap();

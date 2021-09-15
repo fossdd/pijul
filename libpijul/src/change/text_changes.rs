@@ -355,7 +355,6 @@ impl Hunk<Option<Hash>, Local> {
         change_contents: &[u8],
         mut w: &mut W,
     ) -> Result<(), TextSerError<C::Error>> {
-
         // let file_name = |local: &Local, _| -> String { format!("{}:{}", local.path, local.line) };
 
         use self::text_changes::*;

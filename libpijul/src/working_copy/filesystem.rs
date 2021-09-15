@@ -173,6 +173,9 @@ impl FileSystem {
             info!("Adding {:?}", path);
             use path_slash::PathExt;
             let path_str = path.to_slash_lossy();
+            if path_str.is_empty() || path_str == "." {
+                continue
+            }
             match txn.add(&path_str, is_dir, salt) {
                 Ok(_) => {}
                 Err(crate::fs::FsError::AlreadyInRepo(_)) => {}

@@ -153,15 +153,7 @@ fn text() -> Result<(), anyhow::Error> {
 fn text_test<C: ChangeStore>(c: &C, change0: &Change, h: Hash) {
     let mut v = Vec::new();
     // let channel = channel.borrow();
-    change0
-        .write(
-            c,
-            Some(h),
-            |l, _p| format!("{}:{}", l.path, l.line),
-            true,
-            &mut v,
-        )
-        .unwrap();
+    change0.write(c, Some(h), true, &mut v).unwrap();
     for i in std::str::from_utf8(&v).unwrap().lines() {
         debug!("{}", i);
     }

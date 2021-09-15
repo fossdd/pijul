@@ -21,15 +21,7 @@ fn add_non_utf8_file_test() -> Result<(), anyhow::Error> {
     let (h, change) = record_all_change(&repo, &store, &txn, &channel, "")?;
 
     let mut v = Vec::new();
-    change
-        .write(
-            &store,
-            Some(h),
-            |l, _p| format!("{}:{}", l.path, l.line),
-            true,
-            &mut v,
-        )
-        .unwrap();
+    change.write(&store, Some(h), true, &mut v).unwrap();
 
     let lines: Vec<&str> = std::str::from_utf8(&v)
         .unwrap()
@@ -76,15 +68,7 @@ fn change_non_utf8_file_test() -> Result<(), anyhow::Error> {
 
     // only one line was changed
     let mut v = Vec::new();
-    change1
-        .write(
-            &store,
-            Some(h1),
-            |l, _p| format!("{}:{}", l.path, l.line),
-            true,
-            &mut v,
-        )
-        .unwrap();
+    change1.write(&store, Some(h1), true, &mut v).unwrap();
     let lines: Vec<&str> = std::str::from_utf8(&v)
         .unwrap()
         .lines()

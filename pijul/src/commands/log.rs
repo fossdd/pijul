@@ -149,53 +149,71 @@ fn filtered_hashes<T: TreeTxnT + GraphTxnT + DepsTxnT>(
 /// The implementaiton of [`std::fmt::Display`] is the standard method
 /// of pretty-printing a `LogEntry` to the terminal.
 #[derive(Serialize)]
-struct LogEntry {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    authors: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timestamp: Option<chrono::DateTime<chrono::offset::Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
+#[serde(untagged)]
+enum LogEntry {
+    Full {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        authors: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<chrono::DateTime<chrono::offset::Utc>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    Hash(libpijul::Hash),
 }
 
 /// The standard pretty-print
 impl std::fmt::Display for LogEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if let Some(ref h) = self.hash {
-            writeln!(f, "Change {}", h)?;
-        }
-        if let Some(ref authors) = self.authors {
-            write!(f, "Author: ")?;
-            let mut is_first = true;
-            for a in authors.iter() {
-                if is_first {
-                    is_first = false;
-                    write!(f, "{}", a)?;
-                } else {
-                    write!(f, ", {}", a)?;
+        match self {
+            LogEntry::Full {
+                hash,
+                state,
+                authors,
+                timestamp,
+                message,
+                description,
+            } => {
+                if let Some(ref h) = hash {
+                    writeln!(f, "Change {}", h)?;
+                }
+                if let Some(ref authors) = authors {
+                    write!(f, "Author: ")?;
+                    let mut is_first = true;
+                    for a in authors.iter() {
+                        if is_first {
+                            is_first = false;
+                            write!(f, "{}", a)?;
+                        } else {
+                            write!(f, ", {}", a)?;
+                        }
+                    }
+                    // Write a linebreak after finishing the list of authors.
+                    writeln!(f)?;
+                }
+
+                if let Some(ref timestamp) = timestamp {
+                    writeln!(f, "Date: {}", timestamp)?;
+                }
+                if let Some(ref mrk) = state {
+                    writeln!(f, "State: {}", mrk)?;
+                }
+                if let Some(ref message) = message {
+                    writeln!(f, "\n    {}\n", message)?;
+                }
+                if let Some(ref description) = description {
+                    writeln!(f, "\n    {}\n", description)?;
                 }
             }
-            // Write a linebreak after finishing the list of authors.
-            writeln!(f)?;
-        }
-
-        if let Some(ref timestamp) = self.timestamp {
-            writeln!(f, "Date: {}", timestamp)?;
-        }
-        if let Some(ref mrk) = self.state {
-            writeln!(f, "State: {}", mrk)?;
-        }
-        if let Some(ref message) = self.message {
-            writeln!(f, "\n    {}\n", message)?;
-        }
-        if let Some(ref description) = self.description {
-            writeln!(f, "\n    {}\n", description)?;
+            LogEntry::Hash(h) => {
+                writeln!(f, "{}", h.to_base32())?;
+            }
         }
         Ok(())
     }
@@ -368,6 +386,9 @@ impl LogIterator {
         h: libpijul::Hash,
         m: Option<libpijul::Merkle>,
     ) -> Result<LogEntry, anyhow::Error> {
+        if self.cmd.hash_only {
+            return Ok(LogEntry::Hash(h));
+        }
         let header = self.changes.get_header(&h.into())?;
         let authors = header
             .authors
@@ -399,7 +420,7 @@ impl LogIterator {
                 auth.to_owned()
             })
             .collect();
-        Ok(LogEntry {
+        Ok(LogEntry::Full {
             hash: Some(h.to_base32()),
             state: m.map(|mm| mm.to_base32()).filter(|_| self.cmd.states),
             authors: Some(authors),

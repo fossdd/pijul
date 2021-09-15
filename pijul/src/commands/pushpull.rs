@@ -144,7 +144,7 @@ impl Push {
         channel: &mut ChannelRef<MutTxn<()>>,
         repo: &Repository,
         remote: &mut RemoteRepo,
-    ) -> Result<PushDelta<MutTxn<()>>, anyhow::Error> {
+    ) -> Result<PushDelta, anyhow::Error> {
         let remote_delta = remote
             .update_changelist_pushpull(
                 txn,
@@ -218,10 +218,10 @@ impl Push {
         let mut channel = txn.write().open_or_create_channel(&channel_name)?;
 
         let PushDelta {
-            remote_ref,
             to_upload,
             remote_unrecs,
             unknown_changes,
+            ..
         } = self
             .to_upload(&mut *txn.write(), &mut channel, &repo, &mut remote)
             .await?;
@@ -256,6 +256,12 @@ impl Push {
                 }
             }
 
+            u.sort_by(|a, b| {
+                let na = txn.get_revchanges(&channel, a).unwrap().unwrap();
+                let nb = txn.get_revchanges(&channel, b).unwrap().unwrap();
+                na.cmp(&nb)
+            });
+
             if !not_found.is_empty() {
                 bail!("Changes not found: {:?}", not_found)
             }
@@ -268,7 +274,7 @@ impl Push {
             let mut o = make_changelist(&repo.changes, &to_upload, "push")?;
             loop {
                 let d = parse_changelist(&edit::edit_bytes(&o[..])?);
-                let comp = complete_deps(&*txn.read(), &remote_ref, &repo.changes, &to_upload, &d)?;
+                let comp = complete_deps(&repo.changes, &to_upload, &d)?;
                 if comp.len() == d.len() {
                     break comp;
                 }
@@ -412,7 +418,7 @@ impl Pull {
             let mut o = make_changelist(&repo.changes, &to_download, "pull")?;
             to_download = loop {
                 let d = parse_changelist(&edit::edit_bytes(&o[..])?);
-                let comp = complete_deps(&*txn.read(), &None, &repo.changes, &to_download, &d)?;
+                let comp = complete_deps(&repo.changes, &to_download, &d)?;
                 if comp.len() == d.len() {
                     break comp;
                 }
@@ -545,38 +551,30 @@ impl Pull {
     }
 }
 
-fn complete_deps<T: TxnT, C: ChangeStore>(
-    txn: &T,
-    remote_changes: &Option<libpijul::RemoteRef<T>>,
+fn complete_deps<C: ChangeStore>(
     c: &C,
     original: &[libpijul::Hash],
     now: &[libpijul::Hash],
 ) -> Result<Vec<libpijul::Hash>, anyhow::Error> {
-    let original_: HashSet<_> = original.iter().collect();
+    let original: HashSet<_> = original.iter().collect();
     let mut now_ = HashSet::with_capacity(original.len());
     let mut result = Vec::with_capacity(original.len());
-    for &h in now {
-        now_.insert(h);
-        result.push(h);
-    }
-    let mut stack = now.to_vec();
-    stack.reverse();
-    while let Some(n) = stack.pop() {
-        // check that all of `now`'s deps are in now or not in original
-        for d in c.get_dependencies(&n)? {
-            if let Some(ref rem) = remote_changes {
-                if txn.remote_has_change(rem, &d.into())? {
-                    continue;
-                }
-            }
-            if original_.get(&d).is_some() && now_.get(&d).is_none() {
-                result.push(d);
-                now_.insert(d);
+    let mut stack: Vec<_> = now.iter().rev().cloned().collect();
+    while let Some(h) = stack.pop() {
+        stack.push(h);
+        let l0 = stack.len();
+        for d in c.get_dependencies(&h)? {
+            if original.get(&d).is_some() && now_.get(&d).is_none() {
+                // The user missed a dep.
                 stack.push(d);
             }
         }
-        if now_.insert(n) {
-            result.push(n)
+        if stack.len() == l0 {
+            // We have all dependencies.
+            stack.pop();
+            if now_.insert(h) {
+                result.push(h);
+            }
         }
     }
     Ok(result)

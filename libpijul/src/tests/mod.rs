@@ -24,7 +24,7 @@ mod unrecord;
 fn record_all_change<
     T: MutTxnT + Send + Sync + 'static,
     R: WorkingCopy + Clone + Send + Sync + 'static,
-    P: ChangeStore + Clone + Send + Sync + 'static,
+    P: ChangeStore + Clone + Send + 'static,
 >(
     repo: &R,
     store: &P,
@@ -72,13 +72,7 @@ where
     let hash = store.save_change(&change0)?;
     if log_enabled!(log::Level::Debug) {
         change0
-            .write(
-                store,
-                Some(hash),
-                |l, _p| format!("{}:{}", l.path, l.line),
-                true,
-                &mut std::io::stderr(),
-            )
+            .write(store, Some(hash), true, &mut std::io::stderr())
             .unwrap();
     }
     apply::apply_local_change(
@@ -101,7 +95,7 @@ fn record_all<T: MutTxnT, R: WorkingCopy, P: ChangeStore>(
 where
     T: MutTxnT + Send + Sync + 'static,
     R: WorkingCopy + Clone + Send + Sync + 'static,
-    P: ChangeStore + Clone + Send + Sync + 'static,
+    P: ChangeStore + Clone + Send + 'static,
     R::Error: Send + Sync + 'static,
 {
     let (hash, _) = record_all_change(repo, store, txn, channel, prefix)?;

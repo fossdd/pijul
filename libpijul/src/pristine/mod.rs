@@ -261,7 +261,7 @@ impl RemoteId {
 
     pub fn from_base32(b: &[u8]) -> Option<Self> {
         let mut bb = RemoteId([0; 16]);
-        if b.len() != bb.0.len() {
+        if b.len() != data_encoding::BASE32_NOPAD.encode_len(16) {
             return None;
         }
         if data_encoding::BASE32_NOPAD.decode_mut(b, &mut bb.0).is_ok() {

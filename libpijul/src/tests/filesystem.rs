@@ -1,6 +1,8 @@
 use super::*;
 use std::io::Write;
 
+const MAX_FILES: usize = 10;
+
 #[test]
 fn filesystem() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
@@ -9,7 +11,7 @@ fn filesystem() -> Result<(), anyhow::Error> {
     let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
-    let changes = changestore::filesystem::FileSystem::from_root(f.path());
+    let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
     repo.write_file("dir/file")
         .unwrap()
@@ -45,7 +47,7 @@ fn symlink() -> Result<(), anyhow::Error> {
     let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
-    let changes = changestore::filesystem::FileSystem::from_root(f.path());
+    let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
     repo.write_file("dir/file")
         .unwrap()
@@ -84,7 +86,7 @@ fn record_dead_symlink() -> Result<(), anyhow::Error> {
     let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
-    let changes = changestore::filesystem::FileSystem::from_root(f.path());
+    let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
     std::fs::create_dir_all(&r.path().join("dir")).unwrap();
     std::os::unix::fs::symlink("../file", &r.path().join("dir/link")).unwrap();
@@ -115,7 +117,7 @@ fn overwrite_dead_symlink() -> Result<(), anyhow::Error> {
     let repo = working_copy::filesystem::FileSystem::from_root(r.path());
 
     let f = tempfile::tempdir()?;
-    let changes = changestore::filesystem::FileSystem::from_root(f.path());
+    let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
     repo.write_file("dir/file")
         .unwrap()
