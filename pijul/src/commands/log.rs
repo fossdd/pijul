@@ -8,10 +8,11 @@ use crate::repository::Repository;
 use anyhow::bail;
 use clap::Clap;
 use libpijul::changestore::*;
-use libpijul::pristine::{sanakirja::Txn, ChannelRef, DepsTxnT, GraphTxnT, TreeTxnT};
+use libpijul::pristine::{sanakirja::Txn, ChannelRef, DepsTxnT, GraphTxnT, TreeTxnT, TxnErr};
 use libpijul::{Base32, TxnT, TxnTExt};
 use serde::ser::{SerializeSeq, Serializer};
 use serde::Serialize;
+use thiserror::*;
 
 /// A struct containing user-input assembled by Clap.
 #[derive(Clap, Debug)]
@@ -47,22 +48,89 @@ pub struct Log {
     filters: Vec<String>,
 }
 
+impl TryFrom<Log> for LogIterator {
+    type Error = anyhow::Error;
+    fn try_from(cmd: Log) -> Result<LogIterator, Self::Error> {
+        let repo = Repository::find_root(cmd.repo_path.clone())?;
+        let repo_path = repo.path.clone();
+        let txn = repo.pristine.txn_begin()?;
+        let channel_name = if let Some(ref c) = cmd.channel {
+            c
+        } else {
+            txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+        };
+        // The only situation that's disallowed is if the user's trying to apply
+        // path filters AND get the logs for a channel other than the one they're
+        // currently using (where using means the one that comprises the working copy)
+        if !cmd.filters.is_empty()
+            && !(channel_name == txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL))
+        {
+            bail!("Currently, log filters can only be applied to the channel currently in use.")
+        }
+
+        let channel_ref = if let Some(channel) = txn.load_channel(channel_name)? {
+            channel
+        } else {
+            bail!("No such channel: {:?}", channel_name)
+        };
+        let changes = repo.changes;
+        let limit = cmd.limit.unwrap_or(std::usize::MAX);
+        let offset = cmd.offset.unwrap_or(0);
+
+        let mut id_path = repo.path.join(libpijul::DOT_DIR);
+        id_path.push("identities");
+        Ok(Self {
+            txn,
+            cmd,
+            changes,
+            repo_path,
+            id_path,
+            channel_ref,
+            limit,
+            offset,
+        })
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum Error<E: std::error::Error> {
+    #[error("pijul log couldn't find a file or directory corresponding to `{}`", 0)]
+    NotFound(String),
+    #[error(transparent)]
+    Txn(#[from] libpijul::pristine::sanakirja::SanakirjaError),
+    #[error(transparent)]
+    TxnErr(#[from] TxnErr<libpijul::pristine::sanakirja::SanakirjaError>),
+    #[error(transparent)]
+    Fs(#[from] libpijul::FsError<libpijul::pristine::sanakirja::SanakirjaError>),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("pijul log couldn't assemble file prefix for pattern `{}`: {} was not a file in the repository at {}", pat, canon_path.display(), repo_path.display())]
+    FilterPath {
+        pat: String,
+        canon_path: PathBuf,
+        repo_path: PathBuf,
+    },
+    #[error("pijul log couldn't assemble file prefix for pattern `{}`: the path contained invalid UTF-8", 0)]
+    InvalidUtf8(String),
+    #[error(transparent)]
+    E(E),
+    #[error(transparent)]
+    Filesystem(#[from] libpijul::changestore::filesystem::Error),
+}
+
 // A lot of error-handling noise here, but since we're dealing with
 // a user-command and a bunch of file-IO/path manipulation it's
 // probably necessary for the feedback to be good.
-fn get_inodes(
-    txn: &impl libpijul::pristine::TreeTxnT,
+fn get_inodes<E: std::error::Error>(
+    txn: &Txn,
     repo_path: &Path,
     pats: &[String],
-) -> Result<Vec<libpijul::Inode>, anyhow::Error> {
+) -> Result<Vec<libpijul::Inode>, Error<E>> {
     let mut inodes = Vec::new();
     for pat in pats {
         let canon_path = match Path::new(pat).canonicalize() {
             Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => {
-                bail!(
-                    "pijul log couldn't find a file or directory corresponding to `{}`",
-                    pat
-                )
+                return Err(Error::NotFound(pat.to_string()))
             }
             Err(e) => return Err(e.into()),
             Ok(p) => p,
@@ -72,30 +140,16 @@ fn get_inodes(
             // strip_prefix error is if repo_path is not a prefix of canon_path,
             // which would only happen if they pased in a filter path that's not
             // in the repository.
-            Err(_) => bail!(
-                "pijul log couldn't assemble file prefix for pattern `{}`; \
-                {} was not a file in the repository at {}",
-                pat,
-                canon_path.display(),
-                repo_path.display()
-            ),
+            Err(_) => {
+                return Err(Error::FilterPath {
+                    pat: pat.to_string(),
+                    canon_path,
+                    repo_path: repo_path.to_path_buf(),
+                })
+            }
             // PathBuf.to_str() returns none iff the path contains invalid UTF-8.
-            Ok(None) => bail!(
-                "pijul log couldn't assemble file prefix for pattern `{}`; \
-                the path contained invalid UTF-8",
-                pat
-            ),
-            Ok(Some(s)) => match libpijul::fs::find_inode(txn, s) {
-                Err(e) => bail!(
-                    "pijul log couldn't assemble file prefix for pattern `{}`; \
-                    no Inode found for the corresponding path. Internal error: {:?}",
-                    pat,
-                    e
-                ),
-                Ok(inode) => {
-                    inodes.push(inode);
-                }
-            },
+            Ok(None) => return Err(Error::InvalidUtf8(pat.to_string())),
+            Ok(Some(s)) => inodes.push(libpijul::fs::find_inode(txn, s)?),
         };
     }
     log::debug!("log filters: {:#?}\n", pats);
@@ -104,35 +158,25 @@ fn get_inodes(
 
 /// Given a list of path filters which represent the files/directories for which
 /// the user wants to see the logs, find the subset of relevant change hashes.
-fn filtered_hashes<T: TreeTxnT + GraphTxnT + DepsTxnT>(
-    txn: &T,
+fn filtered_hashes<E: std::error::Error>(
+    txn: &Txn,
     path: &Path,
     filters: &[String],
-) -> Result<HashSet<libpijul::Hash>, anyhow::Error> {
+) -> Result<HashSet<libpijul::Hash>, Error<E>> {
     let inodes = get_inodes(txn, path, filters)?;
     let mut hashes = HashSet::<libpijul::Hash>::new();
     for inode in inodes {
         // The Position<ChangeId> for the file Inode.
         let inode_position = match txn.get_inodes(&inode, None)? {
-            None => bail!("Failed to get matching inode: {:?}", inode),
+            None => continue,
             Some(p) => p,
         };
         for pair in txn.iter_touched(inode_position)? {
             let (position, touched_change_id) = pair?;
             // Push iff the file ChangeId for this element matches that of the file Inode
             if &position.change == &inode_position.change {
-                match txn.get_external(touched_change_id)? {
-                    Some(ser_h) => {
-                        hashes.insert(libpijul::Hash::from(*ser_h));
-                    }
-                    _ => {
-                        log::error!(
-                            "`get_external` failed to retrieve full hash for ChangeId {:?}",
-                            touched_change_id
-                        );
-                        bail!("Failed to retrieve full hash for {:?}", touched_change_id)
-                    }
-                }
+                let ser_h = txn.get_external(touched_change_id)?.unwrap();
+                hashes.insert(libpijul::Hash::from(*ser_h));
             } else {
                 // We've gone past the relevant subset of changes in the iterator.
                 break;
@@ -271,62 +315,16 @@ impl std::fmt::Display for LogIterator {
     }
 }
 
-impl TryFrom<Log> for LogIterator {
-    type Error = anyhow::Error;
-    fn try_from(cmd: Log) -> Result<LogIterator, Self::Error> {
-        let repo = Repository::find_root(cmd.repo_path.clone())?;
-        let repo_path = repo.path.clone();
-        let txn = repo.pristine.txn_begin()?;
-        let channel_name = if let Some(ref c) = cmd.channel {
-            c
-        } else {
-            txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
-        };
-        // The only situation that's disallowed is if the user's trying to apply
-        // path filters AND get the logs for a channel other than the one they're
-        // currently using (where using means the one that comprises the working copy)
-        if !cmd.filters.is_empty()
-            && !(channel_name == txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL))
-        {
-            bail!("Currently, log filters can only be applied to the channel currently in use.")
-        }
-
-        let channel_ref = if let Some(channel) = txn.load_channel(channel_name)? {
-            channel
-        } else {
-            bail!("No such channel: {:?}", channel_name)
-        };
-        let changes = repo.changes;
-        let limit = cmd.limit.unwrap_or(std::usize::MAX);
-        let offset = cmd.offset.unwrap_or(0);
-
-        let mut id_path = repo.path.join(libpijul::DOT_DIR);
-        id_path.push("identities");
-        Ok(Self {
-            txn,
-            cmd,
-            changes,
-            repo_path,
-            id_path,
-            channel_ref,
-            limit,
-            offset,
-        })
-    }
-}
 impl LogIterator {
     /// Call `f` on each [`LogEntry`] in a [`LogIterator`].
     ///
     /// The purpose of this is to let us execute a function over the log entries
     /// without having to duplicate the iteration/filtering logic or
     /// having to collect all of the elements first.
-    fn for_each<A, E>(
+    fn for_each<A, E: std::error::Error>(
         &self,
         mut f: impl FnMut(LogEntry) -> Result<A, E>,
-    ) -> Result<(), anyhow::Error>
-    where
-        E: std::fmt::Display,
-    {
+    ) -> Result<(), Error<E>> {
         // A cache of authors to keys. Prevents us from having to do
         // a lot of file-io for looking up the same author multiple times.
         let mut authors = HashMap::new();
@@ -358,9 +356,7 @@ impl LogIterator {
                 // If there were no path filters applied, OR is this was one of the hashes
                 // marked by the file filters that were applied
                 let entry = self.mk_log_entry(&mut authors, &mut id_path, h, Some(mrk))?;
-                if let Err(e) = f(entry) {
-                    return Err(anyhow::Error::msg(format!("{}", e)));
-                }
+                f(entry).map_err(Error::E)?;
             } else if requested_hashes.is_empty() {
                 // If the user applied path filters, but the relevant change hashes
                 // have been exhausted, we can break early.
@@ -379,13 +375,13 @@ impl LogIterator {
     ///
     /// Most of this is just getting the right key information from either the cache
     /// or from the relevant file.
-    fn mk_log_entry<'x>(
+    fn mk_log_entry<'x, E: std::error::Error>(
         &self,
         author_kvs: &'x mut HashMap<String, String>,
         id_path: &mut PathBuf,
         h: libpijul::Hash,
         m: Option<libpijul::Merkle>,
-    ) -> Result<LogEntry, anyhow::Error> {
+    ) -> Result<LogEntry, Error<E>> {
         if self.cmd.hash_only {
             return Ok(LogEntry::Hash(h));
         }
@@ -432,8 +428,9 @@ impl LogIterator {
 }
 
 impl Log {
-    // In order to accommodate both pretty-printing and efficient serialization to a serde
-    // target format, this now delegates mostly to [`LogIterator`].
+    // In order to accommodate both pretty-printing and efficient
+    // serialization to a serde target format, this now delegates
+    // mostly to [`LogIterator`].
     pub fn run(self) -> Result<(), anyhow::Error> {
         let mut stdout = std::io::stdout();
         match self.output_format.as_ref().map(|s| s.as_str()) {
@@ -442,7 +439,13 @@ impl Log {
             }
             _ => {
                 super::pager();
-                LogIterator::try_from(self)?.for_each(|entry| write!(&mut stdout, "{}", entry))?
+                LogIterator::try_from(self)?.for_each(|entry| {
+                    match write!(&mut stdout, "{}", entry) {
+                        Ok(_) => Ok(()),
+                        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                        Err(e) => Err(e),
+                    }
+                })?
             }
         }
         Ok(())

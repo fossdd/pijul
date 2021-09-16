@@ -2,8 +2,8 @@ use super::*;
 
 /// An open, seekable change file.
 #[cfg(feature = "zstd")]
-pub struct ChangeFile<'a> {
-    s: Option<zstd_seekable::Seekable<'a, OffFile>>,
+pub struct ChangeFile {
+    s: Option<zstd_seekable::Seekable<OffFile>>,
     hashed: Hashed<Hunk<Option<Hash>, Local>, Author>,
     hash: Hash,
     unhashed: Option<toml::Value>,
@@ -34,7 +34,7 @@ impl std::io::Seek for OffFile {
 }
 
 #[cfg(feature = "zstd")]
-impl<'a> ChangeFile<'a> {
+impl ChangeFile {
     /// Open a change file from a path.
     pub fn open(hash: Hash, path: &str) -> Result<Self, ChangeError> {
         use std::io::Read;
@@ -84,10 +84,10 @@ impl<'a> ChangeFile<'a> {
         let s = if offsets.contents_off >= m.len() {
             None
         } else {
-            Some(zstd_seekable::Seekable::init(Box::new(OffFile {
+            Some(zstd_seekable::Seekable::init(OffFile {
                 f: r,
                 start: offsets.contents_off,
-            }))?)
+            }, None)?)
         };
         Ok(ChangeFile {
             s,
