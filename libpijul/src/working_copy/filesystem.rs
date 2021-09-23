@@ -174,7 +174,7 @@ impl FileSystem {
             use path_slash::PathExt;
             let path_str = path.to_slash_lossy();
             if path_str.is_empty() || path_str == "." {
-                continue
+                continue;
             }
             match txn.add(&path_str, is_dir, salt) {
                 Ok(_) => {}

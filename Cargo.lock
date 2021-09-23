@@ -2634,9 +2634,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-seekable"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62d9eace42d7bf64591d547cb727d89277e3de1c1b934e3d9d0af8c6687587ef"
+checksum = "1b8063b34aea161faa6068c9246f98fc033047af5764305ae972e0bc0bf768d4"
 dependencies = [
  "libc",
  "pkg-config",

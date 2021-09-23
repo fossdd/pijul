@@ -128,6 +128,7 @@ impl Recorded {
         channel: &T::Channel,
         algorithm: Algorithm,
         path: String,
+        inode_: Inode,
         inode: Position<Option<ChangeId>>,
         a: &mut Graph,
         b: &[u8],
@@ -170,6 +171,7 @@ impl Recorded {
                     &mut conflict_contexts,
                     &lines_a,
                     &lines_b,
+                    inode_,
                     r,
                     encoding,
                 )?;
@@ -180,6 +182,7 @@ impl Recorded {
                     &mut conflict_contexts,
                     &lines_a,
                     &lines_b,
+                    inode_,
                     &dd,
                     r,
                     encoding,
@@ -191,16 +194,14 @@ impl Recorded {
     }
 }
 fn bytes_pos(chunks: &[Line], old: usize) -> usize {
-    debug!(
-        "bytes pos {:?} {:?}",
-        old,
-        Line {
-            l: &(chunks[old].l)[..20.min(chunks[old].l.len())],
-            ..chunks[old]
-        }
-    );
-
-    chunks[old].l.as_ptr() as usize - chunks[0].l.as_ptr() as usize
+    if old < chunks.len() {
+        chunks[old].l.as_ptr() as usize - chunks[0].l.as_ptr() as usize
+    } else if old > 0 {
+        chunks[old - 1].l.as_ptr() as usize - chunks[0].l.as_ptr() as usize
+            + chunks[old - 1].l.len()
+    } else {
+        0
+    }
 }
 fn bytes_len(chunks: &[Line], old: usize, len: usize) -> usize {
     if let Some(p) = chunks.get(old + len) {

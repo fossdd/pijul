@@ -82,9 +82,9 @@
 
                     pijul = { ... }: {
                       buildInputs = with pkgs; [
-                        xxHash
                         zstd
                         libsodium
+                        libiconv
                       ] ++ lib.optionals stdenv.isDarwin (
                         [ openssl ]
                         ++ (with darwin.apple_sdk.frameworks; [

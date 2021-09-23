@@ -1,8 +1,8 @@
 use super::diff::*;
 use super::vertex_buffer::{ConflictMarker, Diff};
 use super::{bytes_len, bytes_pos, Line};
-use crate::change::{Atom, Hunk, Local, NewVertex};
-use crate::pristine::{ChangeId, ChangePosition, EdgeFlags, Position};
+use crate::change::{Atom, Hunk, LocalByte, NewVertex};
+use crate::pristine::{ChangeId, ChangePosition, EdgeFlags, Position, Inode};
 use crate::record::Recorded;
 use crate::text_encoding::Encoding;
 use crate::{HashMap, HashSet};
@@ -32,6 +32,7 @@ impl Recorded {
         conflict_contexts: &mut ConflictContexts,
         lines_a: &[Line],
         lines_b: &[Line],
+        inode: Inode,
         dd: &D,
         r: usize,
         encoding: &Option<Encoding>,
@@ -107,9 +108,11 @@ impl Recorded {
             }
         }
         self.actions.push(Hunk::Edit {
-            local: Local {
+            local: LocalByte {
                 line: from_new + 1,
                 path: diff.path.clone(),
+                inode,
+                byte: Some(bytes_pos(lines_b, from_new)),
             },
             change: Atom::NewVertex(change),
             encoding: encoding.clone(),

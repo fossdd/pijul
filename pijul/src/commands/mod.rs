@@ -110,7 +110,10 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
         libpijul::change::dependencies(&*txn, &*channel.read(), pending_change.changes.iter())?;
     pending_change.dependencies = dependencies;
     pending_change.extra_known = extra_known;
-    let hash = repo.changes.save_change(&pending_change).unwrap();
+    let hash = repo
+        .changes
+        .save_change(&mut pending_change, |_, _| Ok::<_, anyhow::Error>(()))
+        .unwrap();
     txn.apply_local_change(channel, &pending_change, &hash, &recorded.updatables)?;
     Ok(Some(hash))
 }

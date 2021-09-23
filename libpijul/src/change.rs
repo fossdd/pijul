@@ -465,6 +465,16 @@ impl Change {
     }
 }
 
+impl<A> Atom<A> {
+    pub fn as_newvertex(&self) -> &NewVertex<A> {
+        if let Atom::NewVertex(n) = self {
+            n
+        } else {
+            panic!("Not a NewVertex")
+        }
+    }
+}
+
 impl Atom<Option<Hash>> {
     pub fn inode(&self) -> Position<Option<Hash>> {
         match self {
@@ -664,66 +674,76 @@ impl Change {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalByte {
+    pub path: String,
+    pub line: usize,
+    pub inode: Inode,
+    pub byte: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Local {
     pub path: String,
     pub line: usize,
 }
 
+pub type Hunk<Hash, Local> = BaseHunk<Atom<Hash>, Local>;
+
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub enum Hunk<Hash, Local> {
+pub enum BaseHunk<Atom, Local> {
     FileMove {
-        del: Atom<Hash>,
-        add: Atom<Hash>,
+        del: Atom,
+        add: Atom,
         path: String,
     },
     FileDel {
-        del: Atom<Hash>,
-        contents: Option<Atom<Hash>>,
+        del: Atom,
+        contents: Option<Atom>,
         path: String,
         encoding: Option<Encoding>,
     },
     FileUndel {
-        undel: Atom<Hash>,
-        contents: Option<Atom<Hash>>,
+        undel: Atom,
+        contents: Option<Atom>,
         path: String,
         encoding: Option<Encoding>,
     },
     FileAdd {
-        add_name: Atom<Hash>,
-        add_inode: Atom<Hash>,
-        contents: Option<Atom<Hash>>,
+        add_name: Atom,
+        add_inode: Atom,
+        contents: Option<Atom>,
         path: String,
         encoding: Option<Encoding>,
     },
     SolveNameConflict {
-        name: Atom<Hash>,
+        name: Atom,
         path: String,
     },
     UnsolveNameConflict {
-        name: Atom<Hash>,
+        name: Atom,
         path: String,
     },
     Edit {
-        change: Atom<Hash>,
+        change: Atom,
         local: Local,
         encoding: Option<Encoding>,
     },
     Replacement {
-        change: Atom<Hash>,
-        replacement: Atom<Hash>,
+        change: Atom,
+        replacement: Atom,
         local: Local,
         encoding: Option<Encoding>,
     },
     SolveOrderConflict {
-        change: Atom<Hash>,
+        change: Atom,
         local: Local,
     },
     UnsolveOrderConflict {
-        change: Atom<Hash>,
+        change: Atom,
         local: Local,
     },
     ResurrectZombies {
-        change: Atom<Hash>,
+        change: Atom,
         local: Local,
         encoding: Option<Encoding>,
     },
@@ -1049,6 +1069,17 @@ impl Atom<Option<ChangeId>> {
 }
 
 impl<H> Hunk<H, Local> {
+    pub fn local(&self) -> Option<&Local> {
+        match self {
+            Hunk::Edit { ref local, .. }
+            | Hunk::Replacement { ref local, .. }
+            | Hunk::SolveOrderConflict { ref local, .. }
+            | Hunk::UnsolveOrderConflict { ref local, .. }
+            | Hunk::ResurrectZombies { ref local, .. } => Some(local),
+            _ => None,
+        }
+    }
+
     pub fn path(&self) -> &str {
         match self {
             Hunk::FileMove { ref path, .. }
@@ -1066,114 +1097,127 @@ impl<H> Hunk<H, Local> {
     }
 
     pub fn line(&self) -> Option<usize> {
-        match self {
-            Hunk::FileMove { .. }
-            | Hunk::FileDel { .. }
-            | Hunk::FileUndel { .. }
-            | Hunk::SolveNameConflict { .. }
-            | Hunk::UnsolveNameConflict { .. }
-            | Hunk::FileAdd { .. } => None,
-            Hunk::Edit { ref local, .. }
-            | Hunk::Replacement { ref local, .. }
-            | Hunk::SolveOrderConflict { ref local, .. }
-            | Hunk::UnsolveOrderConflict { ref local, .. }
-            | Hunk::ResurrectZombies { ref local, .. } => Some(local.line),
-        }
+        self.local().map(|x| x.line)
     }
 }
 
-impl<Local> Hunk<Option<ChangeId>, Local> {
-    pub fn globalize<T: GraphTxnT>(
+impl<A, Local> BaseHunk<A, Local> {
+    pub fn atom_map<B, E, Loc, F: FnMut(A) -> Result<B, E>, L: FnMut(Local) -> Loc>(
         self,
-        txn: &T,
-    ) -> Result<Hunk<Option<Hash>, Local>, T::GraphError> {
+        mut f: F,
+        mut l: L,
+    ) -> Result<BaseHunk<B, Loc>, E> {
         Ok(match self {
-            Hunk::FileMove { del, add, path } => Hunk::FileMove {
-                del: del.globalize(txn)?,
-                add: add.globalize(txn)?,
+            BaseHunk::FileMove { del, add, path } => BaseHunk::FileMove {
+                del: f(del)?,
+                add: f(add)?,
                 path,
             },
-            Hunk::FileDel {
+            BaseHunk::FileDel {
                 del,
                 contents,
                 path,
                 encoding,
-            } => Hunk::FileDel {
-                del: del.globalize(txn)?,
-                contents: contents.as_ref().map(|del| del.globalize(txn).unwrap()),
+            } => BaseHunk::FileDel {
+                del: f(del)?,
+                contents: if let Some(c) = contents {
+                    Some(f(c)?)
+                } else {
+                    None
+                },
                 path,
                 encoding,
             },
-            Hunk::FileUndel {
+            BaseHunk::FileUndel {
                 undel,
                 contents,
                 path,
                 encoding,
-            } => Hunk::FileUndel {
-                undel: undel.globalize(txn)?,
-                contents: contents.as_ref().map(|del| del.globalize(txn).unwrap()),
+            } => BaseHunk::FileUndel {
+                undel: f(undel)?,
+                contents: if let Some(c) = contents {
+                    Some(f(c)?)
+                } else {
+                    None
+                },
                 path,
                 encoding,
             },
-            Hunk::SolveNameConflict { name, path } => Hunk::SolveNameConflict {
-                name: name.globalize(txn)?,
+            BaseHunk::SolveNameConflict { name, path } => BaseHunk::SolveNameConflict {
+                name: f(name)?,
                 path,
             },
-            Hunk::UnsolveNameConflict { name, path } => Hunk::UnsolveNameConflict {
-                name: name.globalize(txn)?,
+            BaseHunk::UnsolveNameConflict { name, path } => BaseHunk::UnsolveNameConflict {
+                name: f(name)?,
                 path,
             },
-            Hunk::FileAdd {
+            BaseHunk::FileAdd {
                 add_inode,
                 add_name,
                 contents,
                 path,
                 encoding,
-            } => Hunk::FileAdd {
-                add_name: add_name.globalize(txn)?,
-                add_inode: add_inode.globalize(txn)?,
-                contents: contents.as_ref().map(|add| add.globalize(txn).unwrap()),
+            } => BaseHunk::FileAdd {
+                add_name: f(add_name)?,
+                add_inode: f(add_inode)?,
+                contents: if let Some(c) = contents {
+                    Some(f(c)?)
+                } else {
+                    None
+                },
                 path,
                 encoding,
             },
-            Hunk::Edit {
+            BaseHunk::Edit {
                 change,
                 local,
                 encoding,
-            } => Hunk::Edit {
-                change: change.globalize(txn)?,
-                local,
+            } => BaseHunk::Edit {
+                change: f(change)?,
+                local: l(local),
                 encoding,
             },
-            Hunk::Replacement {
+            BaseHunk::Replacement {
                 change,
                 replacement,
                 local,
                 encoding,
-            } => Hunk::Replacement {
-                change: change.globalize(txn)?,
-                replacement: replacement.globalize(txn)?,
-                local,
+            } => BaseHunk::Replacement {
+                change: f(change)?,
+                replacement: f(replacement)?,
+                local: l(local),
                 encoding,
             },
-            Hunk::SolveOrderConflict { change, local } => Hunk::SolveOrderConflict {
-                change: change.globalize(txn)?,
-                local,
+            BaseHunk::SolveOrderConflict { change, local } => BaseHunk::SolveOrderConflict {
+                change: f(change)?,
+                local: l(local),
             },
-            Hunk::UnsolveOrderConflict { change, local } => Hunk::UnsolveOrderConflict {
-                change: change.globalize(txn)?,
-                local,
+            BaseHunk::UnsolveOrderConflict { change, local } => BaseHunk::UnsolveOrderConflict {
+                change: f(change)?,
+                local: l(local),
             },
-            Hunk::ResurrectZombies {
+            BaseHunk::ResurrectZombies {
                 change,
                 local,
                 encoding,
-            } => Hunk::ResurrectZombies {
-                change: change.globalize(txn)?,
-                local,
+            } => BaseHunk::ResurrectZombies {
+                change: f(change)?,
+                local: l(local),
                 encoding,
             },
         })
+    }
+}
+
+impl Hunk<Option<ChangeId>, LocalByte> {
+    pub fn globalize<T: GraphTxnT>(
+        self,
+        txn: &T,
+    ) -> Result<Hunk<Option<Hash>, Local>, T::GraphError> {
+        self.atom_map(
+            |x| x.globalize(txn),
+            |l| Local { path: l.path, line: l.line }
+        )
     }
 }
 
@@ -1286,15 +1330,17 @@ impl Change {
     /// directory `dir`, where "<hash>" is the actual hash of the
     /// change.
     #[cfg(feature = "zstd")]
-    pub fn serialize<W: Write>(&self, mut w: W) -> Result<Hash, ChangeError> {
+    pub fn serialize<W: Write, E: From<ChangeError>, F: FnOnce(&mut Self, &Hash) -> Result<(), E>>(&mut self, mut w: W, f: F) -> Result<Hash, E> {
         // Hashed part.
         let mut hashed = Vec::new();
-        bincode::serialize_into(&mut hashed, &self.hashed)?;
+        bincode::serialize_into(&mut hashed, &self.hashed).map_err(From::from)?;
         trace!("hashed = {:?}", hashed);
         let mut hasher = Hasher::default();
         hasher.update(&hashed);
         let hash = hasher.finish();
         debug!("{:?}", hash);
+
+        f(self, &hash)?;
 
         // Unhashed part.
         let unhashed = if let Some(ref un) = self.unhashed {
@@ -1318,7 +1364,7 @@ impl Change {
         let mut contents_comp = Vec::new();
         let now = std::time::Instant::now();
         compress(&self.contents, &mut contents_comp)?;
-        debug!("compressed contents in {:?}", now.elapsed());
+        debug!("compressed {:?} bytes of contents in {:?}", self.contents.len(), now.elapsed());
 
         let offsets = Offsets {
             version: VERSION,
@@ -1330,10 +1376,11 @@ impl Change {
             total: contents_off + contents_comp.len() as u64,
         };
 
-        bincode::serialize_into(&mut w, &offsets)?;
-        w.write_all(&hashed_comp)?;
-        w.write_all(&unhashed_comp)?;
-        w.write_all(&contents_comp)?;
+        bincode::serialize_into(&mut w, &offsets).map_err(From::from)?;
+        w.write_all(&hashed_comp).map_err(From::from)?;
+        w.write_all(&unhashed_comp).map_err(From::from)?;
+        w.write_all(&contents_comp).map_err(From::from)?;
+        debug!("change serialized");
 
         Ok(hash)
     }

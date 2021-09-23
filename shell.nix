@@ -3,7 +3,6 @@ with import <nixpkgs> {};
 stdenv.mkDerivation {
   name = "Pijul";
   buildInputs = with pkgs; [
-    xxHash
     zstd
     libsodium
     openssl

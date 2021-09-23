@@ -4,7 +4,7 @@
 //! database, or something else.
 use crate::pristine::{ChangeId, Hash, InodeMetadata, Position, Vertex};
 use crate::{
-    change::{Change, ChangeHeader},
+    change::{Change, ChangeHeader, ChangeError},
     text_encoding::Encoding,
 };
 
@@ -72,7 +72,14 @@ pub trait ChangeStore {
         change: ChangeId,
         pos: Position<Option<Hash>>,
     ) -> Result<Vec<Hash>, Self::Error>;
-    fn save_change(&self, p: &Change) -> Result<Hash, Self::Error>;
+    fn save_change<
+        E: From<Self::Error> + From<ChangeError>,
+        F: FnOnce(&mut Change, &Hash) -> Result<(), E>,
+    >(
+        &self,
+        p: &mut Change,
+        f: F,
+    ) -> Result<Hash, E>;
     fn del_change(&self, h: &Hash) -> Result<bool, Self::Error>;
     fn get_change(&self, h: &Hash) -> Result<Change, Self::Error>;
     fn get_file_meta<'a, F: Fn(ChangeId) -> Option<Hash>>(

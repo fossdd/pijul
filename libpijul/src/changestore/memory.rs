@@ -92,9 +92,10 @@ impl ChangeStore for Memory {
         }
         Ok(v)
     }
-    fn save_change(&self, p: &Change) -> Result<Hash, Self::Error> {
+    fn save_change<E: From<Self::Error> + From<ChangeError>, F: FnOnce(&mut Change, &Hash) -> Result<(), E>>(&self, p: &mut Change, f: F) -> Result<Hash, E> {
         let mut w = self.changes.write().unwrap();
-        let hash = p.hash()?;
+        let hash = p.hash().map_err(|e| Self::Error::from(e))?;
+        f(p, &hash)?;
         w.insert(hash, p.clone());
         Ok(hash)
     }

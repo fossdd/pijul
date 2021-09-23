@@ -85,7 +85,7 @@ pub struct Recorded {
     /// The "byte contents" of the change.
     pub contents: Arc<Mutex<Vec<u8>>>,
     /// The current records, to be lated converted into change operations.
-    pub actions: Vec<Hunk<Option<ChangeId>, Local>>,
+    pub actions: Vec<Hunk<Option<ChangeId>, LocalByte>>,
     /// The updates that need to be made to the ~tree~ and ~revtree~
     /// tables when this change is applied to the local repository.
     pub updatables: HashMap<usize, InodeUpdate>,
@@ -864,6 +864,7 @@ impl Recorded {
                     &*channel_,
                     diff_algorithm,
                     item.full_path.clone(),
+                    item.inode,
                     vertex.to_option(),
                     &mut ret,
                     &b,
@@ -980,6 +981,43 @@ impl Recorded {
             contents.truncate(meta_start.0.as_usize())
         }
         Ok(())
+    }
+
+    pub fn take_updatables(&mut self) -> HashMap<usize, InodeUpdate> {
+        std::mem::replace(&mut self.updatables, HashMap::default())
+    }
+
+
+    pub fn into_change<T: ChannelTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>>(
+        self,
+        txn: &T,
+        channel: &ChannelRef<T>,
+        header: crate::change::ChangeHeader,
+    ) -> Result<
+        crate::change::LocalChange<
+            crate::change::Hunk<Option<Hash>, crate::change::Local>,
+            crate::change::Author,
+        >,
+        TxnErr<T::GraphError>,
+    > {
+        let actions = self
+            .actions
+            .into_iter()
+            .map(|rec| rec.globalize(txn).unwrap())
+            .collect();
+        let contents = if let Ok(c) = Arc::try_unwrap(self.contents) {
+            c.into_inner()
+        } else {
+            unreachable!()
+        };
+        Ok(crate::change::LocalChange::make_change(
+            txn,
+            &channel,
+            actions,
+            contents,
+            header,
+            Vec::new(),
+        )?)
     }
 }
 

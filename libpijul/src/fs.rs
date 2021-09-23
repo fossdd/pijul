@@ -255,7 +255,7 @@ pub fn add_inode<T: TreeMutTxnT>(
         }
         let file_name = crate::path::file_name(path).unwrap();
         debug!("add_inode: file_name = {:?}", file_name);
-        make_new_child(txn, current_inode, file_name, is_dir, inode, salt)?;
+        current_inode = make_new_child(txn, current_inode, file_name, is_dir, inode, salt)?;
         Ok(current_inode)
     } else {
         Err(FsError::InvalidPath(path.to_string()))

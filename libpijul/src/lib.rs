@@ -174,7 +174,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
             hasher.update(&recorded.contents.lock()[..]);
             hasher.finish()
         };
-        let change = change::LocalChange {
+        let mut change = change::LocalChange {
             offsets: change::Offsets::default(),
             hashed: change::Hashed {
                 version: change::VERSION,
@@ -195,7 +195,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
                 .into_inner(),
         };
         let hash = changestore
-            .save_change(&change)
+            .save_change(&mut change, |_, _| Ok(()))
             .map_err(apply::ApplyError::Changestore)?;
         apply::apply_local_change(self, channel, &change, &hash, &recorded.updatables)?;
         Ok(hash)

@@ -3,7 +3,7 @@ use super::replace::ConflictContexts;
 use super::vertex_buffer::{ConflictMarker, ConflictType, Diff};
 use super::{bytes_len, bytes_pos, Line};
 use crate::change;
-use crate::change::{Atom, EdgeMap, Hunk, Local, NewVertex};
+use crate::change::{Atom, EdgeMap, Hunk, LocalByte, NewVertex};
 use crate::pristine::*;
 use crate::record::Recorded;
 use crate::text_encoding::Encoding;
@@ -18,11 +18,12 @@ impl Recorded {
         conflict_contexts: &mut ConflictContexts,
         lines_a: &[Line],
         lines_b: &[Line],
+        inode: Inode,
         r: usize,
         encoding: &Option<Encoding>,
     ) -> Result<(), TxnErr<T::GraphError>> {
         debug!("delete {:?}: {:?}", r, d[r]);
-        self.delete_lines(txn, channel, diff, d, lines_a, r, encoding)?;
+        self.delete_lines(txn, channel, diff, d, lines_a, lines_b, inode, r, encoding)?;
         let old = d[r].old;
         let len = d[r].old_len;
         self.order_conflict_sides(
@@ -31,6 +32,7 @@ impl Recorded {
             conflict_contexts,
             lines_a,
             lines_b,
+            inode,
             old,
             len,
             d[r].new,
@@ -53,6 +55,8 @@ impl Recorded {
         diff: &Diff,
         d: &super::diff::D,
         lines_a: &[Line],
+        lines_b: &[Line],
+        inode: Inode,
         r: usize,
         encoding: &Option<Encoding>,
     ) -> Result<(), TxnErr<T::GraphError>> {
@@ -63,9 +67,11 @@ impl Recorded {
                     edges: deletion.edges,
                     inode: diff.inode,
                 }),
-                local: Local {
+                local: LocalByte {
                     line: d[r].new + 1,
                     path: diff.path.clone(),
+                    inode,
+                    byte: Some(bytes_pos(lines_b, d[r].new)),
                 },
                 encoding: encoding.clone(),
             })
@@ -76,9 +82,11 @@ impl Recorded {
                     edges: deletion.resurrect,
                     inode: diff.inode,
                 }),
-                local: Local {
+                local: LocalByte {
                     line: d[r].new + 1,
                     path: diff.path.clone(),
+                    inode,
+                    byte: Some(bytes_pos(lines_b, d[r].new)),
                 },
                 encoding: encoding.clone(),
             })
@@ -224,6 +232,7 @@ impl Recorded {
         conflict_contexts: &mut ConflictContexts,
         lines_a: &[Line],
         lines_b: &[Line],
+        inode: Inode,
         old: usize,
         len: usize,
         new: usize,
@@ -270,9 +279,11 @@ impl Recorded {
                 end: pos,
                 inode: diff.inode,
             }),
-            local: Local {
+            local: LocalByte {
                 line: new + 1,
                 path: diff.path.clone(),
+                inode,
+                byte: Some(bytes_pos(lines_b, new)),
             },
         });
     }

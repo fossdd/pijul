@@ -151,11 +151,14 @@ impl Record {
             &extra,
         )?;
         match result {
-            Either::A((txn, mut change, updates, hash, oldest)) => {
-                let hash = hash.unwrap();
-                change.unhashed = Some(serde_json::json!({
-                    "signature": key.sign_raw(&hash.to_bytes())?,
-                }));
+            Either::A((txn, mut change, updates, oldest)) => {
+                let hash = repo.changes.save_change(&mut change, |change, hash| {
+                    change.unhashed = Some(serde_json::json!({
+                        "signature": key.sign_raw(&hash.to_bytes()).unwrap(),
+                    }));
+                    Ok::<_, anyhow::Error>(())
+                })?;
+
                 let mut txn_ = txn.write();
                 txn_.apply_local_change(&mut channel, &change, &hash, &updates)?;
                 let mut path = repo.path.join(libpijul::DOT_DIR);
@@ -280,7 +283,6 @@ impl Record {
                 ArcTxn<T>,
                 Change,
                 HashMap<usize, libpijul::InodeUpdate>,
-                Option<libpijul::Hash>,
                 std::time::SystemTime,
             ),
             ArcTxn<T>,
@@ -409,14 +411,11 @@ impl Record {
             bail!("No change message")
         }
         debug!("saving change");
-        let hash = changes.save_change(&change)?;
-        debug!("saved");
         std::mem::drop(txn_);
         Ok(Either::A((
             txn,
             change,
             rec.updatables,
-            Some(hash),
             rec.oldest_change,
         )))
     }

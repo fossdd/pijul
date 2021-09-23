@@ -3,7 +3,7 @@ use super::*;
 /// An open, seekable change file.
 #[cfg(feature = "zstd")]
 pub struct ChangeFile {
-    s: Option<zstd_seekable::Seekable<OffFile>>,
+    s: Option<zstd_seekable::Seekable<'static, OffFile>>,
     hashed: Hashed<Hunk<Option<Hash>, Local>, Author>,
     hash: Hash,
     unhashed: Option<toml::Value>,
@@ -84,10 +84,12 @@ impl ChangeFile {
         let s = if offsets.contents_off >= m.len() {
             None
         } else {
-            Some(zstd_seekable::Seekable::init(OffFile {
-                f: r,
-                start: offsets.contents_off,
-            }, None)?)
+            Some(zstd_seekable::Seekable::init(Box::new(
+                OffFile {
+                    f: r,
+                    start: offsets.contents_off,
+                },
+            ))?)
         };
         Ok(ChangeFile {
             s,

@@ -180,6 +180,25 @@ impl<H> std::ops::Add<usize> for Position<H> {
     }
 }
 
+impl<H> Position<Option<H>> {
+    pub fn unwrap(self) -> Position<H> {
+        Position {
+            change: self.change.unwrap(),
+            pos: self.pos,
+        }
+    }
+}
+
+impl<H> Vertex<Option<H>> {
+    pub fn unwrap(self) -> Vertex<H> {
+        Vertex {
+            change: self.change.unwrap(),
+            start: self.start,
+            end: self.end,
+        }
+    }
+}
+
 impl Position<ChangeId> {
     pub fn inode_vertex(&self) -> Vertex<ChangeId> {
         Vertex {

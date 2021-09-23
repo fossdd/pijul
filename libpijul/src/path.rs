@@ -79,16 +79,16 @@ fn test_file_name() {
 /// components.
 #[cfg(not(windows))]
 pub fn components(path: &str) -> Components {
-    Components(path.split('/'))
+    Components(path.split(&['/'][..]))
 }
 
 #[cfg(windows)]
 pub fn components(path: &str) -> Components {
-    Components(path.split('\\'))
+    Components(path.split(&['/', '\\'][..]))
 }
 
 #[derive(Clone)]
-pub struct Components<'a>(std::str::Split<'a, char>);
+pub struct Components<'a>(std::str::Split<'a, &'static [char]>);
 
 impl<'a> std::fmt::Debug for Components<'a> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {

@@ -52,7 +52,9 @@ impl Apply {
             } else {
                 let change = libpijul::change::Change::deserialize(&ch, None);
                 match change {
-                    Ok(change) => repo.changes.save_change(&change)?,
+                    Ok(mut change) => repo
+                        .changes
+                        .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))?,
                     Err(libpijul::change::ChangeError::Io(e)) => {
                         if let std::io::ErrorKind::NotFound = e.kind() {
                             let mut changes = repo.changes_dir.clone();
@@ -67,8 +69,11 @@ impl Apply {
         }
         if hashes.is_empty() {
             let mut change = std::io::BufReader::new(std::io::stdin());
-            let change = libpijul::change::Change::read(&mut change, &mut HashMap::default())?;
-            hashes.push(repo.changes.save_change(&change)?)
+            let mut change = libpijul::change::Change::read(&mut change, &mut HashMap::default())?;
+            hashes.push(
+                repo.changes
+                    .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))?,
+            )
         }
         if self.deps_only {
             if hashes.len() > 1 {
