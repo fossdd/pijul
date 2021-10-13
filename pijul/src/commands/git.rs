@@ -800,7 +800,9 @@ fn record_apply<
     change.dependencies = dependencies;
     change.extra_known = extra_known;
     debug!("saving change");
-    let hash = changes.save_change(&change).unwrap();
+    let hash = changes
+        .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))
+        .unwrap();
     debug!("saved");
     let (_, m) = txn.apply_local_change(&channel, &change, &hash, &rec.updatables)?;
     Ok((n, Some(hash), m))
