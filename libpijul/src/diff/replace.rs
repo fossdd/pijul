@@ -2,7 +2,7 @@ use super::diff::*;
 use super::vertex_buffer::{ConflictMarker, Diff};
 use super::{bytes_len, bytes_pos, Line};
 use crate::change::{Atom, Hunk, LocalByte, NewVertex};
-use crate::pristine::{ChangeId, ChangePosition, EdgeFlags, Position, Inode};
+use crate::pristine::{ChangeId, ChangePosition, EdgeFlags, Inode, Position};
 use crate::record::Recorded;
 use crate::text_encoding::Encoding;
 use crate::{HashMap, HashSet};

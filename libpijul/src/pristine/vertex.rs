@@ -170,6 +170,46 @@ impl<H: super::Base32> Base32 for Position<H> {
     }
 }
 
+
+
+pub mod position_base32_serde {
+    use super::*;
+    use serde::*;
+
+    pub struct PositionDe {}
+
+    impl<'de> serde::de::Visitor<'de> for PositionDe {
+        type Value = Position<ChangeId>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(formatter, "a base32-encoded string")
+        }
+
+        fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if let Some(b) = Position::from_base32(s.as_bytes()) {
+                Ok(b)
+            } else {
+                Err(de::Error::invalid_value(
+                    serde::de::Unexpected::Str(s),
+                    &self,
+                ))
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Position<ChangeId>, D::Error> {
+        d.deserialize_str(PositionDe {})
+    }
+
+    pub fn serialize<S: Serializer>(pos: &Position<ChangeId>, s: S) -> Result<S::Ok, S::Error> {
+        let b = pos.to_base32();
+        s.serialize_str(&b)
+    }
+}
+
 impl<H> std::ops::Add<usize> for Position<H> {
     type Output = Position<H>;
     fn add(self, x: usize) -> Self::Output {

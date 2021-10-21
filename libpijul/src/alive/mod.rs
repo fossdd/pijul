@@ -6,18 +6,19 @@ mod dfs;
 mod output;
 pub mod retrieve;
 mod tarjan;
-pub(crate) use output::*;
-pub(crate) use retrieve::*;
+pub use output::*;
+pub use retrieve::*;
 
 #[derive(Debug, Clone)]
-pub(crate) struct AliveVertex {
+pub struct AliveVertex {
     pub vertex: Vertex<ChangeId>,
     flags: Flags,
-    children: usize,
-    n_children: usize,
+    pub children: usize,
+    pub n_children: usize,
     index: usize,
     lowlink: usize,
     pub scc: usize,
+    pub extra: Vec<(Option<SerializedEdge>, VertexId)>,
 }
 
 bitflags! {
@@ -29,10 +30,10 @@ bitflags! {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub(crate) struct VertexId(pub(crate) usize);
+pub struct VertexId(pub usize);
 
 impl VertexId {
-    const DUMMY: VertexId = VertexId(0);
+    pub const DUMMY: VertexId = VertexId(0);
 }
 
 impl AliveVertex {
@@ -44,12 +45,26 @@ impl AliveVertex {
         index: 0,
         lowlink: 0,
         scc: 0,
+        extra: Vec::new(),
     };
+
+    pub fn new(vertex: Vertex<ChangeId>) -> Self {
+        AliveVertex {
+            vertex,
+            flags: Flags::empty(),
+            children: 0,
+            n_children: 0,
+            index: 0,
+            lowlink: 0,
+            scc: 0,
+            extra: Vec::new(),
+        }
+    }
 }
 #[derive(Debug)]
 pub struct Graph {
-    pub(crate) lines: Vec<AliveVertex>,
-    children: Vec<(Option<SerializedEdge>, VertexId)>,
+    pub lines: Vec<AliveVertex>,
+    pub children: Vec<(Option<SerializedEdge>, VertexId)>,
     total_bytes: usize,
 }
 
@@ -75,13 +90,29 @@ impl std::ops::IndexMut<VertexId> for Graph {
 }
 
 impl Graph {
-    pub(crate) fn children(&self, i: VertexId) -> &[(Option<SerializedEdge>, VertexId)] {
+    pub fn push_child_to_last(&mut self, e: Option<SerializedEdge>, j: VertexId) {
+        let line = self.lines.last_mut().unwrap();
+        self.children.push((e, j));
+        line.n_children += 1;
+    }
+
+    pub fn children<'a>(
+        &'a self,
+        i: VertexId,
+    ) -> impl Iterator<Item = &'a (Option<SerializedEdge>, VertexId)> {
         let line = &self[i];
-        &self.children[line.children..line.children + line.n_children]
+        (&self.children[line.children..line.children + line.n_children])
+            .iter()
+            .chain(self[i].extra.iter())
     }
 
     fn child(&self, i: VertexId, j: usize) -> &(Option<SerializedEdge>, VertexId) {
-        &self.children[self[i].children + j]
+        let line = &self[i];
+        if j < line.n_children {
+            &self.children[self[i].children + j]
+        } else {
+            &line.extra[j - line.n_children]
+        }
     }
 }
 
@@ -112,13 +143,13 @@ pub(crate) fn remove_redundant_children(
         if !visited.insert(p) {
             continue;
         }
-        for (_, child) in graph.children(p) {
-            if graph[p].scc < target_scc && graph[p].scc != graph[*child].scc {
-                assert!(graph[p].scc > graph[*child].scc);
-                vertices.remove(&graph[*child].vertex);
+        for &(_, child) in graph.children(p) {
+            if graph[p].scc < target_scc && graph[p].scc != graph[child].scc {
+                assert!(graph[p].scc > graph[child].scc);
+                vertices.remove(&graph[child].vertex);
             }
-            if graph[*child].scc >= min {
-                stack.push(*child);
+            if graph[child].scc >= min {
+                stack.push(child);
             }
         }
     }
@@ -164,15 +195,15 @@ pub(crate) fn remove_redundant_parents(
             }
         }
         stack.push((p, true));
-        for (_, child) in graph.children(p) {
-            if graph[*child].scc >= min {
-                stack.push((*child, false));
+        for &(_, child) in graph.children(p) {
+            if graph[child].scc >= min {
+                stack.push((child, false));
             }
             if graph[p].scc > target_scc
-                && graph[*child].scc != graph[p].scc
-                && covered.contains(&(graph[*child].vertex, target))
+                && graph[child].scc != graph[p].scc
+                && covered.contains(&(graph[child].vertex, target))
             {
-                assert!(graph[*child].scc < graph[p].scc);
+                assert!(graph[child].scc < graph[p].scc);
                 vertices.remove(&graph[p].vertex);
                 covered.insert((graph[p].vertex, target));
             }

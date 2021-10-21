@@ -27,8 +27,12 @@ impl Graph {
                 self[n_l].lowlink = self[n_l].lowlink.min(self[n_child].lowlink);
             }
 
-            for j in i..self[n_l].n_children {
-                let &(_, n_child) = self.child(n_l, j);
+            for j in i..self[n_l].n_children + self[n_l].extra.len() {
+                let n_child = if j < self[n_l].n_children {
+                    self.child(n_l, j).1
+                } else {
+                    self[n_l].extra[j - self[n_l].n_children].1
+                };
                 if !self[n_child].flags.contains(Flags::VISITED) {
                     call_stack.push((n_l, j, false));
                     call_stack.push((n_child, 0, true));

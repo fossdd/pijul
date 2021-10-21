@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 use canonical_path::CanonicalPathBuf;
-use clap::Clap;
+use clap::Parser;
 use libpijul::pristine::{ChangeId, ChannelMutTxnT, Position};
 use libpijul::{ChannelTxnT, DepsTxnT, MutTxnT, TxnT, TxnTExt};
 use log::*;
@@ -11,7 +11,7 @@ use log::*;
 use crate::progress::PROGRESS;
 use crate::repository::Repository;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Reset {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]
@@ -110,6 +110,7 @@ impl Reset {
                 state.record(
                     txn.clone(),
                     libpijul::Algorithm::default(),
+                    &libpijul::DEFAULT_SEPARATOR,
                     channel.clone(),
                     &repo.working_copy,
                     &repo.changes,

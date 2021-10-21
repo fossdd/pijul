@@ -1216,7 +1216,10 @@ impl Hunk<Option<ChangeId>, LocalByte> {
     ) -> Result<Hunk<Option<Hash>, Local>, T::GraphError> {
         self.atom_map(
             |x| x.globalize(txn),
-            |l| Local { path: l.path, line: l.line }
+            |l| Local {
+                path: l.path,
+                line: l.line,
+            },
         )
     }
 }
@@ -1330,7 +1333,15 @@ impl Change {
     /// directory `dir`, where "<hash>" is the actual hash of the
     /// change.
     #[cfg(feature = "zstd")]
-    pub fn serialize<W: Write, E: From<ChangeError>, F: FnOnce(&mut Self, &Hash) -> Result<(), E>>(&mut self, mut w: W, f: F) -> Result<Hash, E> {
+    pub fn serialize<
+        W: Write,
+        E: From<ChangeError>,
+        F: FnOnce(&mut Self, &Hash) -> Result<(), E>,
+    >(
+        &mut self,
+        mut w: W,
+        f: F,
+    ) -> Result<Hash, E> {
         // Hashed part.
         let mut hashed = Vec::new();
         bincode::serialize_into(&mut hashed, &self.hashed).map_err(From::from)?;
@@ -1364,7 +1375,11 @@ impl Change {
         let mut contents_comp = Vec::new();
         let now = std::time::Instant::now();
         compress(&self.contents, &mut contents_comp)?;
-        debug!("compressed {:?} bytes of contents in {:?}", self.contents.len(), now.elapsed());
+        debug!(
+            "compressed {:?} bytes of contents in {:?}",
+            self.contents.len(),
+            now.elapsed()
+        );
 
         let offsets = Offsets {
             version: VERSION,

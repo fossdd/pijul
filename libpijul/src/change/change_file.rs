@@ -84,12 +84,10 @@ impl ChangeFile {
         let s = if offsets.contents_off >= m.len() {
             None
         } else {
-            Some(zstd_seekable::Seekable::init(Box::new(
-                OffFile {
-                    f: r,
-                    start: offsets.contents_off,
-                },
-            ))?)
+            Some(zstd_seekable::Seekable::init(Box::new(OffFile {
+                f: r,
+                start: offsets.contents_off,
+            }))?)
         };
         Ok(ChangeFile {
             s,

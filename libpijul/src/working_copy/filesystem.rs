@@ -294,6 +294,7 @@ impl FileSystem {
         state.record(
             txn.clone(),
             crate::Algorithm::default(),
+            &crate::diff::DEFAULT_SEPARATOR,
             channel,
             self,
             changes,

@@ -25,6 +25,7 @@ pub fn retrieve<T: GraphTxnT>(
         index: 0,
         lowlink: 0,
         scc: 0,
+        extra: Vec::new(),
     });
     cache.insert(pos0, VertexId(1));
 
@@ -102,6 +103,7 @@ fn new_vertex<T: GraphTxnT>(
         index: 0,
         lowlink: 0,
         scc: 0,
+        extra: Vec::new(),
     }))
 }
 

@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use crate::repository::Repository;
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use libpijul::{TxnT, TxnTExt};
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Debug {
     #[clap(long = "repository")]
     repo_path: Option<PathBuf>,

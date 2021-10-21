@@ -83,6 +83,7 @@
                     pijul = { ... }: {
                       buildInputs = with pkgs; [
                         zstd
+                        xxHash
                         libsodium
                         libiconv
                       ] ++ lib.optionals stdenv.isDarwin (

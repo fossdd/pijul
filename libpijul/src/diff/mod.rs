@@ -13,6 +13,10 @@ pub use diff::Algorithm;
 mod delete;
 mod replace;
 
+lazy_static! {
+    pub static ref DEFAULT_SEPARATOR: regex::bytes::Regex = regex::bytes::Regex::new("\n").unwrap();
+}
+
 #[derive(Hash, Clone, Copy)]
 struct Line<'a> {
     l: &'a [u8],
@@ -70,8 +74,8 @@ impl<T: std::error::Error + 'static, C: std::error::Error + 'static> std::conver
     }
 }
 
-fn make_old_lines(d: &vertex_buffer::Diff) -> Vec<Line> {
-    d.lines()
+fn make_old_lines<'a>(d: &'a vertex_buffer::Diff, r: &'a regex::bytes::Regex) -> Vec<Line<'a>> {
+    d.lines(r)
         .map(|l| {
             let old_bytes = l.as_ptr() as usize - d.contents_a.as_ptr() as usize;
             let cyclic = if let Err(n) = d
@@ -104,8 +108,8 @@ fn make_old_lines(d: &vertex_buffer::Diff) -> Vec<Line> {
         .collect()
 }
 
-fn make_new_lines(b: &[u8]) -> Vec<Line> {
-    split::LineSplit::from(b)
+fn make_new_lines<'a>(b: &'a [u8], sep: &'a regex::bytes::Regex) -> Vec<Line<'a>> {
+    split::LineSplit::from_bytes_with_sep(b, sep)
         .map(|l| {
             debug!("new: {:?}", l);
             let next_index = l.as_ptr() as usize + l.len() - b.as_ptr() as usize;
@@ -133,6 +137,7 @@ impl Recorded {
         a: &mut Graph,
         b: &[u8],
         encoding: &Option<Encoding>,
+        separator: &regex::bytes::Regex,
     ) -> Result<(), DiffError<P::Error, T::GraphError>> {
         self.largest_file = self.largest_file.max(b.len() as u64);
         let mut d = vertex_buffer::Diff::new(inode, path.clone(), a);
@@ -147,7 +152,7 @@ impl Recorded {
             debug!("bb = {:?}", bb);
             (old, new)
         } else {
-            (make_old_lines(&d), make_new_lines(&b))
+            (make_old_lines(&d, separator), make_new_lines(&b, separator))
         };
 
         trace!("pos = {:?}", d.pos_a);

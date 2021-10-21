@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use clap::Clap;
+use clap::Parser;
 use libpijul::MutTxnT;
 
 use crate::repository::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Init {
     /// Set the name of the current channel (defaults to "main").
     #[clap(long = "channel")]

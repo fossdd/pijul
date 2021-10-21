@@ -2,13 +2,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use canonical_path::CanonicalPathBuf;
-use clap::{ArgSettings, Clap};
+use clap::{ArgSettings, Parser};
 use libpijul::{MutTxnT, MutTxnTExt, TxnTExt};
 use log::{debug, info};
 
 use crate::repository::Repository;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Move {
     #[clap(setting = ArgSettings::Hidden, long = "salt")]
     salt: Option<u64>,
@@ -83,7 +83,7 @@ impl<'a> Drop for Rename<'a> {
     }
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct List {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]
@@ -103,7 +103,7 @@ impl List {
     }
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Add {
     #[clap(short = 'r', long = "recursive")]
     recursive: bool,
@@ -168,7 +168,7 @@ impl Add {
     }
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Remove {
     /// The paths need to be removed
     paths: Vec<PathBuf>,

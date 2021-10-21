@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::{make_changelist, parse_changelist};
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use lazy_static::lazy_static;
 use libpijul::changestore::ChangeStore;
 use libpijul::pristine::sanakirja::MutTxn;
@@ -17,7 +17,7 @@ use crate::progress::PROGRESS;
 use crate::remote::{PushDelta, RemoteDelta, RemoteRepo};
 use crate::repository::Repository;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Remote {
     #[clap(subcommand)]
     subcmd: Option<SubRemote>,
@@ -26,7 +26,7 @@ pub struct Remote {
     repo_path: Option<PathBuf>,
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub enum SubRemote {
     /// Deletes the remote
     #[clap(name = "delete")]
@@ -65,7 +65,7 @@ impl Remote {
     }
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Push {
     /// Path to the repository. Uses the current repository if the argument is omitted
     #[clap(long = "repository")]
@@ -96,7 +96,7 @@ pub struct Push {
     changes: Vec<String>,
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Pull {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]

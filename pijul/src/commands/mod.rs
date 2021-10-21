@@ -77,6 +77,7 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
     builder.record(
         txn.clone(),
         libpijul::Algorithm::default(),
+        &libpijul::DEFAULT_SEPARATOR,
         channel.clone(),
         &repo.working_copy,
         &repo.changes,

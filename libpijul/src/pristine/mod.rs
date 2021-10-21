@@ -767,7 +767,7 @@ pub(crate) fn iter_deleted_parents<'txn, T: GraphTxnT>(
     )
 }
 
-pub(crate) fn iter_adj_all<'txn, T: GraphTxnT>(
+pub fn iter_adj_all<'txn, T: GraphTxnT>(
     txn: &'txn T,
     graph: &'txn T::Graph,
     key: Vertex<ChangeId>,
@@ -826,7 +826,7 @@ impl<T: std::error::Error + 'static> std::convert::From<TxnErr<T>> for Inconsist
     }
 }
 
-pub(crate) fn internal_pos<T: GraphTxnT>(
+pub fn internal_pos<T: GraphTxnT>(
     txn: &T,
     pos: &Position<Option<Hash>>,
     change_id: ChangeId,
@@ -844,6 +844,28 @@ pub(crate) fn internal_pos<T: GraphTxnT>(
     Ok(Position {
         change,
         pos: pos.pos,
+    })
+}
+
+pub fn internal_vertex<T: GraphTxnT>(
+    txn: &T,
+    v: &Vertex<Option<Hash>>,
+    change_id: ChangeId,
+) -> Result<Vertex<ChangeId>, InconsistentChange<T::GraphError>> {
+    let change = if let Some(p) = v.change {
+        if let Some(&p) = txn.get_internal(&p.into())? {
+            p
+        } else {
+            return Err(InconsistentChange::UndeclaredDep);
+        }
+    } else {
+        change_id
+    };
+
+    Ok(Vertex {
+        change,
+        start: v.start,
+        end: v.end,
     })
 }
 

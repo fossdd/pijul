@@ -1,4 +1,5 @@
 use super::{Base32, L64};
+use byteorder::{ByteOrder, LittleEndian};
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
 #[doc(hidden)]
@@ -41,5 +42,53 @@ impl super::Base32 for ChangeId {
         } else {
             None
         }
+    }
+}
+
+pub mod changeid_base32_serde {
+    use super::*;
+    use serde::*;
+
+    pub struct ChangeIdDe {}
+
+    impl<'de> serde::de::Visitor<'de> for ChangeIdDe {
+        type Value = ChangeId;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(formatter, "a base32-encoded string")
+        }
+
+        fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            let mut b = [0; 8];
+            if data_encoding::BASE32_NOPAD
+                .decode_mut(s.as_bytes(), &mut b)
+                .is_ok()
+            {
+                let b: u64 = LittleEndian::read_u64(&b);
+                Ok(ChangeId(b.into()))
+            } else {
+                Err(de::Error::invalid_value(
+                    serde::de::Unexpected::Str(s),
+                    &self,
+                ))
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ChangeId, D::Error> {
+        d.deserialize_str(ChangeIdDe {})
+    }
+
+    pub fn serialize<S: Serializer>(inode: &ChangeId, s: S) -> Result<S::Ok, S::Error> {
+        let inode: u64 = inode.0.into();
+        let mut b = [0; 8];
+        LittleEndian::write_u64(&mut b, inode);
+        let mut bb = [0; 13];
+        data_encoding::BASE32_NOPAD.encode_mut(&b, &mut bb);
+        let b = std::str::from_utf8(&bb).unwrap();
+        s.serialize_str(b)
     }
 }

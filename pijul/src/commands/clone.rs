@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use crate::repository::*;
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use libpijul::MutTxnT;
 use log::debug;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Clone {
     /// Set the remote channel
     #[clap(long = "channel", default_value = crate::DEFAULT_CHANNEL)]

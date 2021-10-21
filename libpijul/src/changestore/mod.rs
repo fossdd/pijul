@@ -4,7 +4,7 @@
 //! database, or something else.
 use crate::pristine::{ChangeId, Hash, InodeMetadata, Position, Vertex};
 use crate::{
-    change::{Change, ChangeHeader, ChangeError},
+    change::{Change, ChangeError, ChangeHeader},
     text_encoding::Encoding,
 };
 

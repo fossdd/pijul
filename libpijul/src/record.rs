@@ -279,6 +279,7 @@ impl Builder {
         &mut self,
         txn: ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
+        diff_separator: &regex::bytes::Regex,
         channel: ChannelRef<T>,
         working_copy: &W,
         changes: &C,
@@ -306,6 +307,7 @@ impl Builder {
             let channel = channel.clone();
             let work = work.clone();
             let txn = txn.clone();
+            let sep: regex::bytes::Regex = diff_separator.clone();
             workers.push(std::thread::spawn(move || {
                 loop {
                     let (w, stop) = {
@@ -318,6 +320,7 @@ impl Builder {
                         rec.lock().record_existing_file(
                             &txn,
                             diff_algorithm,
+                            &sep,
                             &channel,
                             working_copy.clone(),
                             &changes,
@@ -442,6 +445,7 @@ impl Builder {
                 rec.lock().record_existing_file(
                     &txn,
                     diff_algorithm,
+                    diff_separator,
                     &channel,
                     working_copy.clone(),
                     changes,
@@ -746,6 +750,7 @@ impl Recorded {
         &mut self,
         txn: &ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
+        diff_sep: &regex::bytes::Regex,
         channel: &ChannelRef<T>,
         working_copy: W,
         changes: &C,
@@ -869,6 +874,7 @@ impl Recorded {
                     &mut ret,
                     &b,
                     &encoding,
+                    diff_sep,
                 )?;
                 if self.actions.len() > len {
                     if let Ok(last_modified) = working_copy.modified_time(&item.full_path) {

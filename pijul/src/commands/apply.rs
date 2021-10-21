@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use libpijul::changestore::ChangeStore;
 use libpijul::{DepsTxnT, GraphTxnT, MutTxnTExt, TxnT};
 use libpijul::{HashMap, HashSet};
@@ -10,7 +10,7 @@ use log::*;
 use crate::progress::PROGRESS;
 use crate::repository::Repository;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Apply {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]

@@ -40,12 +40,33 @@ impl From<Inode> for u64 {
     }
 }
 
+use super::Base32;
+
+impl Base32 for Inode {
+    fn to_base32(&self) -> String {
+        let inode: u64 = self.0.into();
+        let mut b = [0; 8];
+        BigEndian::write_u64(&mut b, inode);
+        let mut bb = [0; 13];
+        data_encoding::BASE32_NOPAD.encode_mut(&b, &mut bb);
+        let b = std::str::from_utf8(&bb).unwrap();
+        b.to_string()
+    }
+    fn from_base32(s: &[u8]) -> Option<Self> {
+        let mut b = [0; 8];
+        if data_encoding::BASE32_NOPAD.decode_mut(s, &mut b).is_ok() {
+            Some(Inode(BigEndian::read_u64(&b).into()))
+        } else {
+            None
+        }
+    }
+}
 
 pub mod inode_base32_serde {
-    use serde::*;
     use super::*;
+    use serde::*;
 
-    pub struct InodeDe{}
+    pub struct InodeDe {}
 
     impl<'de> serde::de::Visitor<'de> for InodeDe {
         type Value = Inode;
@@ -59,17 +80,23 @@ pub mod inode_base32_serde {
             E: de::Error,
         {
             let mut b = [0; 8];
-            if data_encoding::BASE32_NOPAD.decode_mut(s.as_bytes(), &mut b).is_ok() {
+            if data_encoding::BASE32_NOPAD
+                .decode_mut(s.as_bytes(), &mut b)
+                .is_ok()
+            {
                 let b: u64 = BigEndian::read_u64(&b);
                 Ok(Inode(b.into()))
             } else {
-                Err(de::Error::invalid_value(serde::de::Unexpected::Str(s), &self))
+                Err(de::Error::invalid_value(
+                    serde::de::Unexpected::Str(s),
+                    &self,
+                ))
             }
         }
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Inode, D::Error> {
-        d.deserialize_str(InodeDe{})
+        d.deserialize_str(InodeDe {})
     }
 
     pub fn serialize<S: Serializer>(inode: &Inode, s: S) -> Result<S::Ok, S::Error> {

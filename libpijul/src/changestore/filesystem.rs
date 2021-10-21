@@ -199,10 +199,17 @@ impl ChangeStore for FileSystem {
         }
         Ok(v)
     }
-    fn save_change<E: From<Self::Error> + From<ChangeError>, F: FnOnce(&mut Change, &Hash) -> Result<(), E>>(&self, p: &mut Change, ff: F) -> Result<Hash, E> {
+    fn save_change<
+        E: From<Self::Error> + From<ChangeError>,
+        F: FnOnce(&mut Change, &Hash) -> Result<(), E>,
+    >(
+        &self,
+        p: &mut Change,
+        ff: F,
+    ) -> Result<Hash, E> {
         let mut f = match tempfile::NamedTempFile::new_in(&self.changes_dir) {
             Ok(f) => f,
-            Err(e) => return Err(E::from(Error::from(e)))
+            Err(e) => return Err(E::from(Error::from(e))),
         };
         let hash = {
             let w = std::io::BufWriter::new(&mut f);
@@ -210,11 +217,11 @@ impl ChangeStore for FileSystem {
         };
         let file_name = self.filename(&hash);
         if let Err(e) = std::fs::create_dir_all(file_name.parent().unwrap()) {
-            return Err(E::from(Error::from(e)))
+            return Err(E::from(Error::from(e)));
         }
         debug!("file_name = {:?}", file_name);
         if let Err(e) = f.persist(file_name) {
-            return Err(E::from(Error::from(e)))
+            return Err(E::from(Error::from(e)));
         }
         Ok(hash)
     }

@@ -47,7 +47,7 @@ impl EdgeFlags {
     }
 
     #[inline]
-    pub(crate) fn is_deleted(&self) -> bool {
+    pub fn is_deleted(&self) -> bool {
         self.contains(EdgeFlags::DELETED)
     }
 
@@ -56,15 +56,15 @@ impl EdgeFlags {
         *self & (EdgeFlags::DELETED | EdgeFlags::PARENT) == EdgeFlags::PARENT
     }
     #[inline]
-    pub(crate) fn is_parent(&self) -> bool {
+    pub fn is_parent(&self) -> bool {
         self.contains(EdgeFlags::PARENT)
     }
     #[inline]
-    pub(crate) fn is_folder(&self) -> bool {
+    pub fn is_folder(&self) -> bool {
         self.contains(EdgeFlags::FOLDER)
     }
     #[inline]
-    pub(crate) fn is_block(&self) -> bool {
+    pub fn is_block(&self) -> bool {
         self.contains(EdgeFlags::BLOCK)
     }
 }

@@ -109,8 +109,10 @@ impl Graph {
                     }
                 }
             }
-            for &(edge, VertexId(j)) in
-                &self.children[line.children..line.children + line.n_children]
+            for &(edge, VertexId(j)) in (self.children
+                [line.children..line.children + line.n_children])
+                .iter()
+                .chain(line.extra.iter())
             {
                 if let Some(ref edge) = edge {
                     writeln!(
@@ -127,7 +129,7 @@ impl Graph {
                         }
                     )?
                 } else {
-                    writeln!(w, "n_{}->n_0[label=\"none\"];", i)?
+                    writeln!(w, "n_{}->n_{}[label=\"none\"];", i, j)?
                 }
             }
         }
@@ -151,8 +153,10 @@ impl Graph {
                 line.vertex.end.0,
             )?;
 
-            for &(edge, VertexId(j)) in
-                &self.children[line.children..line.children + line.n_children]
+            for &(edge, VertexId(j)) in self.children
+                [line.children..line.children + line.n_children]
+                .iter()
+                .chain(line.extra.iter())
             {
                 if let Some(ref edge) = edge {
                     writeln!(
@@ -164,7 +168,7 @@ impl Graph {
                         edge.introduced_by().to_base32()
                     )?
                 } else {
-                    writeln!(w, "n_{}->n_0[label=\"none\"];", i)?
+                    writeln!(w, "n_{}->n_{}[label=\"none\"];", i, j)?
                 }
             }
         }

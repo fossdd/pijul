@@ -48,7 +48,7 @@ pub(crate) fn find_alive_down<T: GraphTxnT>(
     Ok(alive)
 }
 
-pub(crate) fn find_alive_up<T: GraphTxnT>(
+pub fn find_alive_up<T: GraphTxnT>(
     txn: &T,
     channel: &T::Graph,
     files: &mut HashSet<Vertex<ChangeId>>,
@@ -97,7 +97,6 @@ pub(crate) fn find_alive_up<T: GraphTxnT>(
                     if vertex != vertex0 {
                         alive.insert(vertex);
                     }
-                    stack.truncate(elt_index);
                     stack.truncate(elt_index);
                     break;
                 }

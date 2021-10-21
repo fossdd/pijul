@@ -16,7 +16,7 @@ mod apply;
 pub mod change;
 pub mod changestore;
 mod diff;
-mod find_alive;
+pub mod find_alive;
 pub mod fs;
 mod missing_context;
 pub mod output;
@@ -62,6 +62,7 @@ pub enum RemoteError {
 
 pub use crate::apply::Workspace as ApplyWorkspace;
 pub use crate::apply::{apply_change_arc, ApplyError, LocalApplyError};
+pub use crate::diff::DEFAULT_SEPARATOR;
 pub use crate::fs::{FsError, WorkingCopyIterator};
 pub use crate::output::{Archive, Conflict};
 pub use crate::pristine::{
@@ -73,11 +74,13 @@ pub use crate::record::{Algorithm, InodeUpdate};
 pub use crate::unrecord::UnrecordError;
 
 // Making hashmaps deterministic (for testing)
+#[cfg(feature = "deterministic_hash")]
 pub type Hasher = std::hash::BuildHasherDefault<twox_hash::XxHash64>;
+#[cfg(not(feature = "deterministic_hash"))]
+pub type Hasher = std::collections::hash_map::RandomState;
+
 pub type HashMap<K, V> = std::collections::HashMap<K, V, Hasher>;
 pub type HashSet<K> = std::collections::HashSet<K, Hasher>;
-// pub type HashMap<K, V> = std::collections::HashMap<K, V, std::collections::hash_map::RandomState>;
-// pub type HashSet<K> = std::collections::HashSet<K, std::collections::hash_map::RandomState>;
 
 impl MutTxnTExt for pristine::sanakirja::MutTxn<()> {}
 impl TxnTExt for pristine::sanakirja::MutTxn<()> {}
@@ -333,6 +336,18 @@ pub trait TxnTExt: pristine::TxnT {
 
     fn iter_working_copy(&self) -> WorkingCopyIterator<Self> {
         fs::iter_working_copy(self, pristine::Inode::ROOT)
+    }
+
+    fn iter_graph_children<'txn, 'changes, P>(
+        &'txn self,
+        changes: &'changes P,
+        channel: &'txn Self::Channel,
+        key: pristine::Position<ChangeId>,
+    ) -> Result<fs::GraphChildren<'txn, 'changes, Self, P>, Self::GraphError>
+    where
+        P: changestore::ChangeStore,
+    {
+        fs::iter_graph_children(self, changes, &self.graph(channel), key)
     }
 
     fn has_change(

@@ -2944,7 +2944,7 @@ impl EncodingDetector {
         }
 
         let mut encoding = self.candidates[encoding_for_tld(tld_type)].encoding();
-        let mut max = 0i64;
+        let mut max = -1i64;
         let mut expectation_is_valid = false;
         if tld_type != Tld::Generic {
             for (i, candidate) in self.candidates.iter().enumerate().skip(Self::FIRST_NORMAL) {
@@ -2999,7 +2999,7 @@ impl EncodingDetector {
                 && visual.plausible_punctuation()
                     > self.candidates[Self::LOGICAL_INDEX].plausible_punctuation()
             {
-                // max = visual_score;
+                max = visual_score;
                 encoding = ISO_8859_8;
             }
         }

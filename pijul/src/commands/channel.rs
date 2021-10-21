@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use crate::repository::Repository;
 use anyhow::anyhow;
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use libpijul::{ChannelTxnT, MutTxnT, TxnT};
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Channel {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]
@@ -16,7 +16,7 @@ pub struct Channel {
     subcmd: Option<SubCommand>,
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub enum SubCommand {
     /// Delete a channel.
     /// The channel must not be the current channel.

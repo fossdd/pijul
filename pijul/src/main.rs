@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::bail;
-use clap::{AppSettings, Clap};
+use clap::{AppSettings, ColorChoice, Parser};
 use env_logger::fmt::Color;
 use human_panic::setup_panic;
 
@@ -18,11 +18,11 @@ use crate::commands::*;
 const DEFAULT_CHANNEL: &str = "main";
 const PROTOCOL_VERSION: usize = 3;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 #[clap(
     version,
     author,
-    global_setting(AppSettings::ColoredHelp),
+    color(ColorChoice::Auto),
     setting(AppSettings::InferSubcommands)
 )]
 pub struct Opts {
@@ -30,7 +30,7 @@ pub struct Opts {
     pub subcmd: SubCommand,
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub enum SubCommand {
     /// Initializes an empty pijul repository
     Init(Init),

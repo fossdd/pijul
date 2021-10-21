@@ -1,6 +1,6 @@
 use anyhow::bail;
 use canonical_path::CanonicalPathBuf;
-use clap::{ArgSettings, Clap};
+use clap::{ArgSettings, Parser};
 use libpijul::pristine::*;
 use libpijul::*;
 use log::{debug, error, info, trace};
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::repository::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Git {
     /// Process this path instead of the current directory, creating a Pijul repository if necessary.
     pub repo_path: Option<PathBuf>,

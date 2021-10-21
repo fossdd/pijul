@@ -3,14 +3,14 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use canonical_path::CanonicalPathBuf;
-use clap::Clap;
+use clap::Parser;
 use libpijul::change::*;
 use libpijul::{MutTxnT, TxnT, TxnTExt};
 use serde_derive::Serialize;
 
 use crate::repository::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Diff {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]
@@ -67,6 +67,7 @@ impl Diff {
             state.record(
                 txn.clone(),
                 libpijul::Algorithm::default(),
+                &libpijul::DEFAULT_SEPARATOR,
                 channel.clone(),
                 &repo.working_copy,
                 &repo.changes,

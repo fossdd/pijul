@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use clap::Clap;
+use clap::Parser;
 use libpijul::changestore::ChangeStore;
 use libpijul::*;
 
 use crate::repository::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Change {
     /// Use the repository at PATH instead of the current directory
     #[clap(long = "repository", value_name = "PATH")]

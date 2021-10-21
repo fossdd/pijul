@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::bail;
 use canonical_path::{CanonicalPath, CanonicalPathBuf};
 use chrono::Utc;
-use clap::Clap;
+use clap::Parser;
 use libpijul::change::*;
 use libpijul::changestore::*;
 use libpijul::{
@@ -16,7 +16,7 @@ use log::debug;
 
 use crate::repository::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Record {
     /// Record all paths that have changed
     #[clap(short = 'a', long = "all")]
@@ -303,6 +303,7 @@ impl Record {
                         state.record(
                             txn.clone(),
                             libpijul::Algorithm::default(),
+                            &libpijul::DEFAULT_SEPARATOR,
                             channel.clone(),
                             working_copy,
                             changes,
@@ -315,6 +316,7 @@ impl Record {
                 state.record(
                     txn.clone(),
                     libpijul::Algorithm::default(),
+                    &libpijul::DEFAULT_SEPARATOR,
                     channel.clone(),
                     working_copy,
                     changes,
@@ -412,12 +414,7 @@ impl Record {
         }
         debug!("saving change");
         std::mem::drop(txn_);
-        Ok(Either::A((
-            txn,
-            change,
-            rec.updatables,
-            rec.oldest_change,
-        )))
+        Ok(Either::A((txn, change, rec.updatables, rec.oldest_change)))
     }
 }
 

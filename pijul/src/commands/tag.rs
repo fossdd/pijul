@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use crate::commands::record::timestamp_validator;
 use crate::repository::Repository;
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use libpijul::change::ChangeHeader;
 use libpijul::{ArcTxn, Base32, ChannelMutTxnT, ChannelTxnT, MutTxnT, TxnT, TxnTExt};
 use log::*;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Tag {
     /// Set the repository where this command should run. Defaults to
     /// the first ancestor of the current directory that contains a
@@ -20,7 +20,7 @@ pub struct Tag {
     subcmd: Option<SubCommand>,
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub enum SubCommand {
     /// Create a tag.
     #[clap(name = "create")]
@@ -221,6 +221,7 @@ fn try_record<T: ChannelMutTxnT + TxnT + Send + Sync + 'static>(
     state.record(
         txn,
         libpijul::Algorithm::default(),
+        &libpijul::DEFAULT_SEPARATOR,
         channel,
         &repo.working_copy,
         &repo.changes,

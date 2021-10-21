@@ -4,6 +4,7 @@ stdenv.mkDerivation {
   name = "Pijul";
   buildInputs = with pkgs; [
     zstd
+    xxHash
     libsodium
     openssl
     pkgconfig

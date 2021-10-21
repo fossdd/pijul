@@ -1,19 +1,19 @@
 use crate::config::*;
 use crate::repository::Repository;
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use log::debug;
 
 use std::io::Write;
 use std::path::Path;
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Key {
     #[clap(subcommand)]
     subcmd: Option<SubCommand>,
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub enum SubCommand {
     Generate {
         #[clap(long = "email")]

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::repository::Repository;
 use anyhow::bail;
 use byteorder::{BigEndian, WriteBytesExt};
-use clap::Clap;
+use clap::Parser;
 use lazy_static::lazy_static;
 use libpijul::*;
 use log::{debug, error};
@@ -14,7 +14,7 @@ use regex::Regex;
 
 /// This command is not meant to be run by the user,
 /// instead it is called over SSH
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 pub struct Protocol {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]

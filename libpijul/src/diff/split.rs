@@ -4,14 +4,16 @@ pub struct LineSplit<'a> {
     buf: &'a [u8],
     missing_eol: Option<&'a HashSet<usize>>,
     current: usize,
+    m: regex::bytes::Matches<'a, 'a>,
 }
 
 impl super::vertex_buffer::Diff {
-    pub fn lines(&self) -> LineSplit {
+    pub fn lines<'a>(&'a self, r: &'a regex::bytes::Regex) -> LineSplit<'a> {
         LineSplit {
             buf: &self.contents_a,
             missing_eol: Some(&self.missing_eol),
             current: 0,
+            m: r.find_iter(&self.contents_a),
         }
     }
 }
@@ -22,6 +24,18 @@ impl<'a> std::convert::From<&'a [u8]> for LineSplit<'a> {
             buf,
             missing_eol: None,
             current: 0,
+            m: super::DEFAULT_SEPARATOR.find_iter(buf),
+        }
+    }
+}
+
+impl<'a> LineSplit<'a> {
+    pub fn from_bytes_with_sep(buf: &'a [u8], sep: &'a regex::bytes::Regex) -> LineSplit<'a> {
+        LineSplit {
+            buf,
+            missing_eol: None,
+            current: 0,
+            m: sep.find_iter(buf),
         }
     }
 }
@@ -29,22 +43,24 @@ impl<'a> std::convert::From<&'a [u8]> for LineSplit<'a> {
 impl<'a> Iterator for LineSplit<'a> {
     type Item = &'a [u8];
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current >= self.buf.len() {
-            return None;
-        }
-        let current = self.current;
-        while self.current < self.buf.len() && self.buf[self.current] != b'\n' {
-            self.current += 1
-        }
-        if self.current < self.buf.len() {
-            self.current += 1
-        }
-        let mut last = self.current;
-        if let Some(miss) = self.missing_eol {
-            if miss.contains(&(self.current - 1)) {
-                last -= 1
+        if let Some(m) = self.m.next() {
+            let start = self.current;
+            let next = m.end();
+            self.current = next;
+
+            let mut last = next;
+            if let Some(miss) = self.missing_eol {
+                if miss.contains(&(self.current - 1)) {
+                    last -= 1
+                }
             }
+            Some(&self.buf[start..last])
+        } else if self.current < self.buf.len() {
+            let cur = self.current;
+            self.current = self.buf.len();
+            Some(&self.buf[cur..])
+        } else {
+            None
         }
-        Some(&self.buf[current..last])
     }
 }

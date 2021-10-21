@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::repository::Repository;
 use anyhow::bail;
-use clap::Clap;
+use clap::Parser;
 use libpijul::changestore::*;
 use libpijul::pristine::{sanakirja::Txn, ChannelRef, DepsTxnT, GraphTxnT, TreeTxnT, TxnErr};
 use libpijul::{Base32, TxnT, TxnTExt};
@@ -14,8 +14,8 @@ use serde::ser::{SerializeSeq, Serializer};
 use serde::Serialize;
 use thiserror::*;
 
-/// A struct containing user-input assembled by Clap.
-#[derive(Clap, Debug)]
+/// A struct containing user-input assembled by Parser.
+#[derive(Parser, Debug)]
 pub struct Log {
     /// Set the repository where this command should run. Defaults to the first ancestor of the current directory that contains a `.pijul` directory.
     #[clap(long = "repository")]
