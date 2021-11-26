@@ -565,6 +565,7 @@ pub struct GraphChildren<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes
     txn: &'txn T,
     channel: &'txn T::Graph,
     adj: AdjacentIterator<'txn, T>,
+    adj2: Option<AdjacentIterator<'txn, T>>,
     changes: &'changes P,
     buf: Vec<u8>,
 }
@@ -574,11 +575,52 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
 {
     type Item = Result<(Position<ChangeId>, ChangeId, InodeMetadata, String), T::GraphError>;
     fn next(&mut self) -> Option<Self::Item> {
-        let child = match self.adj.next()? {
-            Ok(child) => child,
-            Err(e) => return Some(Err(e.0)),
+        let dest = loop {
+            debug!("adj2 = {:?}", self.adj2.is_some());
+            if let Some(mut adj2) = self.adj2.take() {
+                match adj2.next() {
+                    None => {}
+                    Some(Ok(ch)) => {
+                        self.adj2 = Some(adj2);
+                        break self.txn.find_block(self.channel, ch.dest()).unwrap();
+                    }
+                    Some(Err(e)) => return Some(Err(e.0)),
+                }
+            }
+            match self.adj.next() {
+                Some(Ok(child)) => {
+                    let d = self.txn.find_block(self.channel, child.dest()).unwrap();
+                    if d.start == d.end {
+                        match iter_adjacent(
+                            self.txn,
+                            self.channel,
+                            *d,
+                            EdgeFlags::FOLDER,
+                            EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
+                        )
+                        .and_then(|mut it| it.next().unwrap())
+                        .and_then(|x| {
+                            iter_adjacent(
+                                self.txn,
+                                self.channel,
+                                x.dest().inode_vertex(),
+                                EdgeFlags::FOLDER,
+                                EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
+                            )
+                        }) {
+                            Ok(adj) => self.adj2 = Some(adj),
+                            Err(e) => return Some(Err(e.0)),
+                        }
+                    } else {
+                        break d;
+                    }
+                }
+                Some(Err(e)) => return Some(Err(e.0)),
+                None => return None,
+            }
         };
-        let dest = self.txn.find_block(self.channel, child.dest()).unwrap();
+        debug!("dest = {:?}", dest);
+
         let mut buf = std::mem::replace(&mut self.buf, Vec::new());
         let FileMetadata {
             basename,
@@ -640,6 +682,7 @@ where
             EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
         )
         .map_err(|e| e.0)?,
+        adj2: None,
         txn,
         channel,
         changes,
@@ -861,7 +904,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
     let flag0 = EdgeFlags::FOLDER | EdgeFlags::PARENT;
     let flag1 = EdgeFlags::all();
     let mut all_alive = true;
-    while !v.change.is_root() {
+    'outer: while !v.change.is_root() {
         let mut next_v = None;
         let mut alive = false;
         let inode_vertex = match txn.find_block_end(txn.graph(channel), v) {
@@ -883,6 +926,9 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
         }
         for name in iter_adjacent(txn, txn.graph(channel), v.inode_vertex(), flag0, flag1)? {
             let name = name?;
+            if name.dest().is_root() {
+                break 'outer;
+            }
             if !name.flag().contains(EdgeFlags::PARENT) {
                 continue;
             }
@@ -919,6 +965,11 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
             }
         }
         let (name, _, next) = next_v.unwrap();
+        if name.start == name.end {
+            // Non-zero root vertex
+            assert!(next.change.is_root());
+            break;
+        }
         if alive {
             name_buf.clear();
             debug!("getting contents {:?}", name);

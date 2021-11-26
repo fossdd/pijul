@@ -408,7 +408,7 @@ impl WorkingCopy for FileSystem {
     }
 
     type Writer = std::io::BufWriter<std::fs::File>;
-    fn write_file(&self, file: &str) -> Result<Self::Writer, Self::Error> {
+    fn write_file(&self, file: &str, _: Inode) -> Result<Self::Writer, Self::Error> {
         let path = self.path(file);
         debug!("path = {:?}", path);
         if let Some(p) = path.parent() {

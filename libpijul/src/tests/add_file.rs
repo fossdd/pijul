@@ -53,8 +53,7 @@ fn add_file_test() -> Result<(), anyhow::Error> {
         .unwrap();
 
         let mut it = crate::fs::iter_basenames(&txn, &changes, &channel.graph, key).unwrap();
-        let (key, _, name) = it.next().unwrap().unwrap();
-        assert_eq!(key, Position::ROOT);
+        let (_, _, name) = it.next().unwrap().unwrap();
         assert_eq!(name, "dir");
         assert!(it.next().is_none());
         assert!(txn.is_tracked("dir/file").unwrap());
@@ -204,7 +203,6 @@ fn del_eof_test() -> Result<(), anyhow::Error> {
 
     repo.add_file("dir/file", b"a\nb\nc\nd\ne\nf\n".to_vec());
     record_all_output(&repo, changes.clone(), &txn, &channel, "").unwrap();
-
     repo.write_file("dir/file")
         .unwrap()
         .write_all(b"a\nb\nc\n")
@@ -460,6 +458,7 @@ fn move_back_test_(resolve_by_deleting: bool) -> Result<(), anyhow::Error> {
     (&mut *txn_bob.write())
         .apply_change(&changes, &mut *channel_bob.write(), &alice2)
         .unwrap();
+
     output::output_repository_no_pending(
         &repo_bob, &changes, &txn_bob, &channel, "", true, None, 1, 0,
     )?;
@@ -663,6 +662,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
     state.record(
         txn_alice.clone(),
         Algorithm::default(),
+        &crate::DEFAULT_SEPARATOR,
         channel.clone(),
         &repo_alice,
         &changes,
@@ -673,6 +673,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
     state.record(
         txn_alice.clone(),
         Algorithm::default(),
+        &crate::DEFAULT_SEPARATOR,
         channel.clone(),
         &repo_alice,
         &changes,
@@ -686,7 +687,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
         .into_iter()
         .map(|rec| rec.globalize(&*txn_alice.read()).unwrap())
         .collect();
-    let alice2 = crate::change::Change::make_change(
+    let mut alice2 = crate::change::Change::make_change(
         &*txn_alice.read(),
         &channel,
         changes_,
@@ -700,7 +701,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
         Vec::new(),
     )
     .unwrap();
-    let h_alice2 = changes.save_change(&alice2)?;
+    let h_alice2 = changes.save_change(&mut alice2, |_, _| Ok::<_, anyhow::Error>(()))?;
     apply::apply_local_change(
         &mut *txn_alice.write(),
         &channel,
@@ -820,5 +821,49 @@ fn record_not_modified() -> Result<(), anyhow::Error> {
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
     std::thread::sleep(std::time::Duration::from_secs(1));
     record_all_output(&repo, changes, &txn, &channel, "")?;
+    Ok(())
+}
+
+/// Add a simple file, to test submodules.
+#[test]
+fn add_file2_test() -> Result<(), anyhow::Error> {
+    env_logger::try_init().unwrap_or(());
+    let repo = working_copy::memory::Memory::new();
+    let changes = changestore::memory::Memory::new();
+    repo.add_file("a/b/c/file", b"a\nb\nc\nd\ne\nf\n".to_vec());
+    let env = pristine::sanakirja::Pristine::new_anon()?;
+    {
+        let txn = env.arc_txn_begin().unwrap();
+        txn.write().add_file("a/b/c/file", 0).unwrap();
+        let channel = txn.write().open_or_create_channel("main").unwrap();
+        record_all(&repo, &changes, &txn, &channel, "").unwrap();
+        txn.commit().unwrap()
+    }
+
+    let repo2 = working_copy::memory::Memory::new();
+    repo2.add_file("a/b/c/file", b"w\nx\ny\nz\n".to_vec());
+    let change = {
+        let env2 = pristine::sanakirja::Pristine::new_anon()?;
+        let txn = env2.arc_txn_begin().unwrap();
+        txn.write().add_file("a/b/c/file", 0).unwrap();
+
+        let channel = txn.write().open_or_create_channel("other").unwrap();
+        let change = record_all(&repo, &changes, &txn, &channel, "").unwrap();
+        txn.commit().unwrap();
+        change
+    };
+
+    let txn = env.arc_txn_begin().unwrap();
+    let channel = txn.write().open_or_create_channel("main").unwrap();
+    apply::apply_change(&changes, &mut *txn.write(), &mut *channel.write(), &change)?;
+    output::output_repository_no_pending(&repo, &changes, &txn, &channel, "", true, None, 1, 0)?;
+    {
+        let txn_ = txn.write();
+        let mut f = std::fs::File::create("add_file2.dot")?;
+        crate::pristine::debug(&*txn_, &txn_.graph(&*channel.read()), &mut f)?;
+    }
+
+    // Check that there's a name conflict.
+    assert_eq!(repo.list_files().len(), 8);
     Ok(())
 }

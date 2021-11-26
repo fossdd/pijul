@@ -98,7 +98,7 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
     prefix_basename: Option<&str>,
     files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
 ) -> Result<(), PristineOutputError<P::Error, T::GraphError>> {
-    debug!("path = {:?}", path);
+    debug!("path = {:?}, inode_pos = {:?}", path, inode_pos);
     for e in iter_adjacent(
         txn,
         channel,
@@ -107,73 +107,134 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
         EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
     )? {
         let e = e?;
+        debug!("e = {:?}", e);
         let name_vertex = txn.find_block(channel, e.dest()).unwrap();
-        let mut name_buf = Vec::new();
-        let FileMetadata {
-            basename,
-            metadata: perms,
-            ..
-        } = changes
-            .get_file_meta(
-                |h| txn.get_external(&h).unwrap().map(|x| x.into()),
-                *name_vertex,
-                &mut name_buf,
-            )
-            .map_err(PristineOutputError::Changestore)?;
-        debug!("filename: {:?} {:?}", perms, basename);
-        let mut name = path.to_string();
-        if let Some(next) = prefix_basename {
-            if next != basename {
-                continue;
-            }
-        }
-        path::push(&mut name, basename);
-        debug!("name_vertex: {:?} {:?}", e, name_vertex);
-        let child = if let Some(child) = iter_adjacent(
-            txn,
-            channel,
-            *name_vertex,
-            EdgeFlags::FOLDER,
-            EdgeFlags::FOLDER | EdgeFlags::BLOCK | EdgeFlags::PSEUDO,
-        )?
-        .next()
-        {
-            child?
+        if name_vertex.start != name_vertex.end {
+            debug!("name_vertex: {:?} {:?}", e, name_vertex);
+            collect(
+                txn,
+                changes,
+                channel,
+                inode,
+                path,
+                tmp,
+                prefix_basename,
+                files,
+                name_vertex,
+            )?
         } else {
-            let mut edge = None;
-            for e in iter_adjacent(
+            let inode_pos = iter_adjacent(
                 txn,
                 channel,
                 *name_vertex,
                 EdgeFlags::FOLDER,
-                EdgeFlags::all(),
+                EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
+            )?
+            .next()
+            .unwrap()?
+            .dest();
+            for e in iter_adjacent(
+                txn,
+                channel,
+                inode_pos.inode_vertex(),
+                EdgeFlags::FOLDER,
+                EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
             )? {
                 let e = e?;
-                if !e.flag().contains(EdgeFlags::PARENT) {
-                    edge = Some(e);
-                    break;
-                }
+                debug!("e = {:?}", e);
+                let name_vertex = txn.find_block(channel, e.dest()).unwrap();
+                collect(
+                    txn,
+                    changes,
+                    channel,
+                    inode,
+                    path,
+                    tmp,
+                    prefix_basename,
+                    files,
+                    name_vertex,
+                )?
             }
-            let e = edge.unwrap();
-            let mut f = std::fs::File::create("debug_output").unwrap();
-            debug_root(txn, channel, e.dest().inode_vertex(), &mut f, false).unwrap();
-            panic!("no child");
-        };
-
-        debug!("child: {:?}", child);
-        let v = files.entry(name).or_insert_with(Vec::new);
-        v.push((
-            *name_vertex,
-            OutputItem {
-                parent: inode,
-                path: path.to_string(),
-                tmp: tmp.map(String::from),
-                meta: perms,
-                pos: child.dest(),
-                is_zombie: is_zombie(txn, channel, child.dest())?,
-            },
-        ));
+        }
     }
+    Ok(())
+}
+
+fn collect<T: GraphTxnT, P: ChangeStore>(
+    txn: &T,
+    changes: &P,
+    channel: &T::Graph,
+    inode: Inode,
+    path: &str,
+    tmp: Option<&str>,
+    prefix_basename: Option<&str>,
+    files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
+    name_vertex: &Vertex<ChangeId>,
+) -> Result<(), PristineOutputError<P::Error, T::GraphError>> {
+    let mut name_buf = Vec::new();
+    let FileMetadata {
+        basename,
+        metadata: perms,
+        ..
+    } = changes
+        .get_file_meta(
+            |h| txn.get_external(&h).unwrap().map(|x| x.into()),
+            *name_vertex,
+            &mut name_buf,
+        )
+        .map_err(PristineOutputError::Changestore)?;
+    debug!("filename: {:?} {:?}", perms, basename);
+    let mut name = path.to_string();
+    if let Some(next) = prefix_basename {
+        if next != basename {
+            return Ok(());
+        }
+    }
+    path::push(&mut name, basename);
+    let child = if let Some(child) = iter_adjacent(
+        txn,
+        channel,
+        *name_vertex,
+        EdgeFlags::FOLDER,
+        EdgeFlags::FOLDER | EdgeFlags::BLOCK | EdgeFlags::PSEUDO,
+    )?
+    .next()
+    {
+        child?
+    } else {
+        let mut edge = None;
+        for e in iter_adjacent(
+            txn,
+            channel,
+            *name_vertex,
+            EdgeFlags::FOLDER,
+            EdgeFlags::all(),
+        )? {
+            let e = e?;
+            if !e.flag().contains(EdgeFlags::PARENT) {
+                edge = Some(e);
+                break;
+            }
+        }
+        let e = edge.unwrap();
+        let mut f = std::fs::File::create("debug_output").unwrap();
+        debug_root(txn, channel, e.dest().inode_vertex(), &mut f, false).unwrap();
+        panic!("no child");
+    };
+
+    debug!("child: {:?}", child);
+    let v = files.entry(name).or_insert_with(Vec::new);
+    v.push((
+        *name_vertex,
+        OutputItem {
+            parent: inode,
+            path: path.to_string(),
+            tmp: tmp.map(String::from),
+            meta: perms,
+            pos: child.dest(),
+            is_zombie: is_zombie(txn, channel, child.dest())?,
+        },
+    ));
     Ok(())
 }
 

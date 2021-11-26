@@ -1,100 +1,17 @@
 use crate::change::*;
 use crate::changestore::*;
 use crate::pristine::*;
-use crate::record::*;
 use crate::working_copy::*;
 use crate::*;
 use std::io::Write;
 
 use super::*;
 
-fn hash_mismatch(change: &mut Change) -> Result<(), anyhow::Error> {
-    env_logger::try_init().unwrap_or(());
-    use crate::change::*;
-    let mut buf = tempfile::NamedTempFile::new()?;
-    let mut h = change.serialize(&mut buf, |_, _| Ok::<_, anyhow::Error>(()))?;
-    match h {
-        crate::pristine::Hash::Blake3(ref mut h) => h[0] = h[0].wrapping_add(1),
-        _ => unreachable!(),
-    }
-    match Change::deserialize(buf.path().to_str().unwrap(), Some(&h)) {
-        Err(ChangeError::ChangeHashMismatch { .. }) => {}
-        _ => unreachable!(),
-    }
-
-    let f = ChangeFile::open(h, buf.path().to_str().unwrap())?;
-    assert_eq!(f.hashed(), &change.hashed);
-    Ok(())
-}
-
-#[test]
-fn hash_mism() -> Result<(), anyhow::Error> {
-    env_logger::try_init().unwrap_or(());
-
-    let contents = b"a\nb\nc\nd\ne\nf\n";
-    let repo = working_copy::memory::Memory::new();
-    let store = changestore::memory::Memory::new();
-    repo.add_file("file", contents.to_vec());
-    repo.add_file("file2", contents.to_vec());
-
-    let env = pristine::sanakirja::Pristine::new_anon()?;
-    let txn = env.arc_txn_begin().unwrap();
-    let mut channel = txn.write().open_or_create_channel("main")?;
-    txn.write().add_file("file", 0)?;
-    txn.write().add_file("file2", 0)?;
-
-    let mut state = Builder::new();
-    state
-        .record(
-            txn.clone(),
-            Algorithm::Myers,
-            &crate::DEFAULT_SEPARATOR,
-            channel.clone(),
-            &repo,
-            &store,
-            "",
-            0,
-        )
-        .unwrap();
-    let rec = state.finish();
-    let changes: Vec<_> = rec
-        .actions
-        .into_iter()
-        .map(|rec| rec.globalize(&*txn.read()).unwrap())
-        .collect();
-    info!("changes = {:?}", changes);
-    let mut change0 = crate::change::Change::make_change(
-        &*txn.read(),
-        &channel,
-        changes,
-        std::mem::take(&mut *rec.contents.lock()),
-        crate::change::ChangeHeader {
-            message: "test".to_string(),
-            authors: vec![],
-            description: None,
-            timestamp: chrono::Utc::now(),
-        },
-        Vec::new(),
-    )
-    .unwrap();
-    let hash0 = store.save_change(&mut change0, |_, _| Ok::<_, anyhow::Error>(()))?;
-    apply::apply_local_change(
-        &mut *txn.write(),
-        &mut channel,
-        &change0,
-        &hash0,
-        &rec.updatables,
-    )?;
-
-    hash_mismatch(&mut change0)?;
-
-    Ok(())
-}
-
 #[cfg(feature = "text-changes")]
 #[test]
-#[ignore]
-fn text() -> Result<(), anyhow::Error> {
+/// Test the new text_changes.rs against the old text_changes.rs
+/// TODO: add test-cases for all kinds of hunks
+fn text_changes() -> Result<(), anyhow::Error> {
     env_logger::try_init().unwrap_or(());
 
     let contents = b"a\nb\nc\nd\ne\nf\n";
@@ -110,6 +27,7 @@ fn text() -> Result<(), anyhow::Error> {
     txn.write().add_file("file2", 0)?;
     let h0 = record_all(&repo, &store, &txn, &channel, "")?;
     let change0 = store.get_change(&h0).unwrap();
+
     text_test(&store, &change0, h0);
 
     write!(repo.write_file("file")?, "a\nx\nc\ne\ny\nf\n")?;
@@ -153,11 +71,18 @@ fn text() -> Result<(), anyhow::Error> {
 
 fn text_test<C: ChangeStore>(c: &C, change0: &Change, h: Hash) {
     let mut v = Vec::new();
+    let mut v_old = Vec::new();
     // let channel = channel.borrow();
+    change0.write_old(c, Some(h), true, &mut v_old).unwrap();
     change0.write(c, Some(h), true, &mut v).unwrap();
+
+    println!("{}", String::from_utf8_lossy(&v_old));
+
     for i in std::str::from_utf8(&v).unwrap().lines() {
         debug!("{}", i);
     }
+    let change0 =
+        Change::read_old(std::io::Cursor::new(&v_old[..]), &mut HashMap::default()).unwrap();
     let change1 = Change::read(std::io::Cursor::new(&v[..]), &mut HashMap::default()).unwrap();
     if change0.header != change1.header {
         error!("header: {:#?} != {:#?}", change0.header, change1.header);
@@ -198,5 +123,54 @@ fn text_test<C: ChangeStore>(c: &C, change0: &Change, h: Hash) {
         error!("change0.contents = {:?}", change0.contents);
         error!("change1.contents = {:?}", change1.contents);
     }
-    assert_eq!(change0, &change1);
+    assert_eq!(change0, change1);
+}
+
+quickcheck! {
+  fn string_roundtrip(s1: String) -> () {
+      let mut w = Vec::new();
+      write!(&mut w, "{}", Escaped(&s1)).unwrap();
+      let utf = std::str::from_utf8(&w).unwrap();
+      let (_, s2) = parse_string(&utf).unwrap();
+      assert_eq!(s1, s2);
+  }
+}
+
+#[test]
+#[cfg(feature = "text-changes")]
+fn hunk_roundtrip_test() {
+    fn go(hunk: PrintableHunk) {
+        let mut w = Vec::new();
+        hunk.write(&mut &mut w).unwrap();
+        let s = std::str::from_utf8(&w).unwrap();
+        match parse_hunk(&s) {
+            Ok((_, hunk2)) => {
+                if hunk != hunk2 {
+                    eprintln!("## Hunk: \n\n{}", s);
+                    eprintln!("In:  {:?}\n\nOut: {:?}\n", hunk, hunk2);
+                    panic!("Hunks don't match.");
+                }
+            }
+            Err(e) => {
+                eprintln!("Hunk: \n\n{}", s);
+                panic!("Can't parse hunk. Error: {:?}", e);
+            }
+        }
+    }
+    // Create a new thread with custom stack size
+    std::thread::Builder::new()
+        // frequently blown by shrinking :(
+        // You can disable shrinking by commenting out the shrink function
+        // for PrintableHunk
+        .stack_size(20 * 1024 * 1024)
+        .spawn(move || {
+            quickcheck::QuickCheck::new()
+                .tests(1000)
+                .gen(quickcheck::Gen::new(3))
+                .max_tests(100000000)
+                .quickcheck(go as fn(PrintableHunk) -> ());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

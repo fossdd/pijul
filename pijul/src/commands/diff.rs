@@ -149,6 +149,8 @@ impl Diff {
                             Hunk::SolveOrderConflict { .. } => "solve order conflict",
                             Hunk::UnsolveOrderConflict { .. } => "unsolve order conflict",
                             Hunk::ResurrectZombies { .. } => "resurrect zombies",
+                            Hunk::AddRoot { .. } => "root",
+                            Hunk::DelRoot { .. } => "unroot",
                         },
                         line: ch.line(),
                     });
@@ -197,6 +199,7 @@ impl Diff {
                         local: Local { path, .. },
                         ..
                     } => changes.entry(path).or_insert(BTreeSet::new()).insert("RZ"),
+                    Hunk::AddRoot { .. } | Hunk::DelRoot { .. } => true,
                 };
             }
             let al = changes

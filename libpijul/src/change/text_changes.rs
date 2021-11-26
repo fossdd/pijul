@@ -2,9 +2,9 @@ use crate::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::BufRead;
 
-use regex::Captures;
-
 use super::*;
+use crate::change::parse::*;
+use crate::change::printable::*;
 use crate::changestore::*;
 
 #[derive(Debug, Error)]
@@ -13,6 +13,8 @@ pub enum TextDeError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     TomlDe(#[from] toml::de::Error),
+    #[error(transparent)]
+    Nom(#[from] nom::Err<nom::error::Error<String>>),
     #[error("Missing dependency [{0}]")]
     MissingChange(usize),
     #[error("Byte position {0} from this change missing")]
@@ -39,7 +41,7 @@ impl LocalChange<Hunk<Option<Hash>, Local>, Author> {
     const DEPS_LINE: &'static str = "# Dependencies\n";
     const HUNKS_LINE: &'static str = "# Hunks\n";
 
-    pub fn write_all_deps<F: FnMut(Hash) -> Result<(), ChangeError>>(
+    pub fn write_all_deps_old<F: FnMut(Hash) -> Result<(), ChangeError>>(
         &self,
         mut f: F,
     ) -> Result<(), ChangeError> {
@@ -164,7 +166,7 @@ impl Change {
         txn: &T,
         channel: &ChannelRef<T>,
     ) -> Result<Self, TextDeError> {
-        let (mut change, extra_dependencies) = Self::read_(r, updatables)?;
+        let (mut change, extra_dependencies) = Self::read_impl(r, updatables)?;
         let (mut deps, extra) =
             dependencies(txn, &channel.read(), change.hashed.changes.iter()).unwrap();
         deps.extend(extra_dependencies.into_iter());
@@ -177,25 +179,44 @@ impl Change {
         r: R,
         updatables: &mut HashMap<usize, crate::InodeUpdate>,
     ) -> Result<Self, TextDeError> {
-        Ok(Self::read_(r, updatables)?.0)
+        Ok(Self::read_impl(r, updatables)?.0)
     }
 
-    fn read_<R: BufRead>(
+    fn read_impl<R: BufRead>(
         mut r: R,
         updatables: &mut HashMap<usize, crate::InodeUpdate>,
     ) -> Result<(Self, HashSet<Hash>), TextDeError> {
-        use self::text_changes::*;
-        let mut section = Section::Header(String::new());
+        // read the data
+        // TODO: make this streaming
+        let mut s = String::new();
+        r.read_to_string(&mut s)?;
+        let i = &s;
+
+        // parse header
+        let (i, m_header) = parse_header(i).map_err(|e| e.to_owned())?;
+        let header = m_header?;
+
+        // parse dependencies
+        let (i, deps) = parse_dependencies(i).map_err(|e| e.to_owned())?;
+
+        // parse hunks
+        let (_, hunks) = parse_hunks(i).map_err(|e| e.to_owned())?;
+
+        Change::update(header, deps, hunks, updatables)
+    }
+
+    fn update(
+        header: ChangeHeader,
+        dependencies: Vec<PrintableDep>,
+        hunks: Vec<(u64, PrintableHunk)>,
+        updatables: &mut HashMap<usize, crate::InodeUpdate>,
+    ) -> Result<(Self, HashSet<Hash>), TextDeError> {
+        // TODO: get rid of this whole default change if possible
         let mut change = Change {
             offsets: Offsets::default(),
             hashed: Hashed {
                 version: VERSION,
-                header: ChangeHeader {
-                    authors: Vec::new(),
-                    message: String::new(),
-                    description: None,
-                    timestamp: chrono::Utc::now(),
-                },
+                header,
                 dependencies: Vec::new(),
                 extra_known: Vec::new(),
                 metadata: Vec::new(),
@@ -205,93 +226,38 @@ impl Change {
             unhashed: None,
             contents: Vec::new(),
         };
-        let conclude_section = |change: &mut Change,
-                                section: Section,
-                                contents: &mut Vec<u8>|
-         -> Result<(), TextDeError> {
-            match section {
-                Section::Header(ref s) => {
-                    debug!("header = {:?}", s);
-                    change.header = toml::de::from_str(&s)?;
-                    Ok(())
-                }
-                Section::Deps => Ok(()),
-                Section::Changes {
-                    mut changes,
-                    current,
-                    ..
-                } => {
-                    if has_newvertices(&current) {
-                        contents.push(0)
-                    }
-                    if let Some(c) = current {
-                        debug!("next action = {:?}", c);
-                        changes.push(c)
-                    }
-                    change.changes = changes;
-                    Ok(())
-                }
-            }
-        };
-        let mut h = String::new();
-        let mut contents = Vec::new();
+
+        // process dependencies
         let mut deps = HashMap::default();
         let mut extra_dependencies = HashSet::default();
-        while r.read_line(&mut h)? > 0 {
-            debug!("h = {:?}", h);
-            if h == Self::DEPS_LINE {
-                let section = std::mem::replace(&mut section, Section::Deps);
-                conclude_section(&mut change, section, &mut contents)?;
-            } else if h == Self::HUNKS_LINE {
-                let section = std::mem::replace(
-                    &mut section,
-                    Section::Changes {
-                        changes: Vec::new(),
-                        current: None,
-                        offsets: HashMap::default(),
-                    },
-                );
-                conclude_section(&mut change, section, &mut contents)?;
-            } else {
-                use regex::Regex;
-                lazy_static! {
-                    static ref DEPS: Regex = Regex::new(r#"\[(\d*|\*)\](\+| ) *(\S*)"#).unwrap();
-                    static ref KNOWN: Regex = Regex::new(r#"(\S*)"#).unwrap();
+        for dep in dependencies {
+            let hash = Hash::from_base32(dep.hash.as_bytes()).unwrap();
+            match dep.type_ {
+                DepType::Numbered(n, false) => {
+                    change.hashed.dependencies.push(hash);
+                    deps.insert(n, hash);
                 }
-                match section {
-                    Section::Header(ref mut s) => s.push_str(&h),
-                    Section::Deps => {
-                        if let Some(d) = DEPS.captures(&h) {
-                            let hash = Hash::from_base32(d[3].as_bytes()).unwrap();
-                            if let Ok(n) = d[1].parse() {
-                                if &d[2] == " " {
-                                    change.hashed.dependencies.push(hash);
-                                }
-                                deps.insert(n, hash);
-                            } else if &d[1] == "*" {
-                                change.hashed.extra_known.push(hash);
-                            } else {
-                                extra_dependencies.insert(hash);
-                            }
-                        }
-                    }
-                    Section::Changes {
-                        ref mut current,
-                        ref mut changes,
-                        ref mut offsets,
-                    } => {
-                        if let Some(next) =
-                            Hunk::read(updatables, current, &mut contents, &deps, offsets, &h)?
-                        {
-                            debug!("next action = {:?}", next);
-                            changes.push(next)
-                        }
-                    }
+                DepType::Numbered(n, true) => {
+                    deps.insert(n, hash);
+                }
+                DepType::ExtraKnown => {
+                    change.hashed.extra_known.push(hash);
+                }
+                DepType::ExtraUnknown => {
+                    extra_dependencies.insert(hash);
                 }
             }
-            h.clear();
         }
-        conclude_section(&mut change, section, &mut contents)?;
+
+        // process hunks
+        let mut contents = Vec::new();
+        let mut offsets = HashMap::default();
+        for (n, hunk) in hunks {
+            let res =
+                Hunk::from_printable(updatables, &mut contents, &deps, &mut offsets, (n, hunk))?;
+            debug!("res = {:?}", res);
+            change.hashed.changes.push(res);
+        }
         change.contents = contents;
         change.contents_hash = {
             let mut hasher = Hasher::default();
@@ -302,49 +268,84 @@ impl Change {
     }
 }
 
-const BINARY_LABEL: &str = "binary";
-
-struct Escaped<'a>(&'a str);
-
-impl<'a> std::fmt::Display for Escaped<'a> {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(fmt, "\"")?;
-        for c in self.0.chars() {
-            if c == '"' {
-                write!(fmt, "\\{}", c)?
-            } else if c == '\\' {
-                write!(fmt, "\\\\")?
-            } else {
-                write!(fmt, "{}", c)?
-            }
-        }
-        write!(fmt, "\"")?;
-        Ok(())
+pub fn to_printable_new_vertex(
+    atom: &Atom<Option<Hash>>,
+    hashes: &HashMap<Hash, usize>,
+) -> PrintableNewVertex {
+    if let PrintableAtom::NewVertex(v) = to_printable_atom(atom, hashes) {
+        v
+    } else {
+        panic!("PrintableAtom::NewVertex expected here")
     }
 }
 
-fn unescape(s: &str) -> std::borrow::Cow<str> {
-    let mut b = 0;
-    let mut result = String::new();
-    let mut ch = s.chars();
-    while let Some(c) = ch.next() {
-        if c == '\\' {
-            if result.is_empty() {
-                result = s.split_at(b).0.to_string();
-            }
-            if let Some(c) = ch.next() {
-                result.push(c)
-            }
-        } else if !result.is_empty() {
-            result.push(c)
-        }
-        b += c.len_utf8()
-    }
-    if result.is_empty() {
-        s.into()
+pub fn to_printable_edge_map(
+    atom: &Atom<Option<Hash>>,
+    hashes: &HashMap<Hash, usize>,
+) -> Vec<PrintableEdge> {
+    if let PrintableAtom::Edges(v) = to_printable_atom(atom, hashes) {
+        v
     } else {
-        result.into()
+        panic!("PrintableAtom::Edges expected here")
     }
+}
+
+/// Panics if the Atom is not an EdgeMap
+fn to_printable_atom(atom: &Atom<Option<Hash>>, hashes: &HashMap<Hash, usize>) -> PrintableAtom {
+    match atom {
+        Atom::NewVertex(ref new_vertex) => PrintableAtom::NewVertex(PrintableNewVertex {
+            up_context: new_vertex
+                .up_context
+                .iter()
+                .map(|c| to_printable_pos(hashes, *c))
+                .collect(),
+            start: new_vertex.start.0 .0,
+            end: new_vertex.end.0 .0,
+            down_context: new_vertex
+                .down_context
+                .iter()
+                .map(|c| to_printable_pos(hashes, *c))
+                .collect(),
+        }),
+        Atom::EdgeMap(ref edge_map) => PrintableAtom::Edges(
+            edge_map
+                .edges
+                .iter()
+                .map(|c| PrintableEdge {
+                    previous: PrintableEdgeFlags::from(c.previous),
+                    flag: PrintableEdgeFlags::from(c.flag),
+                    from: to_printable_pos(hashes, c.from),
+                    to_start: to_printable_pos(hashes, c.to.start_pos()),
+                    to_end: c.to.end.0 .0,
+                    introduced_by: *hashes.get(&c.introduced_by.unwrap()).unwrap_or_else(|| {
+                        panic!("introduced_by = {:?}, not found", c.introduced_by)
+                    }),
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn from_printable_edge_map(
+    edges: &[PrintableEdge],
+    changes: &HashMap<usize, Hash>,
+) -> Result<Vec<NewEdge<Option<Hash>>>, TextDeError> {
+    let mut res = Vec::new();
+    for edge in edges {
+        let Position { change, pos } = from_printable_pos(changes, edge.to_start)?;
+        res.push(NewEdge {
+            previous: edge.previous.to(),
+            flag: edge.flag.to(),
+            from: from_printable_pos(changes, edge.from)?,
+            to: Vertex {
+                change,
+                start: pos,
+                end: ChangePosition(L64(edge.to_end)),
+            },
+            introduced_by: change_ref(changes, edge.introduced_by)?,
+        })
+    }
+    Ok(res)
 }
 
 impl Hunk<Option<Hash>, Local> {
@@ -353,55 +354,33 @@ impl Hunk<Option<Hash>, Local> {
         changes: &C,
         hashes: &HashMap<Hash, usize>,
         change_contents: &[u8],
-        mut w: &mut W,
+        w: &mut W,
     ) -> Result<(), TextSerError<C::Error>> {
-        // let file_name = |local: &Local, _| -> String { format!("{}:{}", local.path, local.line) };
-
         use self::text_changes::*;
         match self {
             Hunk::FileMove { del, add, path } => match add {
                 Atom::NewVertex(ref add) => {
                     let FileMetadata {
                         basename: name,
-                        metadata: perms,
+                        metadata,
                         ..
                     } = FileMetadata::read(&change_contents[add.start.0.into()..add.end.0.into()]);
-                    write!(
-                        w,
-                        "Moved: {} {} {}",
-                        Escaped(&path),
-                        Escaped(&name),
-                        if perms.0 & 0o1000 == 0o1000 {
-                            "+dx "
-                        } else if perms.0 & 0o100 == 0o100 {
-                            "+x "
-                        } else {
-                            ""
-                        }
-                    )?;
-                    write_pos(&mut w, hashes, del.inode())?;
-                    writeln!(w)?;
-                    write_atom(&mut w, hashes, &del)?;
-
-                    write!(w, "up")?;
-                    for c in add.up_context.iter() {
-                        write!(w, " ")?;
-                        write_pos(&mut w, hashes, *c)?
+                    PrintableHunk::FileMoveV {
+                        path: path.to_string(),
+                        name: name.to_string(),
+                        perms: PrintablePerms::from_metadata(metadata),
+                        pos: to_printable_pos(hashes, del.inode()),
+                        up_context: to_printable_pos_vec(hashes, &add.up_context),
+                        down_context: to_printable_pos_vec(hashes, &add.down_context),
+                        del: to_printable_edge_map(del, hashes),
                     }
-                    write!(w, ", down")?;
-                    for c in add.down_context.iter() {
-                        write!(w, " ")?;
-                        write_pos(&mut w, hashes, *c)?
-                    }
-                    w.write_all(b"\n")?;
                 }
-                Atom::EdgeMap(_) => {
-                    write!(w, "Moved: {:?} ", path)?;
-                    write_pos(&mut w, hashes, del.inode())?;
-                    writeln!(w)?;
-                    write_atom(&mut w, hashes, &add)?;
-                    write_atom(&mut w, hashes, &del)?;
-                }
+                Atom::EdgeMap(_) => PrintableHunk::FileMoveE {
+                    path: path.to_string(),
+                    pos: to_printable_pos(hashes, del.inode()),
+                    add: to_printable_edge_map(add, hashes),
+                    del: to_printable_edge_map(del, hashes),
+                },
             },
             Hunk::FileDel {
                 del,
@@ -410,17 +389,22 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("file del");
-                write!(w, "File deletion: {} ", Escaped(path))?;
-                write_pos(&mut w, hashes, del.inode())?;
-                writeln!(w, " {:?}", encoding_label(encoding))?;
-
-                write_atom(&mut w, hashes, &del)?;
-                if let Some(ref contents) = contents {
-                    write_atom(&mut w, hashes, &contents)?;
-                    writeln!(w)?;
-                    print_change_contents(w, changes, contents, change_contents, encoding)?;
+                let (contents_data, content_edges) = if let Some(ref c) = contents {
+                    (
+                        get_change_contents(changes, c, change_contents)?,
+                        to_printable_edge_map(c, hashes),
+                    )
                 } else {
-                    writeln!(w)?;
+                    (Vec::new(), Vec::new())
+                };
+
+                PrintableHunk::FileDel {
+                    path: path.to_string(),
+                    pos: to_printable_pos(hashes, del.inode()),
+                    encoding: encoding.clone(),
+                    del_edges: to_printable_edge_map(del, hashes),
+                    content_edges: content_edges,
+                    contents: contents_data,
                 }
             }
             Hunk::FileUndel {
@@ -430,15 +414,22 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("file undel");
-                write!(w, "File un-deletion: {} ", Escaped(path))?;
-                write_pos(&mut w, hashes, undel.inode())?;
-                writeln!(w, " {:?}", encoding_label(encoding))?;
-                write_atom(&mut w, hashes, &undel)?;
-                if let Some(ref contents) = contents {
-                    write_atom(&mut w, hashes, &contents)?;
-                    print_change_contents(w, changes, contents, change_contents, encoding)?;
+                let (contents_data, content_edges) = if let Some(ref c) = contents {
+                    (
+                        get_change_contents(changes, c, change_contents)?,
+                        to_printable_edge_map(c, hashes),
+                    )
                 } else {
-                    writeln!(w)?;
+                    (Vec::new(), Vec::new())
+                };
+
+                PrintableHunk::FileUndel {
+                    path: path.to_string(),
+                    pos: to_printable_pos(hashes, undel.inode()),
+                    encoding: encoding.clone(),
+                    undel_edges: to_printable_edge_map(undel, hashes),
+                    content_edges: content_edges,
+                    contents: contents_data,
                 }
             }
             Hunk::FileAdd {
@@ -450,47 +441,36 @@ impl Hunk<Option<Hash>, Local> {
             } => {
                 if let Atom::NewVertex(ref n) = add_name {
                     debug!("add_name {:?}", n);
-                    let FileMetadata {
-                        basename: name,
-                        metadata: perms,
-                        ..
-                    } = FileMetadata::read(&change_contents[n.start.0.into()..n.end.0.into()]);
-                    let parent = if let Some(p) = crate::path::parent(&path) {
-                        if p.is_empty() {
-                            "/"
-                        } else {
-                            p
-                        }
+                    let (name, metadata) = if n.start == n.end {
+                        ("", InodeMetadata::DIR)
                     } else {
-                        "/"
+                        let FileMetadata {
+                            basename: name,
+                            metadata: perms,
+                            ..
+                        } = FileMetadata::read(&change_contents[n.start.0.into()..n.end.0.into()]);
+                        (name, perms)
                     };
-                    write!(
-                        w,
-                        "File addition: {} in {}{} \"{}\"\n  up",
-                        Escaped(name),
-                        Escaped(parent),
-                        if perms.0 & 0o1000 == 0o1000 {
-                            " +dx"
-                        } else if perms.0 & 0o100 == 0o100 {
-                            " +x"
-                        } else {
-                            ""
-                        },
-                        encoding_label(encoding)
-                    )?;
+
+                    let contents = if let Some(Atom::NewVertex(ref n)) = contents {
+                        change_contents[n.start.us()..n.end.us()].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     assert!(n.down_context.is_empty());
-                    for c in n.up_context.iter() {
-                        write!(w, " ")?;
-                        write_pos(&mut w, hashes, *c)?
+
+                    PrintableHunk::FileAddition {
+                        name: name.to_string(),
+                        parent: crate::path::parent(&path).unwrap_or("").to_string(),
+                        perms: PrintablePerms::from_metadata(metadata),
+                        encoding: encoding.clone(),
+                        up_context: to_printable_pos_vec(hashes, &n.up_context),
+                        start: n.start.0 .0,
+                        end: n.end.0 .0,
+                        contents,
                     }
-                    writeln!(w, ", new {}:{}", n.start.0, n.end.0)?;
-                }
-                if let Some(Atom::NewVertex(ref n)) = contents {
-                    let c = &change_contents[n.start.us()..n.end.us()];
-                    print_contents(w, "+", c, encoding)?;
-                    if !c.ends_with(b"\n") {
-                        writeln!(w, "\n\\")?
-                    }
+                } else {
+                    panic!("Invalid Hunk::FileAdd field add_name: {:?}", add_name);
                 }
             }
             Hunk::Edit {
@@ -499,12 +479,14 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("edit");
-                write!(w, "Edit in {}:{} ", Escaped(&local.path), local.line)?;
-                write_pos(&mut w, hashes, change.inode())?;
-                write!(w, " {:?}", encoding_label(encoding))?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents, encoding)?;
+                PrintableHunk::Edit {
+                    path: local.path.clone(),
+                    line: local.line,
+                    pos: to_printable_pos(hashes, change.inode()),
+                    encoding: encoding.clone(),
+                    change: to_printable_atom(change, hashes),
+                    contents: get_change_contents(changes, change, change_contents)?,
+                }
             }
             Hunk::Replacement {
                 change,
@@ -513,667 +495,500 @@ impl Hunk<Option<Hash>, Local> {
                 encoding,
             } => {
                 debug!("replacement");
-                write!(w, "Replacement in {}:{} ", Escaped(&local.path), local.line)?;
-                write_pos(&mut w, hashes, change.inode())?;
-                write!(w, " {:?}", encoding_label(encoding))?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &change)?;
-                write_atom(&mut w, hashes, &replacement)?;
-                print_change_contents(w, changes, change, change_contents, encoding)?;
-                print_change_contents(w, changes, replacement, change_contents, encoding)?;
+                PrintableHunk::Replace {
+                    path: local.path.clone(),
+                    line: local.line,
+                    pos: to_printable_pos(hashes, change.inode()),
+                    encoding: encoding.clone(),
+                    change: to_printable_edge_map(change, hashes),
+                    replacement: to_printable_new_vertex(replacement, hashes),
+                    change_contents: get_change_contents(changes, change, change_contents)?,
+                    replacement_contents: get_change_contents(
+                        changes,
+                        replacement,
+                        change_contents,
+                    )?,
+                }
             }
-            Hunk::SolveNameConflict { name, path } => {
-                write!(w, "Solving a name conflict in {} ", Escaped(path))?;
-                write_pos(&mut w, hashes, name.inode())?;
-                write!(w, ": ")?;
-                write_deleted_names(&mut w, changes, name)?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &name)?;
-            }
-            Hunk::UnsolveNameConflict { name, path } => {
-                write!(w, "Un-solving a name conflict in {} ", Escaped(path))?;
-                write_pos(&mut w, hashes, name.inode())?;
-                write!(w, ": ")?;
-                write_deleted_names(&mut w, changes, name)?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &name)?;
-            }
+            Hunk::SolveNameConflict { name, path } => PrintableHunk::SolveNameConflict {
+                path: path.clone(),
+                pos: to_printable_pos(hashes, name.inode()),
+                names: get_deleted_names(changes, name)?,
+                edges: to_printable_edge_map(name, hashes),
+            },
+            Hunk::UnsolveNameConflict { name, path } => PrintableHunk::UnsolveNameConflict {
+                path: path.clone(),
+                pos: to_printable_pos(hashes, name.inode()),
+                names: get_deleted_names(changes, name)?,
+                edges: to_printable_edge_map(name, hashes),
+            },
             Hunk::SolveOrderConflict { change, local } => {
-                debug!("solve order conflict");
-                write!(
-                    w,
-                    "Solving an order conflict in {}:{} ",
-                    Escaped(&local.path),
-                    local.line,
-                )?;
-                write_pos(&mut w, hashes, change.inode())?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents, &None)?;
+                // TODO: pass in the encoding
+                let contents = get_change_contents(changes, change, change_contents)?;
+                let encoding = get_encoding(&contents);
+                PrintableHunk::SolveOrderConflict {
+                    path: local.path.clone(),
+                    line: local.line,
+                    pos: to_printable_pos(hashes, change.inode()),
+                    encoding: encoding.clone(),
+                    change: to_printable_new_vertex(change, hashes),
+                    contents: get_change_contents(changes, change, change_contents)?,
+                }
             }
             Hunk::UnsolveOrderConflict { change, local } => {
-                debug!("unsolve order conflict");
-                write!(
-                    w,
-                    "Un-solving an order conflict in {}:{} ",
-                    Escaped(&local.path),
-                    local.line,
-                )?;
-                write_pos(&mut w, hashes, change.inode())?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents, &None)?;
+                // TODO: pass in the encoding
+                let contents = get_change_contents(changes, change, change_contents)?;
+                let encoding = get_encoding(&contents);
+                PrintableHunk::UnsolveOrderConflict {
+                    path: local.path.clone(),
+                    line: local.line,
+                    pos: to_printable_pos(hashes, change.inode()),
+                    encoding: encoding.clone(),
+                    change: to_printable_edge_map(change, hashes),
+                    contents: get_change_contents(changes, change, change_contents)?,
+                }
             }
             Hunk::ResurrectZombies {
                 change,
                 local,
                 encoding,
-            } => {
-                debug!("resurrect zombies");
-                write!(
-                    w,
-                    "Resurrecting zombie lines in {}:{} ",
-                    Escaped(&local.path),
-                    local.line
-                )?;
-                write_pos(&mut w, hashes, change.inode())?;
-                write!(w, " \"{}\"", encoding_label(encoding))?;
-                writeln!(w)?;
-                write_atom(&mut w, hashes, &change)?;
-                print_change_contents(w, changes, change, change_contents, encoding)?;
+            } => PrintableHunk::ResurrectZombies {
+                path: local.path.clone(),
+                line: local.line,
+                pos: to_printable_pos(hashes, change.inode()),
+                encoding: encoding.clone(),
+                change: to_printable_edge_map(change, hashes),
+                contents: get_change_contents(changes, change, change_contents)?,
+            },
+            Hunk::AddRoot { name, .. } => {
+                if let Atom::NewVertex(ref n) = name {
+                    PrintableHunk::AddRoot {
+                        start: n.start.0 .0,
+                    }
+                } else {
+                    unreachable!()
+                }
             }
+            Hunk::DelRoot { inode, name } => PrintableHunk::DelRoot {
+                name: to_printable_edge_map(name, hashes),
+                inode: to_printable_edge_map(inode, hashes),
+            },
         }
+        .write(w)?;
         Ok(())
     }
 }
 
-fn encoding_label(encoding: &Option<Encoding>) -> &str {
-    match encoding {
-        Some(encoding) => encoding.label(),
-        _ => BINARY_LABEL,
-    }
-}
-
 impl Hunk<Option<Hash>, Local> {
-    fn read(
+    fn from_printable(
         updatables: &mut HashMap<usize, crate::InodeUpdate>,
-        current: &mut Option<Self>,
         contents_: &mut Vec<u8>,
         changes: &HashMap<usize, Hash>,
         offsets: &mut HashMap<u64, ChangePosition>,
-        h: &str,
-    ) -> Result<Option<Self>, TextDeError> {
-        use self::text_changes::*;
-        use regex::Regex;
-        lazy_static! {
-            static ref FILE_ADDITION: Regex =
-                Regex::new(r#"^(?P<n>\d+)\. File addition: "(?P<name>[^"]*)" in "(?P<parent>[^"]*)"(?P<perm> \S+)? "(?P<encoding>[^"]*)""#).unwrap();
-            static ref EDIT: Regex =
-                Regex::new(r#"^([0-9]+)\. Edit in ([^:]+):(\d+) (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
-            static ref REPLACEMENT: Regex =
-                Regex::new(r#"^([0-9]+)\. Replacement in ([^:]+):(\d+) (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
-            static ref FILE_DELETION: Regex =
-                Regex::new(r#"^([0-9]+)\. File deletion: "([^"]*)" (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
-            static ref FILE_UNDELETION: Regex =
-                Regex::new(r#"^([0-9]+)\. File un-deletion: "([^"]*)" (\d+\.\d+) "(?P<encoding>[^"]*)""#).unwrap();
-            static ref MOVE: Regex =
-                Regex::new(r#"^([0-9]+)\. Moved: "(?P<former>[^"]*)" "(?P<new>[^"]*)" (?P<perm>[^ ]+ )?(?P<inode>.*)"#).unwrap();
-            static ref MOVE_: Regex = Regex::new(r#"^([0-9]+)\. Moved: "([^"]*)" (.*)"#).unwrap();
-            static ref NAME_CONFLICT: Regex = Regex::new(
-                r#"^([0-9]+)\. ((Solving)|(Un-solving)) a name conflict in "([^"]*)" (.*): .*"#
-            )
-            .unwrap();
-            static ref ORDER_CONFLICT: Regex = Regex::new(
-                r#"^([0-9]+)\. ((Solving)|(Un-solving)) an order conflict in (.*):(\d+) (\d+\.\d+)"#
-            )
-            .unwrap();
-            static ref ZOMBIE: Regex =
-                Regex::new(r#"^([0-9]+)\. Resurrecting zombie lines in (?P<path>"[^"]+"):(?P<line>\d+) (?P<inode>\d+\.\d+) "(?P<encoding>[^"]*)""#)
-                    .unwrap();
-            static ref CONTEXT: Regex = Regex::new(
-                r#"up ((\d+\.\d+ )*\d+\.\d+)(, new (\d+):(\d+))?(, down ((\d+\.\d+ )*\d+\.\d+))?"#
-            )
-            .unwrap();
-        }
-        if let Some(cap) = FILE_ADDITION.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
+        (hunk_id, hunk): (u64, PrintableHunk),
+    ) -> Result<Self, TextDeError> {
+        debug!("from_printable {:?}", hunk);
+        match hunk {
+            PrintableHunk::FileMoveV {
+                path,
+                name,
+                perms,
+                pos,
+                up_context,
+                down_context,
+                del,
+            } => {
+                let mut add = default_newvertex();
+                add.start = ChangePosition(contents_.len().into());
+                add.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
+                let meta = FileMetadata {
+                    metadata: InodeMetadata(match perms {
+                        // TODO: deduplicate
+                        PrintablePerms::IsDir => 0o1100,
+                        PrintablePerms::IsExecutable => 0o100,
+                        PrintablePerms::IsFile => 0,
+                    }),
+                    basename: &name,
+                    encoding: None,
+                };
+                meta.write(contents_);
+                add.end = ChangePosition(contents_.len().into());
+                add.up_context = from_printable_pos_vec_offsets(changes, offsets, &up_context)?;
+                add.down_context = from_printable_pos_vec_offsets(changes, offsets, &down_context)?;
+                contents_.push(0);
+
+                Ok(Hunk::FileMove {
+                    add: Atom::NewVertex(add),
+                    del: Atom::EdgeMap(EdgeMap {
+                        inode: from_printable_pos(changes, pos)?,
+                        edges: from_printable_edge_map(&del, changes)?,
+                    }),
+                    path,
+                })
             }
-            let mut add_name = default_newvertex();
-            add_name.start = ChangePosition(contents_.len().into());
-            add_name.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
-            let name = unescape(&cap.name("name").unwrap().as_str());
-            let path = {
-                let parent = cap.name("parent").unwrap().as_str();
-                (if parent == "/" {
-                    String::new()
-                } else {
-                    unescape(&parent).to_string() + "/"
-                }) + &name
-            };
-            debug!("cap = {:?}", cap);
-            let meta = if let Some(perm) = cap.name("perm") {
-                if perm.as_str() == " +dx" {
-                    0o1100
-                } else if perm.as_str() == " +x" {
-                    0o100
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            let n = cap.name("n").unwrap().as_str().parse().unwrap();
-            let encoding = encoding_from_label(cap);
-            let meta = FileMetadata {
-                metadata: InodeMetadata(meta),
-                basename: &name,
-                encoding: encoding.clone(),
-            };
-            meta.write(contents_);
-            add_name.end = ChangePosition(contents_.len().into());
-
-            let mut add_inode = default_newvertex();
-            add_inode.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
-            add_inode.up_context.push(Position {
-                change: None,
-                pos: ChangePosition(contents_.len().into()),
-            });
-
-            contents_.push(0);
-            add_inode.start = ChangePosition(contents_.len().into());
-            add_inode.end = ChangePosition(contents_.len().into());
-            contents_.push(0);
-            if let Entry::Occupied(mut e) = updatables.entry(n) {
-                if let crate::InodeUpdate::Add { ref mut pos, .. } = e.get_mut() {
-                    offsets.insert(pos.0.into(), add_inode.start);
-
-                    *pos = add_inode.start
-                }
+            PrintableHunk::FileMoveE {
+                path,
+                pos,
+                add,
+                del,
+            } => {
+                let inode = from_printable_pos(changes, pos)?;
+                Ok(Hunk::FileMove {
+                    add: Atom::EdgeMap(EdgeMap {
+                        inode,
+                        edges: from_printable_edge_map(&add, changes)?,
+                    }),
+                    del: Atom::EdgeMap(EdgeMap {
+                        inode,
+                        edges: from_printable_edge_map(&del, changes)?,
+                    }),
+                    path,
+                })
             }
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::FileAdd {
+            PrintableHunk::FileAddition {
+                name,
+                parent,
+                perms,
+                encoding,
+                up_context,
+                start,
+                end,
+                contents,
+            } => {
+                let meta = FileMetadata {
+                    metadata: InodeMetadata(match perms {
+                        PrintablePerms::IsDir => 0o1100,
+                        PrintablePerms::IsExecutable => 0o100,
+                        PrintablePerms::IsFile => 0,
+                    }),
+                    basename: &name,
+                    encoding: encoding.clone(),
+                };
+
+                let mut add_name = {
+                    let mut x = default_newvertex();
+                    x.start = ChangePosition(contents_.len().into());
+                    meta.write(contents_);
+                    x.end = ChangePosition(contents_.len().into());
+                    x.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
+                    x
+                };
+
+                let add_inode = {
+                    let mut x = default_newvertex();
+                    x.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
+                    x.up_context.push(Position {
+                        change: None,
+                        pos: ChangePosition(contents_.len().into()),
+                    });
+
+                    contents_.push(0);
+                    x.start = ChangePosition(contents_.len().into());
+                    x.end = ChangePosition(contents_.len().into());
+                    contents_.push(0);
+                    x
+                };
+
+                if let Entry::Occupied(mut e) = updatables.entry(hunk_id as usize) {
+                    if let crate::InodeUpdate::Add { ref mut pos, .. } = e.get_mut() {
+                        offsets.insert(pos.0.into(), add_inode.start);
+                        *pos = add_inode.start
+                    }
+                }
+
+                // context
+                add_name.up_context =
+                    from_printable_pos_vec_offsets(changes, offsets, &up_context)?;
+                offsets.insert(start, add_name.start);
+                offsets.insert(end, add_name.end);
+                offsets.insert(end + 1, add_name.end + 1);
+
+                // contents
+                let contents_res = {
+                    let mut x = default_newvertex();
+                    // The `-1` here comes from the extra 0
+                    // padding bytes pushed onto `contents_`.
+                    // TODO: verify this is correct
+                    let inode = Position {
+                        change: None,
+                        pos: ChangePosition((contents_.len() - 1).into()),
+                    };
+                    x.up_context.push(inode);
+                    x.inode = inode;
+                    x.flag = EdgeFlags::BLOCK;
+                    x.start = ChangePosition(contents_.len().into());
+                    contents_.extend(&contents);
+                    x.end = ChangePosition(contents_.len().into());
+                    x
+                };
+                contents_.push(0);
+
+                Ok(Hunk::FileAdd {
                     add_name: Atom::NewVertex(add_name),
                     add_inode: Atom::NewVertex(add_inode),
-                    contents: None,
-                    path,
-                    encoding,
-                }),
-            ))
-        } else if let Some(cap) = EDIT.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
-
-            let mut v = default_newvertex();
-            v.inode = parse_pos(changes, &cap[4])?;
-            v.flag = EdgeFlags::BLOCK;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::Edit {
-                    change: Atom::NewVertex(v),
-                    local: Local {
-                        path: cap[2].to_string(),
-                        line: cap[3].parse().unwrap(),
+                    contents: Some(Atom::NewVertex(contents_res)),
+                    path: if parent == "" {
+                        name
+                    } else {
+                        parent + "/" + &name
                     },
-                    encoding: encoding_from_label(cap),
+                    encoding,
+                })
+            }
+            PrintableHunk::FileDel {
+                path,
+                pos,
+                encoding,
+                del_edges,
+                content_edges,
+                contents: _,
+            } => Ok(Hunk::FileDel {
+                del: Atom::EdgeMap(EdgeMap {
+                    edges: from_printable_edge_map(&del_edges, changes)?,
+                    inode: from_printable_pos(changes, pos)?,
                 }),
-            ))
-        } else if let Some(cap) = REPLACEMENT.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
-            let mut v = default_newvertex();
-            v.inode = parse_pos(changes, &cap[4])?;
-            v.flag = EdgeFlags::BLOCK;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::Replacement {
-                    change: Atom::NewVertex(v.clone()),
-                    replacement: Atom::NewVertex(v),
-                    local: Local {
-                        path: cap[2].to_string(),
-                        line: cap[3].parse().unwrap(),
-                    },
-                    encoding: encoding_from_label(cap),
+                contents: Some(Atom::EdgeMap(EdgeMap {
+                    edges: from_printable_edge_map(&content_edges, changes)?,
+                    inode: from_printable_pos(changes, pos)?,
+                })),
+                path,
+                encoding,
+            }),
+            PrintableHunk::FileUndel {
+                path,
+                pos,
+                encoding,
+                undel_edges,
+                content_edges,
+                contents: _,
+            } => Ok(Hunk::FileUndel {
+                undel: Atom::EdgeMap(EdgeMap {
+                    edges: from_printable_edge_map(&undel_edges, changes)?,
+                    inode: from_printable_pos(changes, pos)?,
                 }),
-            ))
-        } else if let Some(cap) = FILE_DELETION.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
-            let mut del = default_edgemap();
-            del.inode = parse_pos(changes, &cap[3])?;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::FileDel {
-                    del: Atom::EdgeMap(del),
-                    contents: None,
-                    path: cap[2].to_string(),
-                    encoding: encoding_from_label(cap),
-                }),
-            ))
-        } else if let Some(cap) = FILE_UNDELETION.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
-            let mut undel = default_edgemap();
-            undel.inode = parse_pos(changes, &cap[3])?;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::FileUndel {
-                    undel: Atom::EdgeMap(undel),
-                    contents: None,
-                    path: cap[2].to_string(),
-                    encoding: encoding_from_label(cap),
-                }),
-            ))
-        } else if let Some(cap) = NAME_CONFLICT.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
-            let mut name = default_edgemap();
-            debug!("cap = {:?}", cap);
-            name.inode = parse_pos(changes, &cap[6])?;
-            Ok(std::mem::replace(
-                current,
-                if &cap[2] == "Solving" {
-                    Some(Hunk::SolveNameConflict {
-                        name: Atom::EdgeMap(name),
-                        path: cap[5].to_string(),
-                    })
-                } else {
-                    Some(Hunk::UnsolveNameConflict {
-                        name: Atom::EdgeMap(name),
-                        path: cap[5].to_string(),
-                    })
-                },
-            ))
-        } else if let Some(cap) = MOVE.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
-            let mut add = default_newvertex();
-            add.start = ChangePosition(contents_.len().into());
-            add.flag = EdgeFlags::FOLDER | EdgeFlags::BLOCK;
-            let name = unescape(cap.name("new").unwrap().as_str());
-            let meta = if let Some(perm) = cap.name("perm") {
-                debug!("perm = {:?}", perm.as_str());
-                if perm.as_str() == "+dx " {
-                    0o1100
-                } else if perm.as_str() == "+x " {
-                    0o100
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            let meta = FileMetadata {
-                metadata: InodeMetadata(meta),
-                basename: &name,
-                encoding: None,
-            };
-            meta.write(contents_);
-            add.end = ChangePosition(contents_.len().into());
+                contents: Some(Atom::EdgeMap(EdgeMap {
+                    edges: from_printable_edge_map(&content_edges, changes)?,
+                    inode: from_printable_pos(changes, pos)?,
+                })),
+                path,
+                encoding,
+            }),
+            PrintableHunk::Edit {
+                path,
+                line,
+                pos,
+                encoding,
+                change,
+                contents,
+            } => {
+                let inode = from_printable_pos(changes, pos)?;
+                let change = match change {
+                    PrintableAtom::NewVertex(new_vertex) => {
+                        let mut x = default_newvertex();
+                        x.inode = inode;
+                        x.flag = EdgeFlags::BLOCK;
+                        x.up_context = from_printable_pos_vec_offsets(
+                            changes,
+                            offsets,
+                            &new_vertex.up_context,
+                        )?;
+                        x.down_context = from_printable_pos_vec_offsets(
+                            changes,
+                            offsets,
+                            &new_vertex.down_context,
+                        )?;
+                        x.start = ChangePosition(contents_.len().into());
+                        contents_.extend(&contents);
+                        x.end = ChangePosition(contents_.len().into());
+                        contents_.push(0);
+                        Atom::NewVertex(x)
+                    }
+                    PrintableAtom::Edges(edges) => Atom::EdgeMap(EdgeMap {
+                        edges: from_printable_edge_map(&edges, changes)?,
+                        inode: inode,
+                    }),
+                };
 
-            let mut del = default_edgemap();
-            del.inode = parse_pos(changes, cap.name("inode").unwrap().as_str())?;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::FileMove {
-                    del: Atom::EdgeMap(del),
-                    add: Atom::NewVertex(add),
-                    path: cap[2].to_string(),
-                }),
-            ))
-        } else if let Some(cap) = MOVE_.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
+                Ok(Hunk::Edit {
+                    change,
+                    local: Local { path, line },
+                    encoding,
+                })
             }
-            let mut add = default_edgemap();
-            let mut del = default_edgemap();
-            add.inode = parse_pos(changes, &cap[3])?;
-            del.inode = add.inode;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::FileMove {
-                    del: Atom::EdgeMap(del),
-                    add: Atom::EdgeMap(add),
-                    path: cap[2].to_string(),
-                }),
-            ))
-        } else if let Some(cap) = ORDER_CONFLICT.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
-            }
+            PrintableHunk::Replace {
+                path,
+                line,
+                pos,
+                encoding,
+                change,
+                replacement,
+                change_contents: _,
+                replacement_contents,
+            } => {
+                let inode = from_printable_pos(changes, pos)?;
 
-            Ok(std::mem::replace(
-                current,
-                Some(if &cap[2] == "Solving" {
-                    let mut v = default_newvertex();
-                    v.inode = parse_pos(changes, &cap[7])?;
-                    Hunk::SolveOrderConflict {
-                        change: Atom::NewVertex(v),
-                        local: Local {
-                            path: cap[5].to_string(),
-                            line: cap[6].parse().unwrap(),
-                        },
-                    }
-                } else {
-                    let mut v = default_edgemap();
-                    v.inode = parse_pos(changes, &cap[7])?;
-                    Hunk::UnsolveOrderConflict {
-                        change: Atom::EdgeMap(v),
-                        local: Local {
-                            path: cap[5].to_string(),
-                            line: cap[6].parse().unwrap(),
-                        },
-                    }
-                }),
-            ))
-        } else if let Some(cap) = ZOMBIE.captures(h) {
-            if has_newvertices(current) {
-                contents_.push(0)
+                let replacement = {
+                    let mut x = default_newvertex();
+                    x.inode = inode;
+                    x.flag = EdgeFlags::BLOCK;
+                    x.up_context =
+                        from_printable_pos_vec_offsets(changes, offsets, &replacement.up_context)?;
+                    x.down_context = from_printable_pos_vec_offsets(
+                        changes,
+                        offsets,
+                        &replacement.down_context,
+                    )?;
+                    x.start = ChangePosition(contents_.len().into());
+                    contents_.extend(&replacement_contents);
+                    x.end = ChangePosition(contents_.len().into());
+                    Atom::NewVertex(x)
+                };
+                contents_.push(0);
+
+                Ok(Hunk::Replacement {
+                    change: Atom::EdgeMap(EdgeMap {
+                        edges: from_printable_edge_map(&change, changes)?,
+                        inode: inode,
+                    }),
+                    replacement,
+                    local: Local { path, line },
+                    encoding,
+                })
             }
-            let mut v = default_edgemap();
-            v.inode = parse_pos(changes, &cap.name("inode").unwrap().as_str())?;
-            Ok(std::mem::replace(
-                current,
-                Some(Hunk::ResurrectZombies {
-                    change: Atom::EdgeMap(v),
-                    local: Local {
-                        path: cap.name("path").unwrap().as_str().parse().unwrap(),
-                        line: cap.name("line").unwrap().as_str().parse().unwrap(),
-                    },
-                    encoding: encoding_from_label(cap),
+            PrintableHunk::SolveNameConflict {
+                path,
+                pos,
+                names: _,
+                edges,
+            } => Ok(Hunk::SolveNameConflict {
+                name: Atom::EdgeMap(EdgeMap {
+                    inode: from_printable_pos(changes, pos)?,
+                    edges: from_printable_edge_map(&edges, changes)?,
                 }),
-            ))
-        } else {
-            match current {
-                Some(Hunk::FileAdd {
-                    ref mut contents,
-                    ref mut add_name,
-                    encoding,
-                    ..
-                }) => {
-                    if h.starts_with('+') {
-                        if contents.is_none() {
-                            let mut v = default_newvertex();
-                            // The `-1` here comes from the extra 0
-                            // padding bytes pushed onto `contents_`.
-                            let inode = Position {
-                                change: None,
-                                pos: ChangePosition((contents_.len() - 1).into()),
-                            };
-                            v.up_context.push(inode);
-                            v.inode = inode;
-                            v.flag = EdgeFlags::BLOCK;
-                            v.start = ChangePosition(contents_.len().into());
-                            *contents = Some(Atom::NewVertex(v));
-                        }
-                        if let Some(Atom::NewVertex(ref mut contents)) = contents {
-                            if h.starts_with('+') {
-                                text_changes::parse_line_add(h, contents, contents_, encoding)
-                            }
-                        }
-                    } else if h.starts_with('\\') {
-                        if let Some(Atom::NewVertex(mut c)) = contents.take() {
-                            if c.end > c.start {
-                                if contents_[c.end.us() - 1] == b'\n' {
-                                    assert_eq!(c.end.us(), contents_.len());
-                                    contents_.pop();
-                                    c.end.0 -= 1;
-                                }
-                                *contents = Some(Atom::NewVertex(c))
-                            }
-                        }
-                    } else if let Some(cap) = CONTEXT.captures(h) {
-                        if let Atom::NewVertex(ref mut name) = add_name {
-                            name.up_context = parse_pos_vec(changes, offsets, &cap[1])?;
-                            if let (Some(new_start), Some(new_end)) = (cap.get(4), cap.get(5)) {
-                                offsets.insert(new_start.as_str().parse().unwrap(), name.start);
-                                offsets.insert(new_end.as_str().parse().unwrap(), name.end);
-                                offsets.insert(
-                                    new_end.as_str().parse::<u64>().unwrap() + 1,
-                                    name.end + 1,
-                                );
-                            }
-                        }
+                path,
+            }),
+            PrintableHunk::UnsolveNameConflict {
+                path,
+                pos,
+                names: _,
+                edges,
+            } => Ok(Hunk::UnsolveNameConflict {
+                name: Atom::EdgeMap(EdgeMap {
+                    inode: from_printable_pos(changes, pos)?,
+                    edges: from_printable_edge_map(&edges, changes)?,
+                }),
+                path,
+            }),
+            PrintableHunk::SolveOrderConflict {
+                path,
+                line,
+                pos,
+                encoding: _,
+                change,
+                contents,
+            } => {
+                // TODO: this code block looks suspect. Check the correctness.
+                let mut c = default_newvertex();
+                c.inode = from_printable_pos(changes, pos)?;
+                c.up_context =
+                    from_printable_pos_vec_offsets(changes, offsets, &change.up_context)?;
+                c.down_context =
+                    from_printable_pos_vec_offsets(changes, offsets, &change.down_context)?;
+                // TODO: this maths is probably unnecessarily complicated
+                c.start = ChangePosition(contents_.len().into());
+                c.end = ChangePosition((contents_.len() as u64 + change.end - change.start).into());
+                offsets.insert(change.end, c.end);
+                c.start = ChangePosition(contents_.len().into());
+                contents_.extend(&contents);
+                c.end = ChangePosition(contents_.len().into());
+                contents_.push(0);
+
+                Ok(Hunk::SolveOrderConflict {
+                    change: Atom::NewVertex(c),
+                    local: Local { path, line },
+                })
+            }
+            PrintableHunk::UnsolveOrderConflict {
+                path,
+                line,
+                pos,
+                encoding: _,
+                change,
+                contents: _,
+            } => Ok(Hunk::UnsolveOrderConflict {
+                change: Atom::EdgeMap(EdgeMap {
+                    edges: from_printable_edge_map(&change, changes)?,
+                    inode: from_printable_pos(changes, pos)?,
+                }),
+                local: Local { path, line },
+            }),
+            PrintableHunk::ResurrectZombies {
+                path,
+                line,
+                pos,
+                encoding,
+                change,
+                contents: _,
+            } => Ok(Hunk::ResurrectZombies {
+                change: Atom::EdgeMap(EdgeMap {
+                    edges: from_printable_edge_map(&change, changes)?,
+                    inode: from_printable_pos(changes, pos)?,
+                }),
+                local: Local { path, line },
+                encoding,
+            }),
+            PrintableHunk::AddRoot { start } => {
+                contents_.push(0);
+                let root_inode = Position {
+                    change: Some(Hash::None),
+                    pos: ChangePosition(contents_.len().into()),
+                };
+                contents_.push(0);
+                let inode = contents_.len();
+                contents_.push(0);
+                if let Entry::Occupied(mut e) = updatables.entry(hunk_id as usize) {
+                    if let crate::InodeUpdate::Add { ref mut pos, .. } = e.get_mut() {
+                        offsets.insert(pos.0.into(), ChangePosition((start + 1).into()));
+                        *pos = ChangePosition((start + 1).into())
                     }
-                    Ok(None)
                 }
-                Some(Hunk::FileDel {
-                    ref mut del,
-                    ref mut contents,
-                    ..
-                }) => {
-                    if let Some(edges) = parse_edges(changes, h)? {
-                        if let Atom::EdgeMap(ref mut e) = del {
-                            if edges[0].flag.contains(EdgeFlags::FOLDER) {
-                                *e = EdgeMap {
-                                    inode: e.inode,
-                                    edges,
-                                }
-                            } else {
-                                *contents = Some(Atom::EdgeMap(EdgeMap {
-                                    inode: e.inode,
-                                    edges,
-                                }))
-                            }
-                        }
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::FileUndel {
-                    ref mut undel,
-                    ref mut contents,
-                    ..
-                }) => {
-                    if let Some(edges) = parse_edges(changes, h)? {
-                        if let Atom::EdgeMap(ref mut e) = undel {
-                            if edges[0].flag.contains(EdgeFlags::FOLDER) {
-                                *e = EdgeMap {
-                                    inode: e.inode,
-                                    edges,
-                                }
-                            } else {
-                                *contents = Some(Atom::EdgeMap(EdgeMap {
-                                    inode: e.inode,
-                                    edges,
-                                }))
-                            }
-                        }
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::FileMove {
-                    ref mut del,
-                    ref mut add,
-                    ..
-                }) => {
-                    if let Some(edges) = parse_edges(changes, h)? {
-                        if edges[0].flag.contains(EdgeFlags::DELETED) {
-                            *del = Atom::EdgeMap(EdgeMap {
-                                inode: del.inode(),
-                                edges,
-                            });
-                            return Ok(None);
-                        } else if let Atom::EdgeMap(ref mut add) = add {
-                            if add.edges.is_empty() {
-                                *add = EdgeMap {
-                                    inode: add.inode,
-                                    edges,
-                                };
-                                return Ok(None);
-                            }
-                        }
-                    } else if let Some(cap) = CONTEXT.captures(h) {
-                        if let Atom::NewVertex(ref mut c) = add {
-                            debug!("cap = {:?}", cap);
-                            c.up_context = parse_pos_vec(changes, offsets, &cap[1])?;
-                            if let Some(cap) = cap.get(7) {
-                                c.down_context = parse_pos_vec(changes, offsets, cap.as_str())?;
-                            }
-                        }
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::Edit {
-                    ref mut change,
-                    encoding,
-                    ..
-                }) => {
-                    debug!("edit {:?}", h);
-                    if h.starts_with("+ ") {
-                        if let Atom::NewVertex(ref mut change) = change {
-                            if change.start == change.end {
-                                change.start = ChangePosition(contents_.len().into());
-                            }
-                            text_changes::parse_line_add(h, change, contents_, encoding)
-                        }
-                    } else if h.starts_with('\\') {
-                        if let Atom::NewVertex(ref mut change) = change {
-                            if change.end > change.start && contents_[change.end.us() - 1] == b'\n'
-                            {
-                                assert_eq!(change.end.us(), contents_.len());
-                                contents_.pop();
-                                change.end.0 -= 1;
-                            }
-                        }
-                    } else if let Some(cap) = CONTEXT.captures(h) {
-                        if let Atom::NewVertex(ref mut c) = change {
-                            debug!("cap = {:?}", cap);
-                            c.up_context = parse_pos_vec(changes, offsets, &cap[1])?;
-                            if let Some(cap) = cap.get(7) {
-                                c.down_context = parse_pos_vec(changes, offsets, cap.as_str())?;
-                            }
-                        }
-                    } else if let Some(edges) = parse_edges(changes, h)? {
-                        *change = Atom::EdgeMap(EdgeMap {
-                            inode: change.inode(),
-                            edges,
-                        });
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::Replacement {
-                    ref mut change,
-                    ref mut replacement,
-                    encoding,
-                    ..
-                }) => {
-                    if h.starts_with("+ ") {
-                        if let Atom::NewVertex(ref mut repl) = replacement {
-                            if repl.start == repl.end {
-                                repl.start = ChangePosition(contents_.len().into());
-                            }
-                            text_changes::parse_line_add(h, repl, contents_, encoding)
-                        }
-                    } else if h.starts_with('\\') {
-                        if let Atom::NewVertex(ref mut repl) = replacement {
-                            if repl.end > repl.start && contents_[repl.end.us() - 1] == b'\n' {
-                                assert_eq!(repl.end.us(), contents_.len());
-                                contents_.pop();
-                                repl.end.0 -= 1;
-                            }
-                        }
-                    } else if let Some(cap) = CONTEXT.captures(h) {
-                        debug!("cap = {:?}", cap);
-                        if let Atom::NewVertex(ref mut repl) = replacement {
-                            repl.up_context = parse_pos_vec(changes, offsets, &cap[1])?;
-                            if let Some(cap) = cap.get(7) {
-                                repl.down_context = parse_pos_vec(changes, offsets, cap.as_str())?;
-                            }
-                        }
-                    } else if let Some(edges) = parse_edges(changes, h)? {
-                        *change = Atom::EdgeMap(EdgeMap {
-                            inode: change.inode(),
-                            edges,
-                        });
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::SolveNameConflict { ref mut name, .. })
-                | Some(Hunk::UnsolveNameConflict { ref mut name, .. }) => {
-                    if let Some(edges) = parse_edges(changes, h)? {
-                        *name = Atom::EdgeMap(EdgeMap {
-                            edges,
-                            inode: name.inode(),
-                        })
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::SolveOrderConflict { ref mut change, .. }) => {
-                    if h.starts_with("+ ") {
-                        if let Atom::NewVertex(ref mut change) = change {
-                            if change.start == change.end {
-                                change.start = ChangePosition(contents_.len().into());
-                            }
-                            // TODO encoding
-                            text_changes::parse_line_add(h, change, contents_, &None)
-                        }
-                    } else if let Some(cap) = CONTEXT.captures(h) {
-                        debug!("cap = {:?}", cap);
-                        if let Atom::NewVertex(ref mut change) = change {
-                            change.up_context = parse_pos_vec(changes, offsets, &cap[1])?;
-                            if let Some(cap) = cap.get(7) {
-                                change.down_context =
-                                    parse_pos_vec(changes, offsets, cap.as_str())?;
-                            }
-                            if let (Some(new_start), Some(new_end)) = (cap.get(4), cap.get(5)) {
-                                let new_start = new_start.as_str().parse::<u64>().unwrap();
-                                let new_end = new_end.as_str().parse::<u64>().unwrap();
-                                change.start = ChangePosition(contents_.len().into());
-                                change.end = ChangePosition(
-                                    (contents_.len() as u64 + new_end - new_start).into(),
-                                );
-                                offsets.insert(new_end, change.end);
-                            }
-                        }
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::UnsolveOrderConflict { ref mut change, .. }) => {
-                    if let Some(edges) = parse_edges(changes, h)? {
-                        if let Atom::EdgeMap(ref mut change) = change {
-                            change.edges = edges
-                        }
-                    }
-                    Ok(None)
-                }
-                Some(Hunk::ResurrectZombies { ref mut change, .. }) => {
-                    if let Some(edges) = parse_edges(changes, h)? {
-                        if let Atom::EdgeMap(ref mut change) = change {
-                            change.edges = edges
-                        }
-                    }
-                    Ok(None)
-                }
-                None => {
-                    debug!("current = {:#?}", current);
-                    debug!("h = {:?}", h);
-                    Ok(None)
-                }
+                Ok(Hunk::AddRoot {
+                    name: Atom::NewVertex(NewVertex {
+                        up_context: vec![root_inode],
+                        down_context: Vec::new(),
+                        start: ChangePosition(start.into()),
+                        end: ChangePosition(start.into()),
+                        flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
+                        inode: root_inode,
+                    }),
+                    inode: Atom::NewVertex(NewVertex {
+                        up_context: vec![Position {
+                            change: None,
+                            pos: ChangePosition(start.into()),
+                        }],
+                        down_context: Vec::new(),
+                        start: ChangePosition(inode.into()),
+                        end: ChangePosition(inode.into()),
+                        flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
+                        inode: root_inode,
+                    }),
+                })
+            }
+            PrintableHunk::DelRoot { name, inode } => {
+                let root_inode = PrintablePos(1, 0);
+                Ok(Hunk::DelRoot {
+                    name: Atom::EdgeMap(EdgeMap {
+                        edges: from_printable_edge_map(&name, changes)?,
+                        inode: from_printable_pos(changes, root_inode)?,
+                    }),
+                    inode: Atom::EdgeMap(EdgeMap {
+                        edges: from_printable_edge_map(&inode, changes)?,
+                        inode: from_printable_pos(changes, root_inode)?,
+                    }),
+                })
             }
         }
     }
-}
-
-fn encoding_from_label(cap: Captures) -> Option<Encoding> {
-    let encoding_label = cap.name("encoding").unwrap().as_str();
-    if encoding_label != BINARY_LABEL {
-        Some(Encoding::for_label(encoding_label))
-    } else {
-        None
-    }
-}
-
-lazy_static! {
-    static ref POS: regex::Regex = regex::Regex::new(r#"(\d+)\.(\d+)"#).unwrap();
-    static ref EDGE: regex::Regex =
-        regex::Regex::new(r#"\s*(?P<prev>[BFD]*):(?P<flag>[BFD]*)\s+(?P<up_c>\d+)\.(?P<up_l>\d+)\s*->\s*(?P<c>\d+)\.(?P<l0>\d+):(?P<l1>\d+)/(?P<intro>\d+)\s*"#).unwrap();
 }
 
 pub fn default_newvertex() -> NewVertex<Option<Hash>> {
@@ -1190,44 +1005,26 @@ pub fn default_newvertex() -> NewVertex<Option<Hash>> {
     }
 }
 
-pub fn default_edgemap() -> EdgeMap<Option<Hash>> {
-    EdgeMap {
-        edges: Vec::new(),
-        inode: Position {
-            change: Some(Hash::None),
-            pos: ChangePosition(L64(0)),
-        },
-    }
-}
-
-pub fn has_newvertices<L>(current: &Option<Hunk<Option<Hash>, L>>) -> bool {
-    match current {
-        Some(Hunk::FileAdd { contents: None, .. }) | None => false,
-        Some(rec) => rec.iter().any(|e| matches!(e, Atom::NewVertex(_))),
-    }
-}
-
-pub fn parse_pos_vec(
+// TODO: rename
+pub fn from_printable_pos_vec_offsets(
     changes: &HashMap<usize, Hash>,
     offsets: &HashMap<u64, ChangePosition>,
-    s: &str,
+    s: &[PrintablePos],
 ) -> Result<Vec<Position<Option<Hash>>>, TextDeError> {
     let mut v = Vec::new();
-    for pos in POS.captures_iter(s) {
-        let change: usize = (&pos[1]).parse().unwrap();
-        let pos: u64 = (&pos[2]).parse().unwrap();
-        let pos = if change == 0 {
+    for PrintablePos(change, pos) in s {
+        let pos = if *change == 0 {
             if let Some(&pos) = offsets.get(&pos) {
                 pos
             } else {
                 debug!("inconsistent change: {:?} {:?}", s, offsets);
-                return Err(TextDeError::MissingPosition(pos));
+                return Err(TextDeError::MissingPosition(*pos));
             }
         } else {
             ChangePosition(L64(pos.to_le()))
         };
         v.push(Position {
-            change: change_ref(changes, change)?,
+            change: change_ref(changes, *change)?,
             pos,
         })
     }
@@ -1247,79 +1044,14 @@ fn change_ref(changes: &HashMap<usize, Hash>, change: usize) -> Result<Option<Ha
     }
 }
 
-pub fn parse_pos(
+pub fn from_printable_pos(
     changes: &HashMap<usize, Hash>,
-    s: &str,
+    pos: PrintablePos,
 ) -> Result<Position<Option<Hash>>, TextDeError> {
-    let pos = POS.captures(s).unwrap();
-    let change: usize = (&pos[1]).parse().unwrap();
-    let pos: u64 = (&pos[2]).parse().unwrap();
     Ok(Position {
-        change: change_ref(changes, change)?,
-        pos: ChangePosition(L64(pos.to_le())),
+        change: change_ref(changes, pos.0)?,
+        pos: ChangePosition(L64(pos.1.to_le())),
     })
-}
-
-pub fn parse_edges(
-    changes: &HashMap<usize, Hash>,
-    s: &str,
-) -> Result<Option<Vec<NewEdge<Option<Hash>>>>, TextDeError> {
-    debug!("parse_edges {:?}", s);
-    let mut result = Vec::new();
-    for edge in s.split(',') {
-        debug!("parse edge {:?}", edge);
-        if let Some(cap) = EDGE.captures(edge) {
-            let previous = read_flag(cap.name("prev").unwrap().as_str());
-            let flag = read_flag(cap.name("flag").unwrap().as_str());
-            let change0: usize = cap.name("up_c").unwrap().as_str().parse().unwrap();
-            let pos0: u64 = cap.name("up_l").unwrap().as_str().parse().unwrap();
-            let change1: usize = cap.name("c").unwrap().as_str().parse().unwrap();
-            let start1: u64 = cap.name("l0").unwrap().as_str().parse().unwrap();
-            let end1: u64 = cap.name("l1").unwrap().as_str().parse().unwrap();
-            let introduced_by: usize = cap.name("intro").unwrap().as_str().parse().unwrap();
-            result.push(NewEdge {
-                previous,
-                flag,
-                from: Position {
-                    change: change_ref(changes, change0)?,
-                    pos: ChangePosition(L64(pos0.to_le())),
-                },
-                to: Vertex {
-                    change: change_ref(changes, change1)?,
-                    start: ChangePosition(L64(start1.to_le())),
-                    end: ChangePosition(L64(end1.to_le())),
-                },
-                introduced_by: change_ref(changes, introduced_by)?,
-            })
-        } else {
-            debug!("not parsed");
-            return Ok(None);
-        }
-    }
-    Ok(Some(result))
-}
-
-pub fn parse_line_add(
-    h: &str,
-    change: &mut NewVertex<Option<Hash>>,
-    contents_: &mut Vec<u8>,
-    encoding: &Option<Encoding>,
-) {
-    let h = match encoding {
-        Some(encoding) => encoding.encode(h),
-        None => std::borrow::Cow::Borrowed(h.as_bytes()),
-    };
-    debug!("parse_line_add {:?} {:?}", change.end, change.start);
-    debug!("parse_line_add {:?}", h);
-    if h.len() > 2 {
-        let h = &h[2..h.len()];
-        contents_.extend(h);
-    } else if h.len() > 1 {
-        contents_.push(b'\n');
-    }
-    debug!("contents_.len() = {:?}", contents_.len());
-    trace!("contents_ = {:?}", contents_);
-    change.end = ChangePosition(contents_.len().into());
 }
 
 pub trait WriteChangeLine: std::io::Write {
@@ -1331,7 +1063,7 @@ pub trait WriteChangeLine: std::io::Write {
         pref: &str,
         contents: &[u8],
     ) -> Result<(), std::io::Error> {
-        write!(self, "{}b{}", pref, data_encoding::BASE64.encode(contents))
+        writeln!(self, "{}b{}", pref, data_encoding::BASE64.encode(contents))
     }
 }
 
@@ -1339,127 +1071,62 @@ impl WriteChangeLine for &mut Vec<u8> {}
 impl WriteChangeLine for &mut std::io::Stderr {}
 impl WriteChangeLine for &mut std::io::Stdout {}
 
-pub fn print_contents<W: WriteChangeLine>(
-    w: &mut W,
-    pref: &str,
-    contents: &[u8],
-    encoding: &Option<Encoding>,
-) -> Result<(), std::io::Error> {
-    if let Some(encoding) = encoding {
-        let dec = encoding.decode(&contents);
-        let dec = if dec.ends_with("\n") {
-            &dec[..dec.len() - 1]
-        } else {
-            &dec
-        };
-        for a in dec.split('\n') {
-            w.write_change_line(pref, a)?
-        }
-    } else {
-        writeln!(w, "{}b{}", pref, data_encoding::BASE64.encode(contents))?
-    }
-    Ok(())
-}
-
-pub fn print_change_contents<W: WriteChangeLine, C: ChangeStore>(
-    w: &mut W,
+pub fn get_change_contents<C: ChangeStore>(
     changes: &C,
     change: &Atom<Option<Hash>>,
     change_contents: &[u8],
-    encoding: &Option<Encoding>,
-) -> Result<(), TextSerError<C::Error>> {
-    debug!("print_change_contents {:?}", change);
+) -> Result<Vec<u8>, TextSerError<C::Error>> {
+    debug!("get_change_contents {:?}", change);
     match change {
-        Atom::NewVertex(ref n) => {
-            let c = &change_contents[n.start.us()..n.end.us()];
-            print_contents(w, "+", c, encoding)?;
-            if !c.ends_with(b"\n") {
-                debug!("print_change_contents {:?}", c);
-                writeln!(w, "\n\\")?
-            }
-            Ok(())
-        }
-        Atom::EdgeMap(ref n) if n.edges.is_empty() => return Err(TextSerError::InvalidChange),
+        Atom::NewVertex(ref n) => Ok(change_contents[n.start.us()..n.end.us()].to_vec()),
+        Atom::EdgeMap(ref n) if n.edges.is_empty() => Err(TextSerError::InvalidChange),
         Atom::EdgeMap(ref n) if n.edges[0].flag.contains(EdgeFlags::DELETED) => {
+            // TODO: get rid of `tmp` and/or `buf`
             let mut buf = Vec::new();
+            let mut tmp = Vec::new();
             let mut current = None;
             for e in n.edges.iter() {
                 if Some(e.to) == current {
                     continue;
                 }
-                buf.clear();
+                tmp.clear();
                 changes
-                    .get_contents_ext(e.to, &mut buf)
+                    .get_contents_ext(e.to, &mut tmp)
                     .map_err(TextSerError::C)?;
-                print_contents(w, "-", &buf[..], &encoding)?;
-                if !buf.ends_with(b"\n") {
-                    debug!("print_change_contents {:?}", buf);
-                    writeln!(w)?;
-                }
+                buf.extend_from_slice(&tmp);
                 current = Some(e.to)
             }
-            Ok(())
+            Ok(buf)
         }
-        _ => Ok(()),
+        _ => Ok(Vec::new()),
     }
 }
 
-pub fn write_deleted_names<W: std::io::Write, C: ChangeStore>(
-    w: &mut W,
+pub fn get_deleted_names<C: ChangeStore>(
     changes: &C,
     del: &Atom<Option<Hash>>,
-) -> Result<(), TextSerError<C::Error>> {
+) -> Result<Vec<String>, TextSerError<C::Error>> {
+    let mut res = Vec::new();
     if let Atom::EdgeMap(ref e) = del {
-        let mut buf = Vec::new();
-        let mut is_first = true;
+        let mut tmp = Vec::new();
         for d in e.edges.iter() {
-            buf.clear();
+            tmp.clear();
             changes
-                .get_contents_ext(d.to, &mut buf)
+                .get_contents_ext(d.to, &mut tmp)
                 .map_err(TextSerError::C)?;
-            if !buf.is_empty() {
-                let FileMetadata { basename: name, .. } = FileMetadata::read(&buf);
-                write!(w, "{}{:?}", if is_first { "" } else { ", " }, name)?;
-                is_first = false;
+            if !tmp.is_empty() {
+                let FileMetadata { basename: name, .. } = FileMetadata::read(&tmp);
+                res.push(name.to_string());
             }
         }
     }
-    Ok(())
+    Ok(res)
 }
 
-pub fn write_flag<W: std::io::Write>(mut w: W, flag: EdgeFlags) -> Result<(), std::io::Error> {
-    if flag.contains(EdgeFlags::BLOCK) {
-        w.write_all(b"B")?;
-    }
-    if flag.contains(EdgeFlags::FOLDER) {
-        w.write_all(b"F")?;
-    }
-    if flag.contains(EdgeFlags::DELETED) {
-        w.write_all(b"D")?;
-    }
-    assert!(!flag.contains(EdgeFlags::PARENT));
-    assert!(!flag.contains(EdgeFlags::PSEUDO));
-    Ok(())
-}
-
-pub fn read_flag(s: &str) -> EdgeFlags {
-    let mut f = EdgeFlags::empty();
-    for i in s.chars() {
-        match i {
-            'B' => f |= EdgeFlags::BLOCK,
-            'F' => f |= EdgeFlags::FOLDER,
-            'D' => f |= EdgeFlags::DELETED,
-            c => panic!("read_flag: {:?}", c),
-        }
-    }
-    f
-}
-
-pub fn write_pos<W: std::io::Write>(
-    mut w: W,
+pub fn to_printable_pos(
     hashes: &HashMap<Hash, usize>,
     pos: Position<Option<Hash>>,
-) -> Result<(), std::io::Error> {
+) -> PrintablePos {
     let change = if let Some(Hash::None) = pos.change {
         1
     } else if let Some(ref c) = pos.change {
@@ -1467,79 +1134,60 @@ pub fn write_pos<W: std::io::Write>(
     } else {
         0
     };
-    write!(w, "{}.{}", change, pos.pos.0)?;
-    Ok(())
+    PrintablePos(change, pos.pos.0 .0)
 }
 
-pub fn write_atom<W: std::io::Write>(
-    w: &mut W,
+pub fn to_printable_pos_vec(
     hashes: &HashMap<Hash, usize>,
-    atom: &Atom<Option<Hash>>,
-) -> Result<(), std::io::Error> {
-    match atom {
-        Atom::NewVertex(ref n) => write_newvertex(w, hashes, n),
-        Atom::EdgeMap(ref n) => write_edgemap(w, hashes, n),
-    }
+    pos: &[Position<Option<Hash>>],
+) -> Vec<PrintablePos> {
+    pos.iter().map(|c| to_printable_pos(hashes, *c)).collect()
 }
 
-pub fn write_newvertex<W: std::io::Write>(
-    mut w: W,
-    hashes: &HashMap<Hash, usize>,
-    n: &NewVertex<Option<Hash>>,
-) -> Result<(), std::io::Error> {
-    write!(w, "  up")?;
-    for c in n.up_context.iter() {
-        write!(w, " ")?;
-        write_pos(&mut w, hashes, *c)?
-    }
-    write!(w, ", new {}:{}", n.start.0, n.end.0)?;
-    if !n.down_context.is_empty() {
-        write!(w, ", down")?;
-        for c in n.down_context.iter() {
-            write!(w, " ")?;
-            write_pos(&mut w, hashes, *c)?
+impl LocalChange<Hunk<Option<Hash>, Local>, Author> {
+    pub fn write_all_deps<F: FnMut(Hash) -> Result<(), ChangeError>>(
+        &self,
+        mut f: F,
+    ) -> Result<(), ChangeError> {
+        for c in self.changes.iter() {
+            for c in c.iter() {
+                match *c {
+                    Atom::NewVertex(ref n) => {
+                        for change in n
+                            .up_context
+                            .iter()
+                            .chain(n.down_context.iter())
+                            .map(|c| c.change)
+                            .chain(std::iter::once(n.inode.change))
+                        {
+                            if let Some(change) = change {
+                                if let Hash::None = change {
+                                    continue;
+                                }
+                                f(change)?
+                            }
+                        }
+                    }
+                    Atom::EdgeMap(ref e) => {
+                        for edge in e.edges.iter() {
+                            for change in &[
+                                edge.from.change,
+                                edge.to.change,
+                                edge.introduced_by,
+                                e.inode.change,
+                            ] {
+                                if let Some(change) = *change {
+                                    if let Hash::None = change {
+                                        continue;
+                                    }
+                                    f(change)?
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+        Ok(())
     }
-    w.write_all(b"\n")?;
-    Ok(())
-}
-
-pub fn write_edgemap<W: std::io::Write>(
-    mut w: W,
-    hashes: &HashMap<Hash, usize>,
-    n: &EdgeMap<Option<Hash>>,
-) -> Result<(), std::io::Error> {
-    let mut is_first = true;
-    for c in n.edges.iter() {
-        if !is_first {
-            write!(w, ", ")?;
-        }
-        is_first = false;
-        write_flag(&mut w, c.previous)?;
-        write!(w, ":")?;
-        write_flag(&mut w, c.flag)?;
-        write!(w, " ")?;
-        write_pos(&mut w, hashes, c.from)?;
-        write!(w, " -> ")?;
-        write_pos(&mut w, hashes, c.to.start_pos())?;
-        let h = if let Some(h) = hashes.get(c.introduced_by.as_ref().unwrap()) {
-            h
-        } else {
-            panic!("introduced_by = {:?}, not found", c.introduced_by);
-        };
-        write!(w, ":{}/{}", c.to.end.0, h)?;
-    }
-    writeln!(w)?;
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Section {
-    Header(String),
-    Deps,
-    Changes {
-        changes: Vec<Hunk<Option<Hash>, Local>>,
-        current: Option<Hunk<Option<Hash>, Local>>,
-        offsets: HashMap<u64, ChangePosition>,
-    },
 }

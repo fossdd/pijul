@@ -2,6 +2,9 @@ use serde::{de::Visitor, Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
+#[cfg(test)]
+use quickcheck::{Arbitrary, Gen};
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Encoding(pub(crate) &'static encoding_rs::Encoding);
 
@@ -35,6 +38,20 @@ impl Serialize for Encoding {
         S: serde::Serializer,
     {
         serializer.serialize_str(self.label())
+    }
+}
+
+#[cfg(test)]
+// TODO: more encodings. This is not critical, since it is not used ATM.
+// But the instance is needed.
+impl Arbitrary for Encoding {
+    fn arbitrary(g: &mut Gen) -> Self {
+        g.choose(&[
+            Encoding(encoding_rs::UTF_8),
+            Encoding(encoding_rs::SHIFT_JIS),
+        ])
+        .unwrap()
+        .clone()
     }
 }
 

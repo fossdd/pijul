@@ -55,7 +55,10 @@ impl Debug {
             libpijul::pristine::check_alive_debug(&repo.changes, &txn, &*channel.read(), 0)?;
         }
         ::sanakirja::debug::debug(&txn.txn, &[&txn.tree], "debug.tree", true);
-        eprintln!("{:#?}", txn.check_database());
+        eprintln!(
+            "{:#?}",
+            txn.check_database(&mut std::collections::BTreeMap::new())
+        );
         let channel = channel.read();
         ::sanakirja::debug::debug(&txn.txn, &[&channel.graph], "debug.sanakirja", true);
         Ok(())

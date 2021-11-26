@@ -19,6 +19,7 @@ mod performance;
 mod rm_file;
 mod rollback;
 mod text;
+mod text_changes;
 mod unrecord;
 
 fn record_all_change<
@@ -39,6 +40,7 @@ where
     state.record(
         txn.clone(),
         Algorithm::default(),
+        &crate::DEFAULT_SEPARATOR,
         channel.clone(),
         repo,
         store,
@@ -52,7 +54,7 @@ where
         .into_iter()
         .map(|rec| rec.globalize(&*txn.read()).unwrap())
         .collect();
-    let change0 = crate::change::Change::make_change(
+    let mut change0 = crate::change::Change::make_change(
         &*txn.read(),
         &channel.clone(),
         changes,
@@ -69,7 +71,7 @@ where
         Vec::new(),
     )
     .unwrap();
-    let hash = store.save_change(&change0)?;
+    let hash = store.save_change(&mut change0, |_, _| Ok::<_, anyhow::Error>(()))?;
     if log_enabled!(log::Level::Debug) {
         change0
             .write(store, Some(hash), true, &mut std::io::stderr())

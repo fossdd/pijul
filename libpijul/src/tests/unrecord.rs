@@ -587,7 +587,7 @@ fn rollback_(delete_file: bool) -> Result<(), anyhow::Error> {
     // Rollback the deletion of -b-
     let p_del = changes.get_change(&h_del)?;
     debug!("p_del = {:#?}", p_del);
-    let p_inv = p_del.inverse(
+    let mut p_inv = p_del.inverse(
         &h_del,
         crate::change::ChangeHeader {
             authors: vec![],
@@ -597,7 +597,7 @@ fn rollback_(delete_file: bool) -> Result<(), anyhow::Error> {
         },
         Vec::new(),
     );
-    let h_inv = changes.save_change(&p_inv)?;
+    let h_inv = changes.save_change(&mut p_inv, |_, _| Ok::<_, anyhow::Error>(()))?;
     apply::apply_change_arc(&changes, &txn, &channel, &h_inv)?;
     let conflicts = output::output_repository_no_pending(
         &repo, &changes, &txn, &channel, "", true, None, 1, 0,
@@ -738,7 +738,7 @@ fn double_convoluted() -> Result<(), anyhow::Error> {
     apply::apply_change_arc(&changes, &txn, &channel2, &h1)?;
     let rollback = |h| {
         let p = changes.get_change(&h).unwrap();
-        let p_inv = p.inverse(
+        let mut p_inv = p.inverse(
             &h,
             crate::change::ChangeHeader {
                 authors: vec![],
@@ -748,7 +748,9 @@ fn double_convoluted() -> Result<(), anyhow::Error> {
             },
             Vec::new(),
         );
-        let h_inv = changes.save_change(&p_inv).unwrap();
+        let h_inv = changes
+            .save_change(&mut p_inv, |_, _| Ok::<_, anyhow::Error>(()))
+            .unwrap();
         h_inv
     };
     let mut h = h2;

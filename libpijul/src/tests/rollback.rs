@@ -57,7 +57,7 @@ fn rollback_conflict_resolution_simple() {
     debug!("{}", std::str::from_utf8(&buf).unwrap());
     let resb = record_all(&mut repo, &changes, &mut txn, &mut channela, "").unwrap();
 
-    let p_inv = changes.get_change(&resb).unwrap().inverse(
+    let mut p_inv = changes.get_change(&resb).unwrap().inverse(
         &resb,
         crate::change::ChangeHeader {
             authors: vec![],
@@ -67,7 +67,9 @@ fn rollback_conflict_resolution_simple() {
         },
         Vec::new(),
     );
-    let h_inv = changes.save_change(&p_inv).unwrap();
+    let h_inv = changes
+        .save_change(&mut p_inv, |_, _| Ok::<_, anyhow::Error>(()))
+        .unwrap();
     apply::apply_change_arc(&changes, &txn, &channela, &h_inv).unwrap();
 }
 
@@ -122,7 +124,7 @@ fn rollback_conflict_resolution_swap() -> Result<(), anyhow::Error> {
     debug!("{}", std::str::from_utf8(&buf).unwrap());
     let resb = record_all(&repo, &changes, &txn, &channelb, "")?;
 
-    let p_inv = changes.get_change(&resb).unwrap().inverse(
+    let mut p_inv = changes.get_change(&resb).unwrap().inverse(
         &resb,
         crate::change::ChangeHeader {
             authors: vec![],
@@ -132,7 +134,7 @@ fn rollback_conflict_resolution_swap() -> Result<(), anyhow::Error> {
         },
         Vec::new(),
     );
-    let h_inv = changes.save_change(&p_inv)?;
+    let h_inv = changes.save_change(&mut p_inv, |_, _| Ok::<_, anyhow::Error>(()))?;
     apply::apply_change_arc(&changes, &txn, &channelb, &h_inv)?;
 
     Ok(())

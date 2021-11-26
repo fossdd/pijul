@@ -59,6 +59,7 @@ fn restore<
     let mut stack = vec![(source, dest)];
     let mut return_value = Some(Inode::ROOT);
     while let Some((source, dest)) = stack.pop() {
+        debug!("source = {:?}, dest = {:?}", source, dest);
         if let Some(parent_inode) = return_value {
             if parent_inode != Inode::ROOT {
                 return_value = restore_inode(txn, changes, source, dest, parent_inode, salt)?;
@@ -89,8 +90,12 @@ fn restore<
             return_value = restore_inode(txn, changes, source, dest, inode, salt)?;
         } else {
             let grandparent = find_youngest_parent(txn, channel, source_parent.inode_vertex())?;
-            stack.push((source, dest));
-            stack.push((grandparent, source_parent));
+            if grandparent.is_root() || grandparent.start == grandparent.end {
+                return_value = restore_inode(txn, changes, source, dest, Inode::ROOT, salt)?;
+            } else {
+                stack.push((source, dest));
+                stack.push((grandparent, source_parent));
+            }
         }
     }
     Ok(())

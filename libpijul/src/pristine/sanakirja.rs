@@ -12,9 +12,9 @@ pub struct Pristine {
 }
 
 pub(crate) type P<K, V> = btree::page::Page<K, V>;
-type Db<K, V> = btree::Db<K, V>;
+pub type Db<K, V> = btree::Db<K, V>;
 pub(crate) type UP<K, V> = btree::page_unsized::Page<K, V>;
-type UDb<K, V> = btree::Db_<K, V, UP<K, V>>;
+pub type UDb<K, V> = btree::Db_<K, V, UP<K, V>>;
 
 #[derive(Debug, Error)]
 pub enum SanakirjaError {
@@ -258,11 +258,11 @@ pub struct GenericTxn<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::s
     pub internal: UDb<SerializedHash, ChangeId>,
     #[doc(hidden)]
     pub external: UDb<ChangeId, SerializedHash>,
-    inodes: Db<Inode, Position<ChangeId>>,
-    revinodes: Db<Position<ChangeId>, Inode>,
+    pub inodes: Db<Inode, Position<ChangeId>>,
+    pub revinodes: Db<Position<ChangeId>, Inode>,
 
     pub tree: UDb<PathId, Inode>,
-    revtree: UDb<Inode, PathId>,
+    pub revtree: UDb<Inode, PathId>,
 
     revdep: Db<ChangeId, ChangeId>,
     dep: Db<ChangeId, ChangeId>,
@@ -291,32 +291,32 @@ unsafe impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::
 }
 
 impl Txn {
-    pub fn check_database(&self) {
-        let mut refs = std::collections::BTreeMap::new();
+    pub fn check_database(&self, refs: &mut std::collections::BTreeMap<u64, usize>) {
+        use ::sanakirja::debug::Check;
         debug!("check: internal 0x{:x}", self.internal.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.internal, &mut refs).unwrap();
+        self.internal.add_refs(&self.txn, refs).unwrap();
         debug!("check: external 0x{:x}", self.external.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.external, &mut refs).unwrap();
+        self.external.add_refs(&self.txn, refs).unwrap();
         debug!("check: inodes 0x{:x}", self.inodes.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.inodes, &mut refs).unwrap();
+        self.inodes.add_refs(&self.txn, refs).unwrap();
         debug!("check: revinodes 0x{:x}", self.revinodes.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.revinodes, &mut refs).unwrap();
+        self.revinodes.add_refs(&self.txn, refs).unwrap();
         debug!("check: tree 0x{:x}", self.tree.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.tree, &mut refs).unwrap();
+        self.tree.add_refs(&self.txn, refs).unwrap();
         debug!("check: revtree 0x{:x}", self.revtree.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.revtree, &mut refs).unwrap();
+        self.revtree.add_refs(&self.txn, refs).unwrap();
         debug!("check: revdep 0x{:x}", self.revdep.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.revdep, &mut refs).unwrap();
+        self.revdep.add_refs(&self.txn, refs).unwrap();
         debug!("check: dep 0x{:x}", self.dep.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.dep, &mut refs).unwrap();
+        self.dep.add_refs(&self.txn, refs).unwrap();
         debug!("check: touched_files 0x{:x}", self.touched_files.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.touched_files, &mut refs).unwrap();
+        self.touched_files.add_refs(&self.txn, refs).unwrap();
         debug!("check: rev_touched_files 0x{:x}", self.rev_touched_files.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.rev_touched_files, &mut refs).unwrap();
+        self.rev_touched_files.add_refs(&self.txn, refs).unwrap();
         debug!("check: partials 0x{:x}", self.partials.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.partials, &mut refs).unwrap();
+        self.partials.add_refs(&self.txn, refs).unwrap();
         debug!("check: channels 0x{:x}", self.channels.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.channels, &mut refs).unwrap();
+        self.channels.add_refs(&self.txn, refs).unwrap();
         for x in btree::iter(&self.txn, &self.channels, None).unwrap() {
             let (name, tup) = x.unwrap();
             debug!("check: channel name: {:?}", name.as_str());
@@ -327,18 +327,18 @@ impl Txn {
             let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.states.into());
             let tags: UDb<L64, SerializedHash> = UDb::from_page(tup.tags.into());
             debug!("check: graph 0x{:x}", graph.db);
-            ::sanakirja::debug::add_refs(&self.txn, &graph, &mut refs).unwrap();
+            graph.add_refs(&self.txn, refs).unwrap();
             debug!("check: changes 0x{:x}", changes.db);
-            ::sanakirja::debug::add_refs(&self.txn, &changes, &mut refs).unwrap();
+            changes.add_refs(&self.txn, refs).unwrap();
             debug!("check: revchanges 0x{:x}", revchanges.db);
-            ::sanakirja::debug::add_refs(&self.txn, &revchanges, &mut refs).unwrap();
+            revchanges.add_refs(&self.txn, refs).unwrap();
             debug!("check: states 0x{:x}", states.db);
-            ::sanakirja::debug::add_refs(&self.txn, &states, &mut refs).unwrap();
+            states.add_refs(&self.txn, refs).unwrap();
             debug!("check: tags 0x{:x}", tags.db);
-            ::sanakirja::debug::add_refs(&self.txn, &tags, &mut refs).unwrap();
+            tags.add_refs(&self.txn, refs).unwrap();
         }
         debug!("check: remotes 0x{:x}", self.remotes.db);
-        ::sanakirja::debug::add_refs(&self.txn, &self.remotes, &mut refs).unwrap();
+        self.remotes.add_refs(&self.txn, refs).unwrap();
         for x in btree::iter(&self.txn, &self.remotes, None).unwrap() {
             let (name, tup) = x.unwrap();
             debug!("check: remote name: {:?}", name);
@@ -348,13 +348,13 @@ impl Txn {
             let rev: UDb<SerializedHash, L64> = UDb::from_page(tup.rev.into());
             let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.states.into());
             debug!("check: remote 0x{:x}", remote.db);
-            ::sanakirja::debug::add_refs(&self.txn, &remote, &mut refs).unwrap();
+            remote.add_refs(&self.txn, refs).unwrap();
             debug!("check: rev 0x{:x}", rev.db);
-            ::sanakirja::debug::add_refs(&self.txn, &rev, &mut refs).unwrap();
+            rev.add_refs(&self.txn, refs).unwrap();
             debug!("check: states 0x{:x}", states.db);
-            ::sanakirja::debug::add_refs(&self.txn, &states, &mut refs).unwrap();
+            states.add_refs(&self.txn, refs).unwrap();
         }
-        ::sanakirja::debug::add_free_refs(&self.txn, &mut refs).unwrap();
+        ::sanakirja::debug::add_free_refs(&self.txn, refs).unwrap();
         ::sanakirja::debug::check_free(&self.txn, &refs);
     }
 }
@@ -2070,6 +2070,22 @@ impl MutTxnT for MutTxn<()> {
             }
         }
         // No need to set `Root::Version`, it is set at init.
+        debug!(
+            "{:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
+            self.tree.db,
+            self.revtree.db,
+            self.inodes.db,
+            self.revinodes.db,
+            self.internal.db,
+            self.external.db,
+            self.revdep.db,
+            self.channels.db,
+            self.remotes.db,
+            self.touched_files.db,
+            self.dep.db,
+            self.rev_touched_files.db,
+            self.partials.db,
+        );
         self.txn.set_root(Root::Tree as usize, self.tree.db);
         self.txn.set_root(Root::RevTree as usize, self.revtree.db);
         self.txn.set_root(Root::Inodes as usize, self.inodes.db);
@@ -2134,6 +2150,14 @@ impl<T> MutTxn<T> {
         // referenced" in Sanakirja).
         debug!("Commit_channel, dbs_channels = {:?}", self.channels);
         btree::del(&mut self.txn, &mut self.channels, &channel.name, None)?;
+        debug!(
+            "channels: {:x} {:x} {:x} {:x} {:x}",
+            channel.graph.db,
+            channel.changes.db,
+            channel.revchanges.db,
+            channel.states.db,
+            channel.tags.db,
+        );
         let sc = SerializedChannel {
             graph: channel.graph.db.into(),
             changes: channel.changes.db.into(),
@@ -2179,14 +2203,21 @@ impl<T> MutTxn<T> {
 }
 
 direct_repr!(L64);
+impl ::sanakirja::debug::Check for L64 {}
 
 direct_repr!(ChangeId);
+impl ::sanakirja::debug::Check for ChangeId {}
 
 direct_repr!(Vertex<ChangeId>);
+impl ::sanakirja::debug::Check for Vertex<ChangeId> {}
+
 direct_repr!(Position<ChangeId>);
+impl ::sanakirja::debug::Check for Position<ChangeId> {}
 
 direct_repr!(SerializedEdge);
+impl ::sanakirja::debug::Check for SerializedEdge {}
 
+impl ::sanakirja::debug::Check for PathId {}
 impl Storable for PathId {
     fn compare<T>(&self, _: &T, x: &Self) -> std::cmp::Ordering {
         self.cmp(x)
@@ -2236,9 +2267,27 @@ fn pathid_repr() {
 }
 
 direct_repr!(Inode);
+impl ::sanakirja::debug::Check for Inode {}
 direct_repr!(SerializedMerkle);
+impl ::sanakirja::debug::Check for SerializedMerkle {}
 direct_repr!(SerializedHash);
+impl ::sanakirja::debug::Check for SerializedHash {}
 
+impl<A: ::sanakirja::debug::Check, B: ::sanakirja::debug::Check> ::sanakirja::debug::Check
+    for Pair<A, B>
+{
+    fn add_refs<T: LoadPage>(
+        &self,
+        txn: &T,
+        pages: &mut std::collections::BTreeMap<u64, usize>,
+    ) -> Result<(), T::Error>
+    where
+        T::Error: std::fmt::Debug,
+    {
+        self.a.add_refs(txn, pages)?;
+        self.b.add_refs(txn, pages)
+    }
+}
 impl<A: Storable, B: Storable> Storable for Pair<A, B> {
     type PageReferences = core::iter::Chain<A::PageReferences, B::PageReferences>;
     fn page_references(&self) -> Self::PageReferences {
@@ -2276,6 +2325,7 @@ impl<A: Ord + UnsizedStorable, B: Ord + UnsizedStorable> UnsizedStorable for Pai
     }
 }
 
+impl ::sanakirja::debug::Check for SerializedRemote {}
 impl Storable for SerializedRemote {
     type PageReferences = std::iter::Empty<u64>;
     fn page_references(&self) -> Self::PageReferences {
@@ -2337,4 +2387,7 @@ impl std::ops::Deref for OwnedSerializedRemote {
 }
 
 direct_repr!(SerializedChannel);
+impl ::sanakirja::debug::Check for SerializedChannel {}
+
 direct_repr!(RemoteId);
+impl ::sanakirja::debug::Check for RemoteId {}

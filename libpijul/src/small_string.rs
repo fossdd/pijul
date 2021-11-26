@@ -340,6 +340,8 @@ impl sanakirja::Storable for SmallStr {
     }
 }
 
+impl ::sanakirja::debug::Check for SmallStr {}
+
 unsafe fn smallstr_from_raw_ptr<'a>(p: *const u8) -> &'a SmallStr {
     let len = *p as usize;
     std::mem::transmute(std::slice::from_raw_parts(p, 1 + len as usize))

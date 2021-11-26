@@ -9,7 +9,13 @@ use chrono::{DateTime, Utc};
 use std::io::Write;
 
 #[cfg(feature = "text-changes")]
+mod parse;
+#[cfg(feature = "text-changes")]
+mod printable;
+#[cfg(feature = "text-changes")]
 mod text_changes;
+pub use parse::*; // for testing
+pub use printable::*; // for testing
 pub use text_changes::{TextDeError, TextSerError, WriteChangeLine};
 
 mod change_file;
@@ -558,6 +564,14 @@ impl EdgeMap<Option<Hash>> {
 impl<L: Clone> Hunk<Option<Hash>, L> {
     pub fn inverse(&self, hash: &Hash) -> Self {
         match self {
+            Hunk::AddRoot { name, inode } => Hunk::DelRoot {
+                name: name.inverse(hash),
+                inode: inode.inverse(hash),
+            },
+            Hunk::DelRoot { name, inode } => Hunk::AddRoot {
+                name: name.inverse(hash),
+                inode: inode.inverse(hash),
+            },
             Hunk::FileMove { del, add, path } => Hunk::FileMove {
                 del: add.inverse(hash),
                 add: del.inverse(hash),
@@ -747,6 +761,14 @@ pub enum BaseHunk<Atom, Local> {
         local: Local,
         encoding: Option<Encoding>,
     },
+    AddRoot {
+        name: Atom,
+        inode: Atom,
+    },
+    DelRoot {
+        name: Atom,
+        inode: Atom,
+    },
 }
 
 #[doc(hidden)]
@@ -832,6 +854,10 @@ impl<Context, Local> Iterator for HunkIter<Hunk<Context, Local>, Atom<Context>> 
                 Hunk::SolveOrderConflict { change, .. } => Some(change),
                 Hunk::UnsolveOrderConflict { change, .. } => Some(change),
                 Hunk::ResurrectZombies { change, .. } => Some(change),
+                Hunk::AddRoot { inode, name } | Hunk::DelRoot { inode, name } => {
+                    self.extra = Some(inode);
+                    Some(name)
+                }
             }
         } else {
             None
@@ -894,6 +920,17 @@ impl<'a, Context, Local> Iterator for HunkIter<&'a Hunk<Context, Local>, &'a Ato
                 Hunk::SolveOrderConflict { ref change, .. } => Some(change),
                 Hunk::UnsolveOrderConflict { ref change, .. } => Some(change),
                 Hunk::ResurrectZombies { ref change, .. } => Some(change),
+                Hunk::AddRoot {
+                    ref inode,
+                    ref name,
+                }
+                | Hunk::DelRoot {
+                    ref inode,
+                    ref name,
+                } => {
+                    self.extra = Some(inode);
+                    Some(name)
+                }
             }
         } else {
             None
@@ -975,6 +1012,17 @@ impl<'a, Context, Local> Iterator for RevHunkIter<&'a Hunk<Context, Local>, &'a 
                 Hunk::SolveOrderConflict { ref change, .. } => Some(change),
                 Hunk::UnsolveOrderConflict { ref change, .. } => Some(change),
                 Hunk::ResurrectZombies { ref change, .. } => Some(change),
+                Hunk::AddRoot {
+                    ref name,
+                    ref inode,
+                }
+                | Hunk::DelRoot {
+                    ref name,
+                    ref inode,
+                } => {
+                    self.extra = Some(inode);
+                    Some(name)
+                }
             }
         } else {
             None
@@ -1093,6 +1141,7 @@ impl<H> Hunk<H, Local> {
             | Hunk::SolveOrderConflict { ref local, .. }
             | Hunk::UnsolveOrderConflict { ref local, .. }
             | Hunk::ResurrectZombies { ref local, .. } => &local.path,
+            Hunk::AddRoot { .. } | Hunk::DelRoot { .. } => "/",
         }
     }
 
@@ -1204,6 +1253,14 @@ impl<A, Local> BaseHunk<A, Local> {
                 change: f(change)?,
                 local: l(local),
                 encoding,
+            },
+            BaseHunk::AddRoot { name, inode } => BaseHunk::AddRoot {
+                name: f(name)?,
+                inode: f(inode)?,
+            },
+            BaseHunk::DelRoot { name, inode } => BaseHunk::DelRoot {
+                name: f(name)?,
+                inode: f(inode)?,
             },
         })
     }

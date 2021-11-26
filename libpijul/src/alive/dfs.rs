@@ -86,6 +86,7 @@ fn test4165() {
                 index: 0,
                 lowlink: 0,
                 scc: 0,
+                extra: Vec::new(),
             };
             13
         ],

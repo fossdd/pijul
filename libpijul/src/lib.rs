@@ -10,6 +10,9 @@ extern crate pijul_macros;
 extern crate thiserror;
 #[macro_use]
 extern crate lazy_static;
+#[cfg(test)]
+#[macro_use]
+extern crate quickcheck;
 
 pub mod alive;
 mod apply;

@@ -263,7 +263,7 @@ fn missing_context_newedges() -> Result<(), anyhow::Error> {
     // Bob reverts his change.
     debug!("Bob reverts");
     let bob_change = changes.get_change(&bob_h)?;
-    let inv = bob_change.inverse(
+    let mut inv = bob_change.inverse(
         &bob_h,
         crate::change::ChangeHeader {
             authors: vec![],
@@ -273,7 +273,7 @@ fn missing_context_newedges() -> Result<(), anyhow::Error> {
         },
         Vec::new(),
     );
-    let inv_h = changes.save_change(&inv)?;
+    let inv_h = changes.save_change(&mut inv, |_, _| Ok::<_, anyhow::Error>(()))?;
     // Alice applies Bob's inverse change.
     info!("Applying inverse change");
     apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &inv_h)?;

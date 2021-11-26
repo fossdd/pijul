@@ -223,7 +223,7 @@ impl PublicKey {
                 let key = ed25519_dalek::PublicKey::from_bytes(&key)?;
                 let mut signature = [0; 64];
                 bs58::decode(self.signature.as_bytes()).into(&mut signature)?;
-                let signature = ed25519_dalek::Signature::new(signature);
+                let signature = ed25519_dalek::Signature::from_bytes(&signature)?;
 
                 let msg =
                     bincode::serialize(&(Algorithm::Ed25519, self.expires.clone(), &key)).unwrap();
@@ -270,7 +270,7 @@ impl PKey {
                 }
                 let mut sig = [0; 64];
                 bs58::decode(signature.as_bytes()).into(&mut sig)?;
-                let sig = ed25519_dalek::Signature::new(sig);
+                let sig = ed25519_dalek::Signature::from_bytes(&sig)?;
                 key.verify_strict(&h, &sig)?;
                 Ok(())
             }

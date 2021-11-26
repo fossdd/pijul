@@ -2916,6 +2916,24 @@ impl EncodingDetector {
         self.non_ascii_seen != 0
     }
 
+    /// Get a valid encoding. This is checked by round-tripping the encoding on `buffer`.
+    /// TODO: This is a hack. Make it better. Make it faster.
+    pub fn get_valid(
+        &self,
+        tld: Option<&[u8]>,
+        allow_utf8: bool,
+        buffer: &[u8],
+    ) -> Option<&'static Encoding> {
+        if let (encoding, true) = self.guess_assess(tld, allow_utf8) {
+            if let (s, e, false) = encoding.decode(buffer) {
+                if encoding.encode(&s).0 == buffer {
+                    return Some(e);
+                }
+            }
+        }
+        None
+    }
+
     /// Same as `guess()`, but also returns a Boolean indicating
     /// whether the guessed encoding had a higher score than at least
     /// one other candidate. If this method returns `false`, the

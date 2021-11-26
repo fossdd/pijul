@@ -6,6 +6,8 @@ pub struct InodeMetadata(pub u16);
 const DIR_BIT: u16 = 0x200;
 
 impl InodeMetadata {
+    pub const DIR: Self = InodeMetadata(DIR_BIT);
+
     /// Create a new file metadata with the given Unix permissions,
     /// and "is directory" bit.
     pub fn new(perm: usize, is_dir: bool) -> Self {

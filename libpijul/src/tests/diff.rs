@@ -75,10 +75,12 @@ fn bin_diff_test() -> Result<(), anyhow::Error> {
             &*channel.read(),
             crate::record::Algorithm::Myers,
             String::new(),
+            Inode::ROOT,
             vertex.to_option(),
             &mut ret,
             contents.as_bytes(),
             &None,
+            &crate::DEFAULT_SEPARATOR,
         )?;
         debug!("{:#?}", rec.lock().actions);
         record_all(&repo, &changes, &txn, &channel, "").unwrap();

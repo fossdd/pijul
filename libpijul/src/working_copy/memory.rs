@@ -298,7 +298,7 @@ impl WorkingCopy for Memory {
     }
 
     type Writer = Writer;
-    fn write_file(&self, file: &str) -> Result<Self::Writer, Self::Error> {
+    fn write_file(&self, file: &str, _: crate::Inode) -> Result<Self::Writer, Self::Error> {
         let mut m = self.0.lock();
         if let Some(f) = m.get_file_mut(file) {
             if let Inode::File {

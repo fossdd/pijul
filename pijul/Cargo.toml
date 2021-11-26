@@ -1,7 +1,7 @@
 [package]
 name = "pijul"
 description = "A distributed version control system."
-version = "1.0.0-alpha.54"
+version = "1.0.0-alpha.55"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 edition = "2018"
 repository = "https://nest.pijul.com/pijul/pijul"
@@ -52,7 +52,7 @@ openssl = [ "thrussh/openssl", "thrussh-keys/openssl" ]
 human-panic = "1.0"
 clap = "3.0.0-beta.5"
 anyhow = "1.0"
-libpijul = { path = "../libpijul", version = "1.0.0-alpha.46", features = [ "tarball" ] }
+libpijul = { path = "../libpijul", version = "1.0.0-alpha.50", features = [ "tarball" ] }
 chrono = { version = "0.4" }
 ignore = "0.4"
 env_logger = "0.8"
@@ -67,7 +67,7 @@ thrussh-keys = "0.21"
 thrussh-config = "0.5"
 reqwest = { version = "0.11", features = [ "stream", "json" ] }
 byteorder = "1.3"
-sanakirja = { version="1.2", features = [ "crc32" ] }
+sanakirja = { version="1.2.13", features = [ "crc32" ] }
 futures = "0.3"
 dirs-next = "2.0"
 lazy_static = "1.4"

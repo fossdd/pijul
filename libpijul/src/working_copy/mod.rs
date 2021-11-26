@@ -1,6 +1,6 @@
 use crate::chardetng::EncodingDetector;
 
-use crate::pristine::InodeMetadata;
+use crate::pristine::{Inode, InodeMetadata};
 use crate::text_encoding::Encoding;
 
 #[cfg(feature = "ondisk-repos")]
@@ -28,9 +28,8 @@ pub trait WorkingCopyRead {
         self.read_file(&file, buffer)?;
         let mut detector = EncodingDetector::new();
         detector.feed(&buffer[init..], true);
-        let (encoding, score) = detector.guess_assess(None, true);
-        if score {
-            Ok(Some(Encoding(encoding)))
+        if let Some(e) = detector.get_valid(None, true, &buffer[init..]) {
+            Ok(Some(Encoding(e)))
         } else {
             Ok(None)
         }
@@ -44,5 +43,5 @@ pub trait WorkingCopy: WorkingCopyRead {
     fn set_permissions(&self, name: &str, permissions: u16) -> Result<(), Self::Error>;
 
     type Writer: std::io::Write;
-    fn write_file(&self, file: &str) -> Result<Self::Writer, Self::Error>;
+    fn write_file(&self, file: &str, inode: Inode) -> Result<Self::Writer, Self::Error>;
 }

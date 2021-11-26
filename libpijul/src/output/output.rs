@@ -86,7 +86,7 @@ fn output_loop<
     changes: &P,
     txn: ArcTxn<T>,
     channel: ChannelRef<T>,
-    work: Arc<crossbeam_deque::Injector<(OutputItem, String, Option<String>)>>,
+    work: Arc<crossbeam_deque::Injector<(OutputItem, Inode, String, Option<String>)>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     t: usize,
 ) -> Result<Vec<Conflict>, OutputError<P::Error, T::GraphError, R::Error>> {
@@ -96,7 +96,7 @@ fn output_loop<
     let mut conflicts = Vec::new();
     loop {
         match work.steal() {
-            Steal::Success((item, path, tmp)) => {
+            Steal::Success((item, inode, path, tmp)) => {
                 info!("Outputting {:?} (tmp {:?}), on thread {}", path, tmp, t);
                 let path = tmp.as_deref().unwrap_or(&path);
                 output_item::<_, _, R>(
@@ -106,6 +106,7 @@ fn output_loop<
                     &item,
                     &mut conflicts,
                     &repo,
+                    inode,
                     path,
                 )?;
                 debug!("setting permissions for {:?}", path);
@@ -165,25 +166,23 @@ where
         }))
     }
 
-    let mut conflicts = Vec::new();
+    let mut state = OutputState {
+        done_vertices: HashMap::default(),
+        actual_moves: Vec::new(),
+        conflicts: Vec::new(),
+        output_name_conflicts,
+        work: work.clone(),
+        done_inodes: HashSet::new(),
+        salt,
+        if_modified_after,
+        next_prefix_basename: prefix.next(),
+        is_following_prefix: true,
+        pending_change_id,
+    };
+
     let mut files = HashMap::default();
     let mut next_files = HashMap::default();
-    let mut next_prefix_basename = prefix.next();
-    let mut is_first_none = true;
-    if next_prefix_basename.is_none() {
-        let dead = {
-            let txn_ = txn.read();
-            let channel = channel.read();
-            let graph = txn_.graph(&*channel);
-            collect_dead_files(&*txn_, graph, pending_change_id, Inode::ROOT)?
-        };
-        debug!("dead (line {}) = {:?}", line!(), dead);
-        if !dead.is_empty() {
-            let mut txn = txn.write();
-            kill_dead_files::<T, R, P>(&mut *txn, &channel, &repo, &dead)?;
-        }
-        is_first_none = false;
-    }
+    state.kill_dead_files::<_, _, P>(repo, &txn, &channel)?;
     {
         let txn = txn.read();
         let channel = channel.read();
@@ -195,174 +194,256 @@ where
             Inode::ROOT,
             "",
             None,
-            next_prefix_basename,
+            state.next_prefix_basename,
             &mut files,
         )?;
     }
     debug!("done collecting: {:?}", files);
-    let mut done_inodes = HashSet::default();
-    let mut done_vertices: HashMap<_, (Vertex<ChangeId>, String)> = HashMap::default();
     // Actual moves is used to avoid a situation where have two files
     // a and b, first rename a -> b, and then b -> c.
-    let mut actual_moves = Vec::new();
     while !files.is_empty() {
         debug!("files {:?}", files.len());
         next_files.clear();
-        next_prefix_basename = prefix.next();
-
+        state.next_prefix_basename = prefix.next();
         for (a, mut b) in files.drain() {
-            debug!("files: {:?} {:?}", a, b);
-            {
-                let txn = txn.read();
-                let channel = channel.read();
-                b.sort_unstable_by(|u, v| {
-                    txn.get_changeset(txn.changes(&channel), &u.0.change)
-                        .unwrap()
-                        .cmp(
-                            &txn.get_changeset(txn.changes(&channel), &v.0.change)
-                                .unwrap(),
-                        )
-                });
-            }
-            let mut is_first_name = true;
-            for (name_key, mut output_item) in b {
-                let name_entry = match done_vertices.entry(output_item.pos) {
-                    Entry::Occupied(e) => {
-                        debug!(
-                            "pos already visited: {:?} {:?} {:?} {:?}",
-                            a,
-                            output_item.pos,
-                            e.get(),
-                            name_key
-                        );
-                        if e.get().0 != name_key {
-                            conflicts.push(Conflict::MultipleNames {
-                                pos: output_item.pos,
-                                path: e.get().1.clone(),
-                            });
-                        }
-                        continue;
-                    }
-                    Entry::Vacant(e) => {
-                        debug!("first visit {:?} {:?}", a, output_item.pos);
-                        e
-                    }
-                };
-
-                let output_item_inode = {
-                    let txn = txn.read();
-                    if let Some(inode) = txn.get_revinodes(&output_item.pos, None)? {
-                        Some((*inode, *txn.get_inodes(inode, None)?.unwrap()))
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some((inode, _)) = output_item_inode {
-                    if !done_inodes.insert(inode) {
-                        debug!("inode already visited: {:?} {:?}", a, inode);
-                        continue;
-                    }
-                }
-                let name = if !is_first_name {
-                    if output_name_conflicts {
-                        let name = make_conflicting_name(&a, name_key);
-                        conflicts.push(Conflict::Name { path: name.clone() });
-                        name
-                    } else {
-                        debug!("not outputting {:?} {:?}", a, name_key);
-                        conflicts.push(Conflict::Name {
-                            path: a.to_string(),
-                        });
-                        break;
-                    }
-                } else {
-                    is_first_name = false;
-                    a.clone()
-                };
-                let file_name = path::file_name(&name).unwrap();
-                path::push(&mut output_item.path, file_name);
-
-                name_entry.insert((name_key, output_item.path.clone()));
-
-                if let Some(ref mut tmp) = output_item.tmp {
-                    path::push(tmp, file_name);
-                }
-                let path = std::mem::replace(&mut output_item.path, String::new());
-                let mut tmp = output_item.tmp.take();
-                let inode = move_or_create::<T, R, P>(
-                    txn.clone(),
-                    &repo,
-                    &output_item,
-                    output_item_inode,
-                    &path,
-                    &mut tmp,
-                    &file_name,
-                    &mut actual_moves,
-                    salt,
-                )?;
-                debug!("inode = {:?}", inode);
-                if next_prefix_basename.is_none() && is_first_none {
-                    let dead = {
-                        let txn_ = txn.read();
-                        let channel = channel.read();
-                        collect_dead_files(&*txn_, txn_.graph(&*channel), pending_change_id, inode)?
-                    };
-                    debug!("dead (line {}) = {:?}", line!(), dead);
-                    if !dead.is_empty() {
-                        let mut txn = txn.write();
-                        kill_dead_files::<T, R, P>(&mut *txn, &channel, &repo, &dead)?;
-                    }
-                    is_first_none = false;
-                }
-                if output_item.meta.is_dir() {
-                    let tmp_ = tmp.as_deref().unwrap_or(&path);
-                    repo.create_dir_all(tmp_)
-                        .map_err(OutputError::WorkingCopy)?;
-                    {
-                        let txn = txn.read();
-                        let channel = channel.read();
-                        collect_children(
-                            &*txn,
-                            &*changes,
-                            txn.graph(&*channel),
-                            output_item.pos,
-                            inode,
-                            &path,
-                            tmp.as_deref(),
-                            next_prefix_basename,
-                            &mut next_files,
-                        )?;
-                    }
-                    debug!("setting permissions for {:?}", path);
-                    repo.set_permissions(tmp_, output_item.meta.permissions())
-                        .map_err(OutputError::WorkingCopy)?;
-                } else {
-                    if needs_output(repo, if_modified_after, &path) {
-                        work.push((output_item.clone(), path.clone(), tmp.clone()));
-                    } else {
-                        debug!("Not outputting {:?}", path)
-                    }
-                }
-                if output_item.is_zombie {
-                    conflicts.push(Conflict::ZombieFile {
-                        path: name.to_string(),
-                    })
-                }
-            }
+            sort_conflicting_names(&txn, &channel, &mut b);
+            state.output_name(repo, changes, &txn, &channel, &mut next_files, a, b)?;
         }
         std::mem::swap(&mut files, &mut next_files);
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let o = output_loop(repo, changes, txn, channel, work, stop, 0);
     for t in threads {
-        conflicts.extend(t.join().unwrap()?.into_iter());
+        state.conflicts.extend(t.join().unwrap()?.into_iter());
     }
-    conflicts.extend(o?.into_iter());
-    for (a, b) in actual_moves.iter() {
+    state.conflicts.extend(o?.into_iter());
+    for (a, b) in state.actual_moves.iter() {
         repo.rename(a, b).map_err(OutputError::WorkingCopy)?
     }
-    Ok(conflicts)
+    Ok(state.conflicts)
+}
+
+fn sort_conflicting_names<T: ChannelTxnT + Send + Sync + 'static>(
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
+    b: &mut [(Vertex<ChangeId>, OutputItem)],
+) {
+    debug!("files: {:?}", b);
+    let txn = txn.read();
+    let channel = channel.read();
+    b.sort_unstable_by(|u, v| {
+        txn.get_changeset(txn.changes(&channel), &u.0.change)
+            .unwrap()
+            .cmp(
+                &txn.get_changeset(txn.changes(&channel), &v.0.change)
+                    .unwrap(),
+            )
+    });
+}
+
+struct OutputState<'a> {
+    actual_moves: Vec<(String, String)>,
+    output_name_conflicts: bool,
+    done_vertices: HashMap<Position<ChangeId>, (Vertex<ChangeId>, String)>,
+    conflicts: Vec<Conflict>,
+    work: Arc<crossbeam_deque::Injector<(OutputItem, Inode, String, Option<String>)>>,
+    done_inodes: HashSet<Inode>,
+    salt: u64,
+    if_modified_after: Option<std::time::SystemTime>,
+    next_prefix_basename: Option<&'a str>,
+    is_following_prefix: bool,
+    pending_change_id: ChangeId,
+}
+
+impl<'a> OutputState<'a> {
+    fn kill_dead_files<
+        T: TreeMutTxnT
+            + ChannelMutTxnT
+            + GraphMutTxnT<GraphError = <T as TreeTxnT>::TreeError>
+            + Send
+            + Sync
+            + 'static,
+        R: WorkingCopy + Clone + Send + Sync + 'static,
+        P: ChangeStore + Clone + 'static,
+    >(
+        &mut self,
+        repo: &R,
+        txn: &ArcTxn<T>,
+        channel: &ChannelRef<T>,
+    ) -> Result<(), OutputError<P::Error, T::TreeError, R::Error>> {
+        if self.next_prefix_basename.is_none() && self.is_following_prefix {
+            let dead = {
+                let txn_ = txn.read();
+                let channel = channel.read();
+                let graph = txn_.graph(&*channel);
+                collect_dead_files(&*txn_, graph, self.pending_change_id, Inode::ROOT)?
+            };
+            debug!("dead (line {}) = {:?}", line!(), dead);
+            if !dead.is_empty() {
+                let mut txn = txn.write();
+                kill_dead_files::<T, R, P>(&mut *txn, &channel, &repo, &dead)?;
+            }
+            self.is_following_prefix = false;
+        }
+        Ok(())
+    }
+
+    fn make_inode(
+        &mut self,
+        a: &str,
+        name_key: Vertex<ChangeId>,
+        output_item: &mut OutputItem,
+        is_first_name: &mut bool,
+    ) -> MakeInode {
+        let name_entry = match self.done_vertices.entry(output_item.pos) {
+            Entry::Occupied(e) => {
+                debug!(
+                    "pos already visited: {:?} {:?} {:?} {:?}",
+                    a,
+                    output_item.pos,
+                    e.get(),
+                    name_key
+                );
+                if e.get().0 != name_key {
+                    // The same inode has more than one name.
+                    self.conflicts.push(Conflict::MultipleNames {
+                        pos: output_item.pos,
+                        path: e.get().1.clone(),
+                    });
+                }
+                return MakeInode::AlreadyOutput;
+            }
+            Entry::Vacant(e) => {
+                debug!("first visit {:?} {:?}", a, output_item.pos);
+                e
+            }
+        };
+        let name = if !*is_first_name {
+            // Multiple inodes share the same name.
+            if self.output_name_conflicts {
+                let name = make_conflicting_name(&a, name_key);
+                self.conflicts.push(Conflict::Name { path: name.clone() });
+                name
+            } else {
+                debug!("not outputting {:?} {:?}", a, name_key);
+                self.conflicts.push(Conflict::Name {
+                    path: a.to_string(),
+                });
+                return MakeInode::NameConflict;
+            }
+        } else {
+            *is_first_name = false;
+            a.to_string()
+        };
+        debug!("name = {:?} {:?}", name, name_key);
+        let file_name = path::file_name(&name).unwrap();
+        path::push(&mut output_item.path, file_name);
+        name_entry.insert((name_key, output_item.path.clone()));
+        MakeInode::Ok(name)
+    }
+
+    fn output_name<
+        T: TreeMutTxnT
+            + ChannelMutTxnT
+            + GraphMutTxnT<GraphError = <T as TreeTxnT>::TreeError>
+            + Send
+            + Sync
+            + 'static,
+        R: WorkingCopy + Clone + Send + Sync + 'static,
+        P: ChangeStore + Send + Clone + 'static,
+    >(
+        &mut self,
+        repo: &R,
+        changes: &P,
+        txn: &ArcTxn<T>,
+        channel: &ChannelRef<T>,
+        next_files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
+        a: String,
+        b: Vec<(Vertex<ChangeId>, OutputItem)>,
+    ) -> Result<(), OutputError<P::Error, T::TreeError, R::Error>> {
+        let mut is_first_name = true;
+        for (name_key, mut output_item) in b {
+            debug!("name_key = {:?} {:?}", name_key, output_item);
+            let name = match self.make_inode(&a, name_key, &mut output_item, &mut is_first_name) {
+                MakeInode::Ok(file_name) => file_name,
+                MakeInode::AlreadyOutput => continue,
+                MakeInode::NameConflict => break,
+            };
+            let output_item_inode = {
+                let txn = txn.read();
+                if let Some(inode) = txn.get_revinodes(&output_item.pos, None)? {
+                    if !self.done_inodes.insert(*inode) {
+                        debug!("inode already visited: {:?} {:?}", a, inode);
+                        continue;
+                    }
+                    Some((*inode, *txn.get_inodes(inode, None)?.unwrap()))
+                } else {
+                    None
+                }
+            };
+
+            let file_name = path::file_name(&name).unwrap();
+            let mut tmp = output_item.tmp.take().map(|mut tmp| {
+                path::push(&mut tmp, file_name);
+                tmp
+            });
+            let path = std::mem::replace(&mut output_item.path, String::new());
+            let inode = move_or_create::<T, R, P>(
+                txn.clone(),
+                &repo,
+                &output_item,
+                output_item_inode,
+                &path,
+                &mut tmp,
+                &file_name,
+                &mut self.actual_moves,
+                self.salt,
+            )?;
+            debug!("inode = {:?}", inode);
+            self.kill_dead_files::<_, _, P>(repo, txn, channel)?;
+            if output_item.meta.is_dir() {
+                if !path.is_empty() {
+                    let tmp_ = tmp.as_deref().unwrap_or(&path);
+                    repo.create_dir_all(tmp_)
+                        .map_err(OutputError::WorkingCopy)?;
+                    repo.set_permissions(tmp_, output_item.meta.permissions())
+                        .map_err(OutputError::WorkingCopy)?;
+                }
+                let txn = txn.read();
+                let channel = channel.read();
+                collect_children(
+                    &*txn,
+                    &*changes,
+                    txn.graph(&*channel),
+                    output_item.pos,
+                    inode,
+                    &path,
+                    tmp.as_deref(),
+                    self.next_prefix_basename,
+                    next_files,
+                )?;
+            } else {
+                if needs_output(repo, self.if_modified_after, &path) {
+                    self.work
+                        .push((output_item.clone(), inode, path.clone(), tmp.clone()));
+                } else {
+                    debug!("Not outputting {:?}", path)
+                }
+            }
+            if output_item.is_zombie {
+                self.conflicts.push(Conflict::ZombieFile {
+                    path: name.to_string(),
+                })
+            }
+        }
+        Ok(())
+    }
+}
+
+enum MakeInode {
+    AlreadyOutput,
+    NameConflict,
+    Ok(String),
 }
 
 fn make_conflicting_name(name: &str, name_key: Vertex<ChangeId>) -> String {
@@ -508,6 +589,7 @@ fn output_item<T: ChannelMutTxnT + GraphMutTxnT, P: ChangeStore, W: WorkingCopy>
     output_item: &OutputItem,
     conflicts: &mut Vec<Conflict>,
     repo: &W,
+    inode: Inode,
     path: &str,
 ) -> Result<(), OutputError<P::Error, T::GraphError, W::Error>> {
     let mut forward = Vec::new();
@@ -515,10 +597,14 @@ fn output_item<T: ChannelMutTxnT + GraphMutTxnT, P: ChangeStore, W: WorkingCopy>
         let txn = txn.read();
         let channel = channel.read();
         let mut l = retrieve(&*txn, txn.graph(&*channel), output_item.pos)?;
-        let w = repo.write_file(&path).map_err(OutputError::WorkingCopy)?;
+        let w = repo
+            .write_file(&path, inode)
+            .map_err(OutputError::WorkingCopy)?;
         let mut f = vertex_buffer::ConflictsWriter::new(w, &path, conflicts);
         alive::output_graph(changes, &*txn, &*channel, &mut f, &mut l, &mut forward)
             .map_err(PristineOutputError::from)?;
+        use std::io::Write;
+        f.w.flush().unwrap_or(())
     }
     if forward.is_empty() {
         return Ok(());

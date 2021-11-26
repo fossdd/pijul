@@ -1,5 +1,7 @@
 use super::change_id::*;
 use super::L64;
+#[cfg(test)]
+use quickcheck::{Arbitrary, Gen};
 
 /// A node in the repository graph, made of a change internal
 /// identifier, and a line identifier in that change.
@@ -111,6 +113,16 @@ impl std::ops::Sub<ChangePosition> for ChangePosition {
     }
 }
 
+#[cfg(test)]
+impl Arbitrary for ChangePosition {
+    fn arbitrary(g: &mut Gen) -> Self {
+        ChangePosition(L64(u64::arbitrary(g)))
+    }
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        Box::new(self.0 .0.shrink().map(|x| ChangePosition(L64(x))))
+    }
+}
+
 impl ChangePosition {
     pub(crate) fn us(&self) -> usize {
         u64::from_le((self.0).0) as usize
@@ -169,8 +181,6 @@ impl<H: super::Base32> Base32 for Position<H> {
         })
     }
 }
-
-
 
 pub mod position_base32_serde {
     use super::*;
