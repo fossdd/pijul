@@ -715,6 +715,10 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
                 .txn
                 .find_block_end(&self.channel, parent.dest())
                 .unwrap();
+            if dest.start == dest.end {
+                // non-null root.
+                return None
+            }
             let mut buf = std::mem::replace(&mut self.buf, Vec::new());
             let FileMetadata {
                 basename,
@@ -771,7 +775,7 @@ where
             channel,
             pos.inode_vertex(),
             EdgeFlags::FOLDER | EdgeFlags::PARENT,
-            EdgeFlags::FOLDER | EdgeFlags::PARENT | EdgeFlags::PSEUDO,
+            EdgeFlags::FOLDER | EdgeFlags::PARENT | EdgeFlags::BLOCK | EdgeFlags::PSEUDO,
         )
         .map_err(|e| e.0)?,
         txn,
@@ -845,47 +849,57 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
     let mut ambiguous = false;
     for c in crate::path::components(path) {
         let mut next = None;
-        for name in iter_adjacent(
-            txn,
-            txn.graph(channel),
-            current.inode_vertex(),
-            flag0,
-            flag1,
-        )? {
-            let name = name?;
-            let name_dest = txn.find_block(txn.graph(channel), name.dest()).unwrap();
-            name_buf.clear();
-            debug!("getting contents {:?}", name);
-            changes
-                .get_contents(
-                    |h| txn.get_external(&h).unwrap().map(|x| x.into()),
-                    *name_dest,
-                    &mut name_buf,
-                )
-                .map_err(FsErrorC::Changestore)?;
-            let FileMetadata { basename, .. } = FileMetadata::read(&name_buf);
-            if basename == c {
-                let age = txn
-                    .get_changeset(txn.changes(&channel), &name.dest().change)
-                    .unwrap();
-                if let Some((ref mut next, ref mut next_age)) = next {
-                    ambiguous = true;
-                    if age < *next_age {
-                        *next = name_dest;
-                        *next_age = age;
+        'outer: loop {
+            for name in iter_adjacent(
+                txn,
+                txn.graph(channel),
+                current.inode_vertex(),
+                flag0,
+                flag1,
+            )? {
+                let name = name?;
+                let name_dest = txn.find_block(txn.graph(channel), name.dest()).unwrap();
+                if name_dest.start == name_dest.end {
+                    // non-null root, just continue.
+                    current = iter_adjacent(txn, txn.graph(channel), *name_dest, flag0, flag1)?
+                        .next()
+                        .unwrap()?
+                        .dest();
+                    break 'outer
+                }
+                name_buf.clear();
+                debug!("getting contents {:?}", name);
+                changes
+                    .get_contents(
+                        |h| txn.get_external(&h).unwrap().map(|x| x.into()),
+                        *name_dest,
+                        &mut name_buf,
+                    )
+                    .map_err(FsErrorC::Changestore)?;
+                let FileMetadata { basename, .. } = FileMetadata::read(&name_buf);
+                if basename == c {
+                    let age = txn
+                        .get_changeset(txn.changes(&channel), &name.dest().change)
+                        .unwrap();
+                    if let Some((ref mut next, ref mut next_age)) = next {
+                        ambiguous = true;
+                        if age < *next_age {
+                            *next = name_dest;
+                            *next_age = age;
+                        }
+                    } else {
+                        next = Some((name_dest, age));
                     }
-                } else {
-                    next = Some((name_dest, age));
                 }
             }
-        }
-        if let Some((next, _)) = next {
-            current = iter_adjacent(txn, txn.graph(channel), *next, flag0, flag1)?
-                .next()
-                .unwrap()?
-                .dest()
-        } else {
-            return Err(FsErrorC::NotFound(FsNotFound(path.to_string())));
+            if let Some((next, _)) = next {
+                current = iter_adjacent(txn, txn.graph(channel), *next, flag0, flag1)?
+                    .next()
+                    .unwrap()?
+                    .dest()
+            } else {
+                return Err(FsErrorC::NotFound(FsNotFound(path.to_string())));
+            }
         }
     }
     Ok((current, ambiguous))

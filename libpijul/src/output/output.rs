@@ -63,6 +63,7 @@ pub fn output_repository_no_pending<
 where
     T::Channel: Send + Sync + 'static,
 {
+    debug!("output_repository_no_pending: {:?}", prefix);
     output_repository(
         repo,
         changes,

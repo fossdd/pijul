@@ -2139,15 +2139,6 @@ impl<T> MutTxn<T> {
     fn put_channel(&mut self, channel: ChannelRef<Self>) -> Result<(), SanakirjaError> {
         debug!("Commit_channel.");
         let channel = channel.r.read();
-        // Since we are replacing the value, we don't want to
-        // decrement its reference counter (which del would do), hence
-        // the transmute.
-        //
-        // This would normally be wrong. The only reason it works is
-        // because we know that dbs_channels has never been forked
-        // from another database, hence all the reference counts to
-        // its elements are 1 (and therefore represented as "not
-        // referenced" in Sanakirja).
         debug!("Commit_channel, dbs_channels = {:?}", self.channels);
         btree::del(&mut self.txn, &mut self.channels, &channel.name, None)?;
         debug!(

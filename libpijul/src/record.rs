@@ -374,6 +374,9 @@ impl Builder {
                     let e = e?;
                     let child = txn.find_block(txn.graph(&*channel), e.dest()).unwrap();
                     if child.start == child.end {
+                        // This is the "new" format, with multiple
+                        // roots, and `grandchild` is one of the
+                        // roots.
                         let grandchild =
                             iter_adjacent(&*txn, txn.graph(&*channel), *child, f0, f1)?
                                 .next()
@@ -389,9 +392,13 @@ impl Builder {
                             grandchild,
                         )?;
                     } else {
+                        // Single-root repository, we need to follow
+                        // the root's children.
                         has_nonempty_root = true
                     }
                 }
+                debug!("has_nonempty_root: {:?}", has_nonempty_root);
+                debug!("root_vertices: {:?}", root_vertices);
                 if has_nonempty_root && !root_vertices.is_empty() {
                     // This repository is mixed between "zero" roots,
                     // and new-style-roots.
@@ -474,6 +481,7 @@ impl Builder {
                             *r = Some((vertex.to_option(), (*age).into()))
                         }
                     }
+                    item.v_papa = vertex.to_option();
                     self.push_children::<_, _, C>(
                         &*txn,
                         &*channel,
@@ -634,6 +642,7 @@ impl Builder {
             parent_inode: item.inode,
             basename: SmallString::new(),
         };
+        debug!("fileid = {:?}", fileid);
         let mut has_matching_children = false;
         for x in txn.iter_tree(&fileid, None)? {
             let (fileid_, child_inode) = x?;

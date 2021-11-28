@@ -99,6 +99,7 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
     files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
 ) -> Result<(), PristineOutputError<P::Error, T::GraphError>> {
     debug!("path = {:?}, inode_pos = {:?}", path, inode_pos);
+    debug!("prefix_basename = {:?}", prefix_basename);
     for e in iter_adjacent(
         txn,
         channel,
@@ -141,7 +142,7 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
                 EdgeFlags::FOLDER | EdgeFlags::PSEUDO | EdgeFlags::BLOCK,
             )? {
                 let e = e?;
-                debug!("e = {:?}", e);
+                debug!("e' = {:?}", e);
                 let name_vertex = txn.find_block(channel, e.dest()).unwrap();
                 collect(
                     txn,
@@ -171,6 +172,7 @@ fn collect<T: GraphTxnT, P: ChangeStore>(
     files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
     name_vertex: &Vertex<ChangeId>,
 ) -> Result<(), PristineOutputError<P::Error, T::GraphError>> {
+    // First, get the basename of the path we're outputting.
     let mut name_buf = Vec::new();
     let FileMetadata {
         basename,
@@ -187,6 +189,7 @@ fn collect<T: GraphTxnT, P: ChangeStore>(
     let mut name = path.to_string();
     if let Some(next) = prefix_basename {
         if next != basename {
+            debug!("next = {:?} basename = {:?}", next, basename);
             return Ok(());
         }
     }
