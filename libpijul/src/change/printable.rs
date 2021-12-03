@@ -452,7 +452,16 @@ impl PrintableHunk {
                     Escaped(encoding_label(encoding))
                 )?;
                 writeln!(w, "{}", change)?;
-                print_contents(w, "+", contents, encoding)?;
+                let sign = if let PrintableAtom::Edges(ref e) = change {
+                    if e[0].flag.deleted {
+                        "-"
+                    } else {
+                        "+"
+                    }
+                } else {
+                    "+"
+                };
+                print_contents(w, sign, contents, encoding)?;
             }
 
             Replace {

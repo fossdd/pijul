@@ -51,11 +51,16 @@ pub(super) fn make_new_chunks<'a>(
     let mut j = 0;
     let mut lines = Vec::new();
     while j < b.len() {
+        debug!("processing {:?}", j);
         let h = ad.hash();
+        let mut found = false;
         if let Some(v) = a_h.get(&h) {
             // We've found a match from the old version.
+            debug!("matched {:?}", h);
             for &(v, old) in v.iter() {
-                if old == &b[j..i] {
+                found = old == &b[j..i];
+                if found {
+                    debug!("old matched from {:?}-{:?}", j, i);
                     bb.push(Chunk::Old {
                         start: j,
                         end: i,
@@ -77,7 +82,9 @@ pub(super) fn make_new_chunks<'a>(
                     break;
                 }
             }
-        } else {
+        }
+        if !found {
+            debug!("new {:?}", h);
             if let Some(Chunk::New { ref mut len, .. }) = bb.last_mut() {
                 *len += 1
             } else {

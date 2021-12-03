@@ -140,7 +140,11 @@ fn parse_edit_hunk(i: &str) -> IResult<&str, PrintableHunk> {
     let (i, encoding) = preceded(space0, parse_encoding)(i)?;
     let (i, _) = tuple((space0, newline))(i)?;
     let (i, change) = parse_atom(i)?;
-    let (i, contents) = parse_contents('+', encoding.clone(), i)?;
+    let (i, contents) = if let Ok(s) = parse_contents('+', encoding.clone(), i) {
+        s
+    } else {
+        parse_contents('-', encoding.clone(), i)?
+    };
     Ok((
         i,
         Edit {
@@ -352,13 +356,14 @@ fn parse_contents(
         if backslash.is_some() && vec[vec.len() - 1] == b'\n' {
             vec.pop();
         }
-        Ok((i, vec))
-    } else {
-        Err(nom::Err::Error(nom::error::Error::new(
-            i,
-            nom::error::ErrorKind::Verify,
-        )))
+        if !vec.is_empty() {
+            return Ok((i, vec))
+        }
     }
+    Err(nom::Err::Error(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Verify,
+    )))
 }
 
 fn encode(encoding: Option<Encoding>, contents: &str) -> Result<Vec<u8>, String> {
