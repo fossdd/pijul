@@ -412,7 +412,9 @@ impl PrintableHunk {
                     Escaped(encoding_label(encoding)),
                 )?;
                 writeln!(w, "{}", PrintableAtom::Edges(del_edges.to_vec()))?;
-                writeln!(w, "{}", PrintableAtom::Edges(content_edges.to_vec()))?;
+                if !content_edges.is_empty() {
+                    writeln!(w, "{}", PrintableAtom::Edges(content_edges.to_vec()))?;
+                }
                 print_contents(w, "-", contents, encoding)?;
             }
             FileUndel {
@@ -431,7 +433,9 @@ impl PrintableHunk {
                     Escaped(encoding_label(encoding)),
                 )?;
                 writeln!(w, "{}", PrintableAtom::Edges(undel_edges.to_vec()))?;
-                writeln!(w, "{}", PrintableAtom::Edges(content_edges.to_vec()))?;
+                if !content_edges.is_empty() {
+                    writeln!(w, "{}", PrintableAtom::Edges(content_edges.to_vec()))?;
+                }
                 print_contents(w, "+", contents, encoding)?;
             }
 
@@ -622,6 +626,9 @@ fn print_contents<W: WriteChangeLine>(
     contents: &[u8],
     encoding: &Option<Encoding>,
 ) -> Result<(), std::io::Error> {
+    if contents.is_empty() {
+        return Ok(())
+    }
     if let Some(encoding) = encoding {
         let dec = encoding.decode(&contents);
         let ends_with_newline = dec.ends_with("\n");

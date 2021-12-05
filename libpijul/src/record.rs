@@ -1121,7 +1121,6 @@ impl Recorded {
     pub fn take_updatables(&mut self) -> HashMap<usize, InodeUpdate> {
         std::mem::replace(&mut self.updatables, HashMap::default())
     }
-
     pub fn into_change<T: ChannelTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>>(
         self,
         txn: &T,
@@ -1246,6 +1245,8 @@ where
     let mut previous_name = Vec::new();
     let mut last_alive_meta = None;
     let mut is_first_parent = true;
+    // Check for any renaming as that's a priority change
+    let mut is_any_rename = false;
     for parent in iter_adjacent(
         txn,
         channel,
@@ -1300,8 +1301,14 @@ where
             "parent_dest {:?} {:?} {:?}",
             parent_dest, parent_meta, parent_name
         );
+        if parent_name != name {
+            is_any_rename = true;
+        }
         debug!("new_meta = {:?}, parent_meta = {:?}", new_meta, parent_meta);
         let name_changed = parent_name != name;
+        if is_any_rename && !name_changed {
+            continue;
+        }
         let mut meta_changed = new_meta != parent_meta;
         if cfg!(windows) && !meta_changed {
             if let Some(m) = last_alive_meta {
@@ -1484,6 +1491,7 @@ impl Recorded {
         debug!("record_deleted_file {:?} {:?}", current_vertex, full_path);
         let mut stack = vec![(current_vertex.inode_vertex(), None)];
         let mut visited = HashSet::default();
+        let mut full_path = std::borrow::Cow::Borrowed(full_path);
         while let Some((vertex, inode)) = stack.pop() {
             debug!("vertex {:?}, inode {:?}", vertex, inode);
             if let Some(path) = tree_path(txn, &vertex.start_pos())? {
@@ -1491,6 +1499,7 @@ impl Recorded {
                     debug!("not deleting {:?}", path);
                     continue;
                 }
+                full_path = path.into()
             }
 
             // Kill this vertex
@@ -1522,7 +1531,7 @@ impl Recorded {
                     channel,
                     vertex,
                     vertex.start_pos(),
-                    full_path,
+                    &full_path,
                 )?
             }
 
