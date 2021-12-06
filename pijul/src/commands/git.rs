@@ -51,7 +51,7 @@ impl Git {
         let mut uncommitted = false;
         for i in 0..st.len() {
             if let Some(x) = st.get(i) {
-                if x.path_bytes().starts_with(b".pijul") {
+                if x.path_bytes().starts_with(b".pijul") || x.path_bytes().starts_with(b".ignore") {
                     continue;
                 }
                 debug!("status = {:?}", x.status());

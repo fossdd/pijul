@@ -1905,6 +1905,7 @@ impl MutTxnT for MutTxn<()> {
     }
 
     fn drop_channel(&mut self, name0: &str) -> Result<bool, Self::GraphError> {
+        debug!(target: "drop_channel", "drop channel {:?}", name0);
         let name = SmallString::from_str(name0);
         let channel = if let Some(channel) = self.open_channels.lock().remove(&name) {
             let channel = Arc::try_unwrap(channel.r)
@@ -1939,8 +1940,19 @@ impl MutTxnT for MutTxn<()> {
             let mut unused_changes = Vec::new();
             'outer: for x in btree::rev_iter(&self.txn, &c, None)? {
                 let (_, p) = x?;
-                for chan in self.iter_channels("").map_err(|e| e.0)? {
-                    let (name, chan) = chan.map_err(|e| e.0)?;
+                debug!(target: "drop_channel", "testing unused change: {:?}", p);
+                let mut it0 = self.iter_channels("").map_err(|e| e.0)?;
+                let it1 = self.open_channels.lock();
+                let mut it1 = it1.iter();
+                loop {
+                    let (name, chan) = if let Some(chan) = it0.next() {
+                        chan.map_err(|e| e.0)?
+                    } else if let Some((name, chan)) = it1.next() {
+                        (name.as_ref(), chan.clone())
+                    } else {
+                        break
+                    };
+                    debug!(target: "drop_channel", "channel: {:?}", name);
                     assert_ne!(name.as_str(), name0);
                     let chan = chan.read();
                     if self
@@ -1948,6 +1960,9 @@ impl MutTxnT for MutTxn<()> {
                         .map_err(|e| e.0)?
                         .is_some()
                     {
+                        // This other channel is in the same state as
+                        // our dropped channel is, so all subsequent
+                        // patches are in use.
                         break 'outer;
                     }
                     if self
@@ -1955,9 +1970,12 @@ impl MutTxnT for MutTxn<()> {
                         .map_err(|e| e.0)?
                         .is_some()
                     {
+                        // This channel has a patch, move on.
                         continue 'outer;
                     }
                 }
+
+                debug!(target: "drop_channel", "actually unused: {:?}", p);
                 unused_changes.push(p.a);
             }
             let mut deps = Vec::new();
@@ -1970,7 +1988,8 @@ impl MutTxnT for MutTxn<()> {
                     deps.push((*k, *v));
                 }
                 for (k, v) in deps.drain(..) {
-                    btree::del(&mut self.txn, &mut self.revdep, &k, Some(&v))?;
+                    debug!(target: "drop_channel", "deleting from revdep: {:?} {:?}", k, v);
+                    btree::del(&mut self.txn, &mut self.dep, &k, Some(&v))?;
                     btree::del(&mut self.txn, &mut self.revdep, &v, Some(&k))?;
                 }
             }
