@@ -717,7 +717,7 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
                 .unwrap();
             if dest.start == dest.end {
                 // non-null root.
-                return None
+                return None;
             }
             let mut buf = std::mem::replace(&mut self.buf, Vec::new());
             let FileMetadata {
@@ -849,7 +849,10 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
     let mut ambiguous = false;
     for c in crate::path::components(path) {
         let mut next = None;
-        'outer: loop {
+        let mut has_descendants = true;
+        'outer: while has_descendants {
+            has_descendants = false;
+            debug!("follow_oldest_path, loop {:?}", current);
             for name in iter_adjacent(
                 txn,
                 txn.graph(channel),
@@ -857,6 +860,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                 flag0,
                 flag1,
             )? {
+                has_descendants = true;
                 let name = name?;
                 let name_dest = txn.find_block(txn.graph(channel), name.dest()).unwrap();
                 if name_dest.start == name_dest.end {
@@ -865,7 +869,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                         .next()
                         .unwrap()?
                         .dest();
-                    break 'outer
+                    continue 'outer;
                 }
                 name_buf.clear();
                 debug!("getting contents {:?}", name);

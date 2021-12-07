@@ -134,6 +134,7 @@ fn parse_file_addition_hunk(i: &str) -> IResult<&str, PrintableHunk> {
 
 /// Parse a hunk header string
 fn parse_edit_hunk(i: &str) -> IResult<&str, PrintableHunk> {
+    debug!("parse_edit_hunk {:?}", i);
     let (i, path) = preceded(delimited(space0, tag("Edit in"), space0), parse_string)(i)?;
     let (i, line) = preceded(char(':'), u64)(i)?;
     let (i, pos) = preceded(space0, parse_printable_pos)(i)?;
@@ -357,7 +358,7 @@ fn parse_contents(
             vec.pop();
         }
         if !vec.is_empty() {
-            return Ok((i, vec))
+            return Ok((i, vec));
         }
     }
     Err(nom::Err::Error(nom::error::Error::new(

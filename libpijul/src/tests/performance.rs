@@ -22,7 +22,7 @@ fn quadratic_pseudo_edges() -> Result<(), anyhow::Error> {
     record_all(&mut repo, &changes, &txn, &channel, "").unwrap();
     let n = 100;
     for i in 0..=n {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for j in 0..i {
             writeln!(w, "{}", j)?;
         }
@@ -33,7 +33,7 @@ fn quadratic_pseudo_edges() -> Result<(), anyhow::Error> {
         record_all(&repo, &changes, &txn, &channel, "").unwrap();
     }
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for j in 0..n {
             writeln!(w, "{}", j)?;
         }
@@ -44,10 +44,10 @@ fn quadratic_pseudo_edges() -> Result<(), anyhow::Error> {
     record_all(&repo, &changes, &txn, &channel, "").unwrap();
     // Test that not too many edges have been inserted.
     {
-        let graph = &channel.read().graph;
+        let graph = channel.read();
         let mut m = 0;
-        let mut cursor = txn.read().graph_cursor(graph, None).unwrap();
-        while let Some(Ok(_)) = txn.read().next_graph(graph, &mut cursor) {
+        let mut cursor = txn.read().graph_cursor(&*graph, None).unwrap();
+        while let Some(Ok(_)) = txn.read().next_graph(&*graph, &mut cursor) {
             m += 1
         }
         let m0 = n * 8 + 6;
@@ -80,7 +80,7 @@ fn linear_context_repair() {
     record_all(&mut repo, &changes, &txn, &channel, "").unwrap();
     let n = 20;
     for i in 0..=n {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for j in 0..i {
             writeln!(w, "{}", j).unwrap();
         }
@@ -92,7 +92,7 @@ fn linear_context_repair() {
     }
     let mut channel2 = txn.write().fork(&channel, "fork").unwrap();
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for j in 0..n {
             writeln!(w, "{}", j).unwrap();
         }
@@ -106,16 +106,13 @@ fn linear_context_repair() {
 
     ::sanakirja::debug::debug(
         &txn.read().txn,
-        &[
-            txn.read().graph(&channel.read()),
-            txn.read().graph(&channel2.read()),
-        ],
+        &[&channel.read().graph, &channel2.read().graph],
         "debug_sanakirja",
         true,
     );
 
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for j in 0..n {
             writeln!(w, "{}", j).unwrap();
         }
@@ -136,7 +133,7 @@ fn linear_context_repair() {
 
     // Test that not too many edges have been inserted.
     {
-        let graph = &channel.read().graph;
+        let graph = &channel.read();
         let mut m = 0;
         let mut cursor = txn.read().graph_cursor(graph, None).unwrap();
         while let Some(Ok(_)) = txn.read().next_graph(graph, &mut cursor) {
@@ -149,7 +146,7 @@ fn linear_context_repair() {
         }
     }
     {
-        let graph = &channel2.read().graph;
+        let graph = &channel2.read();
         let mut m = 0;
         let mut cursor = txn.read().graph_cursor(graph, None).unwrap();
         while let Some(Ok(_)) = txn.read().next_graph(graph, &mut cursor) {

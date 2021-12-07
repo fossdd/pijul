@@ -1051,8 +1051,9 @@ impl Recorded {
             basename,
         )?;
         debug!("moved = {:#?}", moved);
-        if !moved.resurrect.is_empty() {
-            moved.resurrect.extend(moved.alive.into_iter());
+        let is_resurrected = !moved.resurrect.is_empty();
+        if is_resurrected {
+            moved.resurrect.extend(moved.alive.drain(..));
             if !moved.need_new_name {
                 moved.resurrect.extend(moved.edges.drain(..));
             }
@@ -1083,21 +1084,32 @@ impl Recorded {
         .write(&mut contents);
         let meta_end = ChangePosition(contents.len().into());
         if !moved.edges.is_empty() {
-            if moved.need_new_name {
+            // If there was exactly one alive name, this is a regular
+            // move, i.e. not a conflict.
+            if moved.n_alive_names == 1 {
                 debug!("need_new_name {:?}", item.v_papa);
-                self.actions.push(Hunk::FileMove {
-                    del: Atom::EdgeMap(EdgeMap {
-                        edges: moved.edges,
-                        inode: item.v_papa,
-                    }),
-                    add: Atom::NewVertex(NewVertex {
+                let add = if moved.need_new_name && !is_resurrected {
+                    moved.edges.extend(moved.alive.drain(..));
+                    Atom::NewVertex(NewVertex {
                         up_context: vec![item_v_papa],
                         down_context: vec![vertex.to_option()],
                         start: meta_start,
                         end: meta_end,
                         flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
                         inode: item_v_papa,
+                    })
+                } else {
+                    Atom::EdgeMap(EdgeMap {
+                        edges: moved.alive,
+                        inode: item_v_papa,
+                    })
+                };
+                self.actions.push(Hunk::FileMove {
+                    del: Atom::EdgeMap(EdgeMap {
+                        edges: moved.edges,
+                        inode: item.v_papa,
                     }),
+                    add,
                     path: crate::fs::find_path(changes, txn, channel, true, vertex)?
                         .unwrap()
                         .0,
@@ -1219,6 +1231,7 @@ struct MovedEdges {
     alive: Vec<NewEdge<Option<ChangeId>>>,
     resurrect: Vec<NewEdge<Option<ChangeId>>>,
     need_new_name: bool,
+    n_alive_names: usize,
 }
 
 fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopyRead>(
@@ -1239,14 +1252,13 @@ where
         alive: Vec::new(),
         resurrect: Vec::new(),
         need_new_name: true,
+        n_alive_names: 0,
     };
     let mut del_del = HashMap::default();
     let mut alive = HashMap::default();
     let mut previous_name = Vec::new();
     let mut last_alive_meta = None;
     let mut is_first_parent = true;
-    // Check for any renaming as that's a priority change
-    let mut is_any_rename = false;
     for parent in iter_adjacent(
         txn,
         channel,
@@ -1265,6 +1277,7 @@ where
         let mut parent_was_resurrected = false;
         if !parent.flag().contains(EdgeFlags::PSEUDO) {
             if parent.flag().contains(EdgeFlags::DELETED) {
+                debug!("resurrecting parent");
                 moved.resurrect.push(NewEdge {
                     previous: parent.flag() - EdgeFlags::PARENT,
                     flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
@@ -1284,6 +1297,7 @@ where
                 v.push(Some(parent.introduced_by()))
             }
         }
+        debug!("parent_was_resurrected: {:?}", parent_was_resurrected);
         previous_name.clear();
         let parent_dest = txn.find_block_end(channel, parent.dest()).unwrap();
         let FileMetadata {
@@ -1298,17 +1312,10 @@ where
             )
             .map_err(RecordError::Changestore)?;
         debug!(
-            "parent_dest {:?} {:?} {:?}",
-            parent_dest, parent_meta, parent_name
+            "parent_dest {:?} {:?} {:?} {:?}",
+            parent_dest, parent_meta, parent_name, name
         );
-        if parent_name != name {
-            is_any_rename = true;
-        }
-        debug!("new_meta = {:?}, parent_meta = {:?}", new_meta, parent_meta);
         let name_changed = parent_name != name;
-        if is_any_rename && !name_changed {
-            continue;
-        }
         let mut meta_changed = new_meta != parent_meta;
         if cfg!(windows) && !meta_changed {
             if let Some(m) = last_alive_meta {
@@ -1348,11 +1355,18 @@ where
                 "change = {:?} {:?} {:?}",
                 grandparent_changed, name_changed, meta_changed
             );
-
+            if !grandparent.flag().contains(EdgeFlags::DELETED) {
+                moved.n_alive_names += 1;
+            }
             if grandparent.flag().contains(EdgeFlags::DELETED) {
                 if !grandparent_changed && !name_changed && !meta_changed {
                     // We resurrect the name
-                    moved.resurrect.push(NewEdge {
+                    (if parent_was_resurrected {
+                        &mut moved.resurrect
+                    } else {
+                        &mut moved.alive
+                    })
+                    .push(NewEdge {
                         previous: grandparent.flag() - EdgeFlags::PARENT,
                         flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
                         from: grandparent.dest().to_option(),

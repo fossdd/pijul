@@ -13,7 +13,7 @@ fn filesystem() -> Result<(), anyhow::Error> {
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
-    repo.write_file("dir/file")
+    repo.write_file("dir/file", Inode::ROOT)
         .unwrap()
         .write_all(&b"a\nb\nc\nd\ne\nf\n"[..])
         .unwrap();
@@ -49,7 +49,7 @@ fn symlink() -> Result<(), anyhow::Error> {
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
-    repo.write_file("dir/file")
+    repo.write_file("dir/file", Inode::ROOT)
         .unwrap()
         .write_all(&b"a\nb\nc\nd\ne\nf\n"[..])
         .unwrap();
@@ -119,7 +119,7 @@ fn overwrite_dead_symlink() -> Result<(), anyhow::Error> {
     let f = tempfile::tempdir()?;
     let changes = changestore::filesystem::FileSystem::from_root(f.path(), MAX_FILES);
 
-    repo.write_file("dir/file")
+    repo.write_file("dir/file", Inode::ROOT)
         .unwrap()
         .write_all(&b"a\nb\nc\nd\ne\nf\n"[..])
         .unwrap();

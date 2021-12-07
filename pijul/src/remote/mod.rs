@@ -79,12 +79,13 @@ pub async fn unknown_remote(
                 name: name.to_string(),
             }));
         } else if scheme == "ssh" {
-            return if let Some(mut ssh) = ssh_remote(name, with_path) {
+            if let Some(mut ssh) = ssh_remote(name, with_path) {
                 debug!("unknown_remote, ssh = {:?}", ssh);
-                Ok(RemoteRepo::Ssh(ssh.connect(name, channel).await?))
-            } else {
-                bail!("Remote not found: {:?}", name)
-            };
+                if let Some(c) = ssh.connect(name, channel).await? {
+                    return Ok(RemoteRepo::Ssh(c));
+                }
+            }
+            bail!("Remote not found: {:?}", name)
         } else {
             bail!("Remote scheme not supported: {:?}", scheme)
         }
@@ -102,23 +103,32 @@ pub async fn unknown_remote(
 
         dot_dir.push(PRISTINE_DIR);
         debug!("dot_dir = {:?}", dot_dir);
-        if let Ok(pristine) = libpijul::pristine::sanakirja::Pristine::new(&dot_dir.join("db")) {
-            debug!("pristine done");
-            return Ok(RemoteRepo::Local(Local {
-                root: Path::new(name).to_path_buf(),
-                channel: channel.to_string(),
-                changes_dir,
-                pristine: Arc::new(pristine),
-                name: name.to_string(),
-            }));
+        match libpijul::pristine::sanakirja::Pristine::new(&dot_dir.join("db")) {
+            Ok(pristine) => {
+                debug!("pristine done");
+                return Ok(RemoteRepo::Local(Local {
+                    root: Path::new(name).to_path_buf(),
+                    channel: channel.to_string(),
+                    changes_dir,
+                    pristine: Arc::new(pristine),
+                    name: name.to_string(),
+                }));
+            }
+            Err(libpijul::pristine::sanakirja::SanakirjaError::Sanakirja(
+                sanakirja::Error::IO(e),
+            )) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug!("repo not found")
+            }
+            Err(e) => return Err(e.into()),
         }
     }
     if let Some(mut ssh) = ssh_remote(name, with_path) {
         debug!("unknown_remote, ssh = {:?}", ssh);
-        Ok(RemoteRepo::Ssh(ssh.connect(name, channel).await?))
-    } else {
-        bail!("Remote not found: {:?}", name)
+        if let Some(c) = ssh.connect(name, channel).await? {
+            return Ok(RemoteRepo::Ssh(c));
+        }
     }
+    bail!("Remote not found: {:?}", name)
 }
 
 // Extracting this saves a little bit of duplication.
@@ -136,8 +146,7 @@ fn get_local_inodes(
         }
         paths.insert(p);
         paths.extend(
-            libpijul::fs::iter_graph_descendants(txn, &channel.read().graph, p)?
-                .map(|x| x.unwrap()),
+            libpijul::fs::iter_graph_descendants(txn, &channel.read(), p)?.map(|x| x.unwrap()),
         );
     }
     Ok(paths)

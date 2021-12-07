@@ -45,7 +45,7 @@ You can of course try other edits, but they are not guaranteed to work.
 
 ### Collaborate
 
-A *remote* is the reference to another repository, for example `pijul@nest.pijul.com:manual` for the manual repository, or `me@nest.pijul.com:pijul/manual`, `https://nest.pijul.com/pijul/manual`, or a local path `/path/to/my/repository`.
+A *remote* is the reference to another repository, for example `pijul@ssh.pijul.com:manual` for the manual repository, or `me@ssh.pijul.com:pijul/manual`, `https://nest.pijul.com/pijul/manual`, or a local path `/path/to/my/repository`.
 
 The `remote` command allows one to view the saved remotes and possibly delete them.
 

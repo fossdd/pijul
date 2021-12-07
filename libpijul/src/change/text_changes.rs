@@ -357,6 +357,7 @@ impl Hunk<Option<Hash>, Local> {
         w: &mut W,
     ) -> Result<(), TextSerError<C::Error>> {
         use self::text_changes::*;
+        debug!("write {:?}", self);
         match self {
             Hunk::FileMove { del, add, path } => match add {
                 Atom::NewVertex(ref add) => {

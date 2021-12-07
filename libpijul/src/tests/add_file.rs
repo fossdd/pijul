@@ -35,14 +35,14 @@ fn add_file_test() -> Result<(), anyhow::Error> {
         let channel_ = txn.load_channel("main").unwrap().unwrap();
         let channel = channel_.read();
         let mut it =
-            crate::fs::iter_graph_children(&txn, &changes, &channel.graph, Position::ROOT).unwrap();
+            crate::fs::iter_graph_children(&txn, &changes, &channel, Position::ROOT).unwrap();
         let (key, _, meta, file) = it.next().unwrap().unwrap();
         assert!(meta.is_dir());
         assert_eq!(file, "dir");
         assert!(it.next().is_none());
-        let mut it = crate::fs::iter_graph_children(&txn, &changes, &channel.graph, key).unwrap();
+        let mut it = crate::fs::iter_graph_children(&txn, &changes, &channel, key).unwrap();
         let (file_key, _, _, _) = it.next().unwrap().unwrap();
-        crate::fs::iter_paths(&txn, &channel.graph, file_key, |path| {
+        crate::fs::iter_paths(&txn, &channel, file_key, |path| {
             debug!("begin path");
             for path in path {
                 debug!("path = {:?}", path);
@@ -52,7 +52,7 @@ fn add_file_test() -> Result<(), anyhow::Error> {
         })
         .unwrap();
 
-        let mut it = crate::fs::iter_basenames(&txn, &changes, &channel.graph, key).unwrap();
+        let mut it = crate::fs::iter_basenames(&txn, &changes, &channel, key).unwrap();
         let (_, _, name) = it.next().unwrap().unwrap();
         assert_eq!(name, "dir");
         assert!(it.next().is_none());
@@ -203,7 +203,7 @@ fn del_eof_test() -> Result<(), anyhow::Error> {
 
     repo.add_file("dir/file", b"a\nb\nc\nd\ne\nf\n".to_vec());
     record_all_output(&repo, changes.clone(), &txn, &channel, "").unwrap();
-    repo.write_file("dir/file")
+    repo.write_file("dir/file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\nb\nc\n")
         .unwrap();
@@ -231,11 +231,14 @@ fn del_nonzombie_test() -> Result<(), anyhow::Error> {
     repo.add_file("dir/file", b"a\nb\nc\nd\ne\nf\n".to_vec());
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
 
-    repo.write_file("dir/file")?.write_all(b"a\nb\nc\ne\nf\n")?;
+    repo.write_file("dir/file", Inode::ROOT)?
+        .write_all(b"a\nb\nc\ne\nf\n")?;
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
-    repo.write_file("dir/file")?.write_all(b"a\nb\nc\nf\n")?;
+    repo.write_file("dir/file", Inode::ROOT)?
+        .write_all(b"a\nb\nc\nf\n")?;
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
-    repo.write_file("dir/file")?.write_all(b"a\nb\nc\n")?;
+    repo.write_file("dir/file", Inode::ROOT)?
+        .write_all(b"a\nb\nc\n")?;
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
     let mut file = Vec::new();
     repo.read_file("dir/file", &mut file).unwrap();
@@ -712,7 +715,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
 
     debug!("done {:?}", h_alice2);
 
-    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel.read().graph);
+    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel.read());
     if !alive.is_empty() {
         panic!("alive: {:?}", alive);
     }

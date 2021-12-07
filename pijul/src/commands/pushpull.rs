@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -476,22 +476,24 @@ impl Pull {
         }
         std::mem::drop(txn_);
         if is_current_channel {
-            let mut touched_paths: Vec<_> = Vec::new();
+            let mut touched_paths = BTreeSet::new();
             {
                 let txn_ = txn.read();
                 for &i in touched.iter() {
                     if let Some((path, _)) =
                         libpijul::fs::find_path(&repo.changes, &*txn_, &*channel.read(), false, i)?
                     {
-                        touched_paths.push(path)
+                        touched_paths.insert(path);
                     } else {
                         touched_paths.clear();
                         break;
                     }
                 }
             }
-            touched_paths.sort();
-            let mut last = "";
+            if touched_paths.is_empty() {
+                touched_paths.insert(String::from(""));
+            }
+            let mut last = None;
             PROGRESS
                 .borrow_mut()
                 .unwrap()
@@ -501,8 +503,9 @@ impl Pull {
                 });
             let mut conflicts = Vec::new();
             for path in touched_paths.iter() {
-                if !last.is_empty() && path.starts_with(last) {
-                    continue;
+                match last {
+                    Some(last_path) if path.starts_with(last_path) => continue,
+                    _ => (),
                 }
                 debug!("path = {:?}", path);
                 conflicts.extend(
@@ -519,23 +522,7 @@ impl Pull {
                     )?
                     .into_iter(),
                 );
-                last = path
-            }
-            if touched_paths.is_empty() {
-                conflicts.extend(
-                    libpijul::output::output_repository_no_pending(
-                        &repo.working_copy,
-                        &repo.changes,
-                        &txn,
-                        &channel,
-                        "",
-                        true,
-                        None,
-                        num_cpus::get(),
-                        0,
-                    )?
-                    .into_iter(),
-                );
+                last = Some(path)
             }
             PROGRESS.join();
 

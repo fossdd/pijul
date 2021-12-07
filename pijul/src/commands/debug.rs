@@ -33,6 +33,8 @@ impl Debug {
         };
         if !self.sanakirja_only {
             libpijul::pristine::debug_inodes(&txn);
+            libpijul::pristine::debug_dep(&txn);
+            libpijul::pristine::debug_revdep(&txn);
             libpijul::pristine::debug_revinodes(&txn);
             libpijul::pristine::debug_tree_print(&txn);
             libpijul::pristine::debug_revtree_print(&txn);
@@ -43,14 +45,14 @@ impl Debug {
                     .unwrap();
                 libpijul::pristine::debug_root(
                     &txn,
-                    &channel.read().graph,
+                    &channel.read(),
                     pos.inode_vertex(),
                     std::io::stdout(),
                     true,
                 )?;
             } else {
                 let channel = channel.read();
-                libpijul::pristine::debug(&txn, &channel.graph, std::io::stdout())?;
+                libpijul::pristine::debug(&txn, &channel, std::io::stdout())?;
             }
             libpijul::pristine::check_alive_debug(&repo.changes, &txn, &*channel.read(), 0)?;
         }

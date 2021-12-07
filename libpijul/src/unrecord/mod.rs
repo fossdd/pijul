@@ -94,8 +94,9 @@ fn del_channel_changes<
     } else {
         return Err(UnrecordError::ChangeNotInChannel { hash: change_id });
     };
-
+    debug!("del_channel_changes {:?}", change_id);
     for x in txn.iter_revdep(&change_id)? {
+        debug!("revdep {:?}", x);
         let (p, d) = x?;
         assert!(*p >= change_id);
         if *p > change_id {
@@ -119,12 +120,11 @@ fn unused_in_other_channels<T: TxnT>(
     change_id: ChangeId,
 ) -> Result<bool, TxnErr<T::GraphError>> {
     let channel = channel.read();
-    for br in txn.iter_channels("")? {
-        let (name, br) = br?;
-        if name.as_str() == txn.name(&channel) {
+    for br in txn.channels("")? {
+        let br = br.read();
+        if txn.name(&br) == txn.name(&channel) {
             continue;
         }
-        let br = br.read();
         if txn.get_changeset(txn.changes(&br), &change_id)?.is_some() {
             return Ok(false);
         }

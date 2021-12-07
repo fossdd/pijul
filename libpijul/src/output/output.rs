@@ -10,11 +10,11 @@ use crate::working_copy::WorkingCopy;
 use crate::{alive, path, vertex_buffer};
 use crate::{HashMap, HashSet};
 
-use std::collections::hash_map::Entry;
+use std::collections::{hash_map::Entry, BTreeSet};
 use std::sync::Arc;
 
 /// A structure representing a file with conflicts.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Conflict {
     Name {
         path: String,
@@ -59,7 +59,7 @@ pub fn output_repository_no_pending<
     if_modified_since: Option<std::time::SystemTime>,
     n_workers: usize,
     salt: u64,
-) -> Result<Vec<Conflict>, OutputError<P::Error, T::GraphError, R::Error>>
+) -> Result<BTreeSet<Conflict>, OutputError<P::Error, T::GraphError, R::Error>>
 where
     T::Channel: Send + Sync + 'static,
 {
@@ -148,7 +148,7 @@ fn output_repository<
     if_modified_after: Option<std::time::SystemTime>,
     n_workers: usize,
     salt: u64,
-) -> Result<Vec<Conflict>, OutputError<P::Error, T::TreeError, R::Error>>
+) -> Result<BTreeSet<Conflict>, OutputError<P::Error, T::TreeError, R::Error>>
 where
     T::Channel: Send + Sync + 'static,
 {
@@ -170,7 +170,7 @@ where
     let mut state = OutputState {
         done_vertices: HashMap::default(),
         actual_moves: Vec::new(),
-        conflicts: Vec::new(),
+        conflicts: BTreeSet::new(),
         output_name_conflicts,
         work: work.clone(),
         done_inodes: HashSet::new(),
@@ -215,9 +215,13 @@ where
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let o = output_loop(repo, changes, txn, channel, work, stop, 0);
     for t in threads {
-        state.conflicts.extend(t.join().unwrap()?.into_iter());
+        for x in t.join().unwrap()?.into_iter() {
+            state.conflicts.insert(x);
+        }
     }
-    state.conflicts.extend(o?.into_iter());
+    for x in o?.into_iter() {
+        state.conflicts.insert(x);
+    }
     for (a, b) in state.actual_moves.iter() {
         repo.rename(a, b).map_err(OutputError::WorkingCopy)?
     }
@@ -246,7 +250,7 @@ struct OutputState<'a> {
     actual_moves: Vec<(String, String)>,
     output_name_conflicts: bool,
     done_vertices: HashMap<Position<ChangeId>, (Vertex<ChangeId>, String)>,
-    conflicts: Vec<Conflict>,
+    conflicts: BTreeSet<Conflict>,
     work: Arc<crossbeam_deque::Injector<(OutputItem, Inode, String, Option<String>)>>,
     done_inodes: HashSet<Inode>,
     salt: u64,
@@ -307,7 +311,7 @@ impl<'a> OutputState<'a> {
                 );
                 if e.get().0 != name_key {
                     // The same inode has more than one name.
-                    self.conflicts.push(Conflict::MultipleNames {
+                    self.conflicts.insert(Conflict::MultipleNames {
                         pos: output_item.pos,
                         path: e.get().1.clone(),
                     });
@@ -323,11 +327,11 @@ impl<'a> OutputState<'a> {
             // Multiple inodes share the same name.
             if self.output_name_conflicts {
                 let name = make_conflicting_name(&a, name_key);
-                self.conflicts.push(Conflict::Name { path: name.clone() });
+                self.conflicts.insert(Conflict::Name { path: name.clone() });
                 name
             } else {
                 debug!("not outputting {:?} {:?}", a, name_key);
-                self.conflicts.push(Conflict::Name {
+                self.conflicts.insert(Conflict::Name {
                     path: a.to_string(),
                 });
                 return MakeInode::NameConflict;
@@ -432,9 +436,9 @@ impl<'a> OutputState<'a> {
                 }
             }
             if output_item.is_zombie {
-                self.conflicts.push(Conflict::ZombieFile {
+                self.conflicts.insert(Conflict::ZombieFile {
                     path: name.to_string(),
-                })
+                });
             }
         }
         Ok(())

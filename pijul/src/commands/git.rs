@@ -503,6 +503,8 @@ fn git_reset<'a, T: TxnTExt + MutTxnTExt>(
                     if !meta.file_type().is_symlink() {
                         *reset_was_useful_.borrow_mut() = true
                     }
+                } else {
+                    *reset_was_useful_.borrow_mut() = true
                 }
             }
         });
@@ -732,6 +734,7 @@ fn record_apply<
     (usize, Option<libpijul::Hash>, libpijul::Merkle),
     libpijul::LocalApplyError<T::GraphError>,
 > {
+    debug!("record_apply {:?}", prefixes);
     let mut state = libpijul::RecordBuilder::new();
     let num_cpus = num_cpus::get();
     for p in prefixes.iter() {

@@ -238,9 +238,13 @@ impl WorkingCopyRead for Memory {
             }),
         }
     }
-    fn modified_time(&self, _file: &str) -> Result<std::time::SystemTime, Self::Error> {
+    fn modified_time(&self, file: &str) -> Result<std::time::SystemTime, Self::Error> {
         let m = self.0.lock();
-        Ok(m.last_modified)
+        match m.get_file(file) {
+            Some(Inode::Directory { last_modified, .. })
+            | Some(Inode::File { last_modified, .. }) => Ok(*last_modified),
+            _ => Ok(m.last_modified),
+        }
     }
 }
 

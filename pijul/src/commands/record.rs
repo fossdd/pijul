@@ -141,6 +141,9 @@ impl Record {
 
         let key = super::load_key()?;
 
+        txn.write()
+            .apply_root_change_if_needed(&repo.changes, &channel, rand::thread_rng())?;
+
         let result = self.record(
             txn,
             channel.clone(),

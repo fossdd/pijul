@@ -57,14 +57,13 @@ pub(super) fn make_new_chunks<'a>(
         if let Some(v) = a_h.get(&h) {
             // We've found a match from the old version.
             debug!("matched {:?}", h);
-            for &(v, old) in v.iter() {
+            for &(_, old) in v.iter() {
                 found = old == &b[j..i];
                 if found {
                     debug!("old matched from {:?}-{:?}", j, i);
                     bb.push(Chunk::Old {
                         start: j,
                         end: i,
-                        old_pos: v,
                         ptr: old.as_ptr(),
                     });
                     for _ in 0..window {
@@ -124,7 +123,6 @@ pub(super) enum Chunk {
     Old {
         start: usize,
         end: usize,
-        old_pos: usize,
         ptr: *const u8,
     },
     New {
@@ -132,124 +130,3 @@ pub(super) enum Chunk {
         len: usize,
     },
 }
-
-/*
-pub fn diff<D: diffs::Diff>(window: usize, a: &[u8], b: &[u8], d: D)
-where
-    D::Error: std::fmt::Debug,
-{
-    let a_h = make_old_chunks(window, a);
-    let bb = make_new_chunks(window, &a_h, b);
-    // Make a dummy vector (because `std::ops::Index` wants a borrow).
-    let mut aa = Vec::with_capacity(a.len() / window + 1);
-    for pos in 0..(a.len() + window - 1) / window {
-        aa.push(pos)
-    }
-    diffs::myers::diff(
-        &mut W {
-            d,
-            window,
-            old_len: a.len(),
-            a: &aa,
-            b: &bb,
-        },
-        &aa,
-        0,
-        aa.len(),
-        &bb,
-        0,
-        bb.len(),
-    )
-    .unwrap();
-}
-
-
-impl Chunk {
-    fn start(&self) -> usize {
-        match *self {
-            Chunk::Old { start, .. } => start,
-            Chunk::New { start, .. } => start,
-        }
-    }
-}
-
-impl PartialEq<usize> for Chunk {
-    fn eq(&self, b: &usize) -> bool {
-        if let Chunk::Old { old_pos, .. } = *self {
-            old_pos == *b
-        } else {
-            false
-        }
-    }
-}
-
-#[derive(Debug)]
-struct W<'a, D> {
-    d: D,
-    window: usize,
-    old_len: usize,
-    a: &'a [usize],
-    b: &'a [Chunk],
-}
-
-impl<'a, D: diffs::Diff> diffs::Diff for W<'a, D>
-where
-    D::Error: std::fmt::Debug,
-{
-    type Error = D::Error;
-    fn equal(&mut self, old: usize, new: usize, len: usize) -> Result<(), Self::Error> {
-        let old = old * self.window;
-        let new = self.b[new].start();
-        let len = (len * self.window).min(self.old_len - old);
-        self.d.equal(old, new, len)
-    }
-    fn delete(&mut self, old: usize, len: usize, new: usize) -> Result<(), Self::Error> {
-        let old = old * self.window;
-        let new = self.b[new].start();
-        let len = (len * self.window).min(self.old_len - old);
-        self.d.delete(old, len, new)
-    }
-    fn insert(&mut self, old: usize, new: usize, new_len: usize) -> Result<(), Self::Error> {
-        let old = old * self.window;
-        let new = self.b[new].start();
-        let mut new_len_ = 0;
-        for b in &self.b[new .. new + new_len] {
-            match b {
-                Chunk::Old { start, .. } => {
-                    new_len_ += self.window.min(self.old_len - start)
-                }
-                Chunk::New { len, .. } => {
-                    new_len_ += len
-                }
-            }
-        }
-        self.d.insert(old, new, new_len_)
-    }
-    fn replace(
-        &mut self,
-        old: usize,
-        old_len: usize,
-        new: usize,
-        new_len: usize,
-    ) -> Result<(), Self::Error> {
-        let old = old * self.window;
-        let old_len = (old_len * self.window).min(self.old_len - old);
-        let new = self.b[new].start();
-        let mut new_len_ = 0;
-        for b in &self.b[new .. new + new_len] {
-            match b {
-                Chunk::Old { start, .. } => {
-                    new_len_ += self.window.min(self.old_len - start)
-                }
-                Chunk::New { len, .. } => {
-                    new_len_ += len
-                }
-            }
-        }
-        self.d.replace(old, old_len, new, new_len_)
-    }
-    fn finish(&mut self) -> Result<(), Self::Error> {
-        self.d.finish()
-    }
-}
- */

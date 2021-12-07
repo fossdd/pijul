@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use anyhow::bail;
@@ -22,6 +22,9 @@ pub struct Reset {
     /// Print this file to the standard output, without modifying the repository (works for a single file only).
     #[clap(long = "dry-run")]
     pub dry_run: bool,
+    /// Reset even if there are unrecorded changes.
+    #[clap(long = "force", short = 'f')]
+    pub force: bool,
     /// Only reset these files
     pub files: Vec<PathBuf>,
 }
@@ -97,7 +100,7 @@ impl Reset {
             if !overwrite_changes {
                 return Ok(());
             }
-        } else if self.channel.is_some() {
+        } else if self.channel.is_some() && !self.force {
             if !self.files.is_empty() {
                 bail!("Cannot use --channel with individual paths. Did you mean --dry-run?")
             }
@@ -165,17 +168,21 @@ impl Reset {
             if let Some(ref c) = self.channel {
                 txn_.set_current_channel(c)?
             }
-            let mut paths = Vec::with_capacity(inodes.len());
+            let mut paths = BTreeSet::new();
             for pos in inodes.iter() {
                 if let Some((path, _)) =
                     libpijul::fs::find_path(&repo.changes, &*txn_, &*channel.read(), false, *pos)?
                 {
-                    paths.push(path)
+                    paths.insert(path);
                 } else {
                     paths.clear();
                     break;
                 }
             }
+            if paths.is_empty() {
+                paths.insert(String::from(""));
+            }
+            let mut last = None;
             PROGRESS
                 .borrow_mut()
                 .unwrap()
@@ -185,6 +192,10 @@ impl Reset {
                 });
             std::mem::drop(txn_);
             for path in paths.iter() {
+                match last {
+                    Some(last_path) if path.starts_with(last_path) => continue,
+                    _ => (),
+                }
                 debug!("resetting {:?}", path);
                 conflicts.extend(
                     libpijul::output::output_repository_no_pending(
@@ -192,7 +203,7 @@ impl Reset {
                         &repo.changes,
                         &txn,
                         &channel,
-                        &path,
+                        path,
                         true,
                         None,
                         num_cpus::get(),
@@ -200,22 +211,7 @@ impl Reset {
                     )?
                     .into_iter(),
                 );
-            }
-            if paths.is_empty() {
-                conflicts.extend(
-                    libpijul::output::output_repository_no_pending(
-                        &repo.working_copy,
-                        &repo.changes,
-                        &txn,
-                        &channel,
-                        "",
-                        true,
-                        None,
-                        num_cpus::get(),
-                        0,
-                    )?
-                    .into_iter(),
-                );
+                last = Some(path)
             }
             PROGRESS.join();
         } else {

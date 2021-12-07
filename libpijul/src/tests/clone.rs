@@ -21,7 +21,7 @@ fn clone_simple() -> Result<(), anyhow::Error> {
 
         txn.write().add_file("file", 0)?;
         recorded_changes.push(record_all(&repo, &changes, &txn, &channel, "").unwrap());
-        repo.write_file("file")
+        repo.write_file("file", Inode::ROOT)
             .unwrap()
             .write_all(contents2)
             .unwrap();
@@ -87,8 +87,12 @@ fn clone_prefixes() -> Result<(), anyhow::Error> {
     };
     let h2 = {
         let channel = txn.write().open_or_create_channel("main").unwrap();
-        repo.write_file("a/b/c/d").unwrap().write_all(b"edits\n")?;
-        repo.write_file("e/f/g/h").unwrap().write_all(b"edits\n")?;
+        repo.write_file("a/b/c/d", Inode::ROOT)
+            .unwrap()
+            .write_all(b"edits\n")?;
+        repo.write_file("e/f/g/h", Inode::ROOT)
+            .unwrap()
+            .write_all(b"edits\n")?;
         record_all(&mut repo, &changes, &txn, &channel, "a/b/c/d")?
     };
 

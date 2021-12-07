@@ -32,7 +32,7 @@ fn bin_diff_test() -> Result<(), anyhow::Error> {
                 .map(char::from),
         );
         contents.push('\n');
-        repo.write_file("file")
+        repo.write_file("file", Inode::ROOT)
             .unwrap()
             .write_all(contents.as_bytes())
             .unwrap();

@@ -112,7 +112,7 @@ fn text() -> Result<(), anyhow::Error> {
     let change0 = store.get_change(&h0).unwrap();
     text_test(&store, &change0, h0);
 
-    write!(repo.write_file("file")?, "a\nx\nc\ne\ny\nf\n")?;
+    write!(repo.write_file("file", Inode::ROOT)?, "a\nx\nc\ne\ny\nf\n")?;
 
     let h1 = record_all(&repo, &store, &txn, &channel, "")?;
     let change1 = store.get_change(&h1).unwrap();

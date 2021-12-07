@@ -10,32 +10,32 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-struct FileHeader {
-    version: u64,
-    header: u64,
-    channel: u64,
-    unhashed: u64,
-    total: u64,
-    offsets: DbOffsets,
-    state: Merkle,
+pub struct FileHeader {
+    pub version: u64,
+    pub header: u64,
+    pub channel: u64,
+    pub unhashed: u64,
+    pub total: u64,
+    pub offsets: DbOffsets,
+    pub state: Merkle,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-struct DbOffsets {
-    internal: u64,
-    external: u64,
-    graph: u64,
-    changes: u64,
-    revchanges: u64,
-    states: u64,
-    tags: u64,
-    apply_counter: u64,
-    size: u64,
+pub struct DbOffsets {
+    pub internal: u64,
+    pub external: u64,
+    pub graph: u64,
+    pub changes: u64,
+    pub revchanges: u64,
+    pub states: u64,
+    pub tags: u64,
+    pub apply_counter: u64,
+    pub size: u64,
 }
 
 pub struct OpenTagFile {
-    header: FileHeader,
-    file: std::fs::File,
+    pub header: FileHeader,
+    pub file: std::fs::File,
 }
 
 #[derive(Debug, Error)]
@@ -83,7 +83,7 @@ impl OpenTagFile {
 pub const VERSION: u64 = 7;
 pub const VERSION_NOENC: u64 = 5;
 
-const BLOCK_SIZE: usize = 4096;
+pub(crate) const BLOCK_SIZE: usize = 4096;
 
 pub fn restore_channel(
     mut tag: OpenTagFile,

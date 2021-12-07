@@ -120,6 +120,7 @@ impl SKey {
                     let salt = rand::thread_rng()
                         .sample_iter(&rand::distributions::Alphanumeric)
                         .take(32)
+                        .map(|c| c as char)
                         .collect();
                     let enc = Encryption::Aes128(Kdf::Pbkdf2 { salt });
                     enc.encrypt(password.as_bytes(), &mut key);

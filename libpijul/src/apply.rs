@@ -824,3 +824,79 @@ fn is_rooted<T: GraphTxnT>(
     }
     Ok(false)
 }
+
+pub fn apply_root_change<R: rand::Rng, T: MutTxnT, P: ChangeStore>(
+    txn: &mut T,
+    channel: &ChannelRef<T>,
+    store: &P,
+    rng: R,
+) -> Result<Option<(Hash, u64, Merkle)>, ApplyError<P::Error, T::GraphError>> {
+    let mut change = {
+        // If the graph already has a root.
+        {
+            let channel = channel.read();
+            let gr = txn.graph(&*channel);
+            for v in iter_adjacent(
+                &*txn,
+                gr,
+                Vertex::ROOT,
+                EdgeFlags::FOLDER,
+                EdgeFlags::FOLDER | EdgeFlags::BLOCK,
+            )? {
+                let v = txn
+                    .find_block(gr, v?.dest())
+                    .map_err(LocalApplyError::from)?;
+                if v.start == v.end {
+                    // Already has a root
+                    return Ok(None);
+                } else {
+                    // Non-empty channel without a root
+                    break;
+                }
+            }
+            // If we are here, either the channel is empty, or it
+            // isn't and doesn't have a root.
+        }
+        let root = Position {
+            change: Some(Hash::None),
+            pos: ChangePosition(0u64.into()),
+        };
+        let contents = rng
+            .sample_iter(rand::distributions::Standard)
+            .take(32)
+            .collect();
+        crate::change::LocalChange::make_change(
+            txn,
+            channel,
+            vec![crate::change::Hunk::AddRoot {
+                name: Atom::NewVertex(NewVertex {
+                    up_context: vec![root],
+                    down_context: Vec::new(),
+                    start: ChangePosition(0u64.into()),
+                    end: ChangePosition(0u64.into()),
+                    flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
+                    inode: root,
+                }),
+                inode: Atom::NewVertex(NewVertex {
+                    up_context: vec![Position {
+                        change: None,
+                        pos: ChangePosition(0u64.into()),
+                    }],
+                    down_context: Vec::new(),
+                    start: ChangePosition(1u64.into()),
+                    end: ChangePosition(1u64.into()),
+                    flag: EdgeFlags::FOLDER | EdgeFlags::BLOCK,
+                    inode: root,
+                }),
+            }],
+            contents,
+            crate::change::ChangeHeader::default(),
+            Vec::new(),
+        )?
+    };
+    let h = store
+        .save_change(&mut change, |_, _| Ok(()))
+        .map_err(ApplyError::Changestore)?;
+    let (n, merkle) = apply_change(store, txn, &mut channel.write(), &h)?;
+    Ok(Some((h, n, merkle)))
+}

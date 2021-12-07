@@ -107,7 +107,11 @@ impl Key {
                         bail!("No such remote: {}", remote)
                     }
                 } else if let Some(mut ssh) = crate::remote::ssh::ssh_remote(&remote, false) {
-                    ssh.connect(&remote, crate::DEFAULT_CHANNEL).await?
+                    if let Some(c) = ssh.connect(&remote, crate::DEFAULT_CHANNEL).await? {
+                        c
+                    } else {
+                        bail!("No such remote: {}", remote)
+                    }
                 } else {
                     bail!("No such remote: {}", remote)
                 };

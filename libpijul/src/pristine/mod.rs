@@ -645,10 +645,10 @@ pub trait TxnT:
 
     /// Iterate a function over all channels. The loop stops the first
     /// time `f` returns `false`.
-    fn iter_channels<'txn>(
+    fn channels<'txn>(
         &'txn self,
         start: &str,
-    ) -> Result<ChannelIterator<'txn, Self>, TxnErr<Self::GraphError>>;
+    ) -> Result<Vec<ChannelRef<Self>>, TxnErr<Self::GraphError>>;
 
     fn iter_remotes<'txn>(
         &'txn self,
@@ -1102,6 +1102,22 @@ pub fn debug_revinodes<T: TreeTxnT>(txn: &T) {
         debug!("debug_revinodes = {:?}", t.unwrap())
     }
     debug!("/debug_revinodes");
+}
+
+pub fn debug_dep<T: DepsTxnT>(txn: &T) {
+    debug!("debug_dep");
+    for t in txn.iter_dep(&ChangeId::ROOT).unwrap() {
+        debug!("debug_dep = {:?}", t.unwrap())
+    }
+    debug!("/debug_dep");
+}
+
+pub fn debug_revdep<T: DepsTxnT>(txn: &T) {
+    debug!("debug_revdep");
+    for t in txn.iter_revdep(&ChangeId::ROOT).unwrap() {
+        debug!("debug_revdep = {:?}", t.unwrap())
+    }
+    debug!("/debug_revdep");
 }
 
 /// Write the graph of a channel to write `W` in graphviz

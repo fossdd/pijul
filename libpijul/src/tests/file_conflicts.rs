@@ -127,6 +127,12 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
     }
 
     // Bob solves.
+    {
+        let txn_ = txn_bob.write();
+        let mut f = std::fs::File::create("/tmp/conflict0")?;
+        crate::pristine::debug(&*txn_, &txn_.graph(&*channel_bob.read()), &mut f)?;
+    }
+    info!("recording resolution");
     let bob_solution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
     let conflicts = output::output_repository_no_pending(
         &repo_bob,
@@ -140,6 +146,9 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
         0,
     )?;
     if !conflicts.is_empty() {
+        let txn_ = txn_bob.write();
+        let mut f = std::fs::File::create("/tmp/conflict1")?;
+        crate::pristine::debug(&*txn_, &txn_.graph(&*channel_bob.read()), &mut f)?;
         panic!("conflicts = {:#?}", conflicts);
     }
 
@@ -499,7 +508,7 @@ fn zombie_file_test() -> Result<(), anyhow::Error> {
 
     // Bob edits "file"
     repo_bob
-        .write_file("a/b/c/file")
+        .write_file("a/b/c/file", Inode::ROOT)
         .unwrap()
         .write_all(contents2)?;
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
@@ -619,7 +628,7 @@ fn rename_zombie_file() -> Result<(), anyhow::Error> {
     // Bob renames "file"
     repo_bob.rename("a/b/c/file", "a/b/c/file2")?;
     repo_bob
-        .write_file("a/b/c/file2")
+        .write_file("a/b/c/file2", Inode::ROOT)
         .unwrap()
         .write_all(contents2)?;
     txn_bob.write().move_file("a/b/c/file", "a/b/c/file2", 0)?;
@@ -744,7 +753,7 @@ fn rename_zombie_dir() -> Result<(), anyhow::Error> {
     // Bob renames "file"
     repo_bob.rename("a/b/c", "a/b/d")?;
     repo_bob
-        .write_file("a/b/d/file")
+        .write_file("a/b/d/file", Inode::ROOT)
         .unwrap()
         .write_all(contents2)?;
     txn_bob.write().move_file("a/b/c", "a/b/d", 0)?;
@@ -879,14 +888,14 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
 
     // Bob edits "file"
     repo_bob
-        .write_file("a/b/c/file")
+        .write_file("a/b/c/file", Inode::ROOT)
         .unwrap()
         .write_all(contents2)?;
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     // Charlie edits "file"
     repo_charlie
-        .write_file("a/b/c/file")
+        .write_file("a/b/c/file", Inode::ROOT)
         .unwrap()
         .write_all(contents3)?;
     let charlie_h =
@@ -929,7 +938,7 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
     repo_alice.read_file("a/b/c/file", &mut buf)?;
     // Alice removes conflict markers.
     {
-        let mut w = repo_alice.write_file("a/b/c/file").unwrap();
+        let mut w = repo_alice.write_file("a/b/c/file", Inode::ROOT).unwrap();
         for l in std::str::from_utf8(&buf).unwrap().lines() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
@@ -1375,14 +1384,17 @@ fn delete_zombie_test() -> Result<(), anyhow::Error> {
 
     // Alice adds a zombie line.
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\nb\nx\nc\nd\n")?;
     record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
 
     // Bob deletes the context of Alice's new line, and then deletes
     // "file".
-    repo_bob.write_file("file").unwrap().write_all(b"a\nd\n")?;
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(b"a\nd\n")?;
     let bob_h1 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
     repo_bob.remove_path("file", false).unwrap_or(());
     let bob_h2 = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
@@ -1399,7 +1411,7 @@ fn delete_zombie_test() -> Result<(), anyhow::Error> {
         .apply_change(&changes, &mut *channel_alice.write(), &bob_h2)
         .unwrap();
 
-    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel_alice.read().graph);
+    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel_alice.read());
     if !alive.is_empty() {
         panic!("alive (bob0): {:?}", alive);
     }
@@ -1560,5 +1572,43 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
         panic!("Alice has conflicts: {:?}", conflicts);
     }
 
+    Ok(())
+}
+
+#[test]
+fn move_back_noundel_test() -> Result<(), anyhow::Error> {
+    env_logger::try_init().unwrap_or(());
+
+    let repo_alice = working_copy::memory::Memory::new();
+    let changes = changestore::memory::Memory::new();
+    let env_alice = pristine::sanakirja::Pristine::new_anon()?;
+    let txn_alice = env_alice.arc_txn_begin().unwrap();
+    let channel_alice = txn_alice.write().open_or_create_channel("main")?;
+    repo_alice.add_file("a", b"a\n".to_vec());
+    txn_alice.write().add_file("a", 0)?;
+    let _init = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
+
+    repo_alice.rename("a", "b").unwrap_or(());
+    txn_alice.write().move_file("a", "b", 0)?;
+    let _mv = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
+
+    repo_alice.rename("b", "a").unwrap_or(());
+    txn_alice.write().move_file("b", "a", 0)?;
+
+    info!("MOVE BACK");
+    {
+        let txn_ = txn_alice.write();
+        let mut f = std::fs::File::create("/tmp/moveback")?;
+        crate::pristine::debug(&*txn_, &txn_.graph(&*channel_alice.read()), &mut f)?;
+    }
+    let back = record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "")?;
+
+    let back = changes.get_change(&back).unwrap();
+    match back.hashed.changes[0] {
+        crate::change::Hunk::FileMove { .. } => {}
+        ref x => {
+            panic!("{:#?}", x);
+        }
+    }
     Ok(())
 }

@@ -21,7 +21,8 @@ fn test() -> Result<(), anyhow::Error> {
     let _h0 = record_all(&repo, &changes, &txn, &channel, "")?;
 
     use std::io::Write;
-    repo.write_file("dir/file")?.write_all(b"a\nx\nb\nd\n")?;
+    repo.write_file("dir/file", Inode::ROOT)?
+        .write_all(b"a\nx\nb\nd\n")?;
 
     let h1 = record_all(&repo, &changes, &txn, &channel, "")?;
 
@@ -58,7 +59,8 @@ fn replace() -> Result<(), anyhow::Error> {
     let channel = txn.write().open_or_create_channel("main")?;
     let _h0 = record_all(&repo, &changes, &txn, &channel, "")?;
 
-    repo.write_file("dir/file")?.write_all(b"a\nx\ny\nd\n")?;
+    repo.write_file("dir/file", Inode::ROOT)?
+        .write_all(b"a\nx\ny\nd\n")?;
 
     let h1 = record_all(&repo, &changes, &txn, &channel, "")?;
 
@@ -178,15 +180,19 @@ fn reconnect_(delete_file: bool) -> Result<(), anyhow::Error> {
     if delete_file {
         repo.remove_path("file", false)?;
     } else {
-        repo.write_file("file")?.write_all(b"a\nd\n")?;
+        repo.write_file("file", Inode::ROOT)?.write_all(b"a\nd\n")?;
     }
     record_all_output(&repo, changes.clone(), &txn, &channel, "")?;
 
     ///////////
-    repo2.write_file("file")?.write_all(b"a\nb\nx\nc\nd\n")?;
+    repo2
+        .write_file("file", Inode::ROOT)?
+        .write_all(b"a\nb\nx\nc\nd\n")?;
     let h2 = record_all(&repo2, &changes, &txn2, &channel2, "")?;
 
-    repo2.write_file("file")?.write_all(b"a\nb\nx\nc\ny\nd\n")?;
+    repo2
+        .write_file("file", Inode::ROOT)?
+        .write_all(b"a\nb\nx\nc\ny\nd\n")?;
     let h3 = record_all(&repo2, &changes, &txn2, &channel2, "")?;
 
     ///////////
@@ -233,7 +239,7 @@ fn zombie_(file: Option<&[u8]>) -> Result<(), anyhow::Error> {
 
     ///////////
     if let Some(file) = file {
-        repo.write_file("file")?.write_all(file)?;
+        repo.write_file("file", Inode::ROOT)?.write_all(file)?;
     } else {
         repo.remove_path("file", false)?;
     }
@@ -241,7 +247,9 @@ fn zombie_(file: Option<&[u8]>) -> Result<(), anyhow::Error> {
 
     ///////////
 
-    repo2.write_file("file")?.write_all(b"a\nb\nx\nc\nd\n")?;
+    repo2
+        .write_file("file", Inode::ROOT)?
+        .write_all(b"a\nb\nx\nc\nd\n")?;
     let h2 = record_all_output(&repo2, changes.clone(), &txn2, &channel2, "")?;
 
     ///////////
@@ -269,7 +277,7 @@ fn zombie_(file: Option<&[u8]>) -> Result<(), anyhow::Error> {
         }
     }
 
-    let (alive_, reachable_) = check_alive(&*txn.read(), &channel.read().graph);
+    let (alive_, reachable_) = check_alive(&*txn.read(), &channel.read());
     if !alive_.is_empty() {
         panic!("alive: {:?}", alive_);
     }
@@ -339,7 +347,7 @@ fn zombie_dir() -> Result<(), anyhow::Error> {
     debug!("files={:?}", files);
     assert_eq!(files, &["a", "a/b", "a/b/c", "a/b/c/d"]);
 
-    let (alive_, reachable_) = check_alive(&*txn.read(), &channel.read().graph);
+    let (alive_, reachable_) = check_alive(&*txn.read(), &channel.read());
     if !alive_.is_empty() {
         panic!("alive: {:?}", alive_);
     }
@@ -369,7 +377,8 @@ fn nodep() -> Result<(), anyhow::Error> {
     let channel = txn.write().open_or_create_channel("main")?;
     let h0 = record_all(&repo, &changes, &txn, &channel, "")?;
 
-    repo.write_file("dir/file")?.write_all(b"a\nx\nb\nd\n")?;
+    repo.write_file("dir/file", Inode::ROOT)?
+        .write_all(b"a\nx\nb\nd\n")?;
 
     let h1 = record_all(&repo, &changes, &txn, &channel, "")?;
     debug_inodes(&*txn.read());
@@ -482,9 +491,11 @@ fn self_context() -> Result<(), anyhow::Error> {
 
     let channel2 = txn.write().fork(&channel, "main2")?;
 
-    repo.write_file("file")?.write_all(b"a\nx\nb\n")?;
+    repo.write_file("file", Inode::ROOT)?
+        .write_all(b"a\nx\nb\n")?;
     record_all(&repo, &changes, &txn, &channel, "")?;
-    repo.write_file("file")?.write_all(b"a\ny\nb\n")?;
+    repo.write_file("file", Inode::ROOT)?
+        .write_all(b"a\ny\nb\n")?;
     let b = record_all(&repo, &changes, &txn, &channel2, "")?;
 
     apply::apply_change_arc(&changes, &txn, &channel, &b)?;
@@ -505,7 +516,7 @@ fn self_context() -> Result<(), anyhow::Error> {
     repo.read_file("file", &mut buf)?;
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo.write_file("file")?;
+        let mut w = repo.write_file("file", Inode::ROOT)?;
         for l in conflict.iter() {
             if l.starts_with(">>>") {
                 writeln!(w, "bla\n{}\nbli", l)?
@@ -580,7 +591,7 @@ fn rollback_(delete_file: bool) -> Result<(), anyhow::Error> {
     if delete_file {
         repo.remove_path("file", false)?
     } else {
-        repo.write_file("file")?.write_all(b"a\nd\n")?;
+        repo.write_file("file", Inode::ROOT)?.write_all(b"a\nd\n")?;
     }
     let h_del = record_all(&repo, &changes, &txn, &channel, "")?;
 
@@ -653,7 +664,7 @@ fn double_test() -> Result<(), anyhow::Error> {
 
     // First deletion
     {
-        let mut w = repo.write_file("file")?;
+        let mut w = repo.write_file("file", Inode::ROOT)?;
         writeln!(w, "blabla\nblublu")?;
     }
     let h1 = record_all(&repo, &changes, &txn, &channel, "")?;
@@ -705,7 +716,7 @@ fn double_convoluted() -> Result<(), anyhow::Error> {
 
     // First deletion
     {
-        let mut w = repo.write_file("file")?;
+        let mut w = repo.write_file("file", Inode::ROOT)?;
         write!(w, "blabla\nblibli\n")?;
     }
     let h1 = record_all(&repo, &changes, &txn, &channel, "")?;
@@ -713,7 +724,7 @@ fn double_convoluted() -> Result<(), anyhow::Error> {
 
     // Second deletion
     {
-        let mut w = repo.write_file("file")?;
+        let mut w = repo.write_file("file", Inode::ROOT)?;
         writeln!(w, "blabla")?;
     }
     let h2 = record_all(&repo, &changes, &txn, &channel2, "")?;

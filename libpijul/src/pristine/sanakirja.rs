@@ -362,10 +362,25 @@ impl Txn {
 impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPage> GraphTxnT
     for GenericTxn<T>
 {
-    type Graph = Db<Vertex<ChangeId>, SerializedEdge>;
+    type Graph = Channel;
     type GraphError = SanakirjaError;
 
-    sanakirja_get!(graph, Vertex<ChangeId>, SerializedEdge, GraphError);
+    fn get_graph<'txn>(
+        &'txn self,
+        db: &Self::Graph,
+        key: &Vertex<ChangeId>,
+        value: Option<&SerializedEdge>,
+    ) -> Result<Option<&'txn SerializedEdge>, TxnErr<Self::GraphError>> {
+        match ::sanakirja::btree::get(&self.txn, &db.graph, key, value) {
+            Ok(Some((k, v))) if k == key => Ok(Some(v)),
+            Ok(_) => Ok(None),
+            Err(e) => {
+                error!("{:?}", e);
+                Err(TxnErr(SanakirjaError::PristineCorrupt))
+            }
+        }
+    }
+
     fn get_external(
         &self,
         p: &ChangeId,
@@ -414,7 +429,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         max_flag: EdgeFlags,
     ) -> Result<Self::Adj, TxnErr<Self::GraphError>> {
         let edge = SerializedEdge::new(min_flag, dest.change, dest.pos, ChangeId::ROOT);
-        let mut cursor = btree::cursor::Cursor::new(&self.txn, g).map_err(TxnErr)?;
+        let mut cursor = btree::cursor::Cursor::new(&self.txn, &g.graph).map_err(TxnErr)?;
         cursor.set(&self.txn, &key, Some(&edge))?;
         Ok(Adj {
             cursor,
@@ -437,7 +452,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         graph: &Self::Graph,
         p: Position<ChangeId>,
     ) -> Result<&Vertex<ChangeId>, BlockError<Self::GraphError>> {
-        find_block(&self.txn, graph, p)
+        find_block(&self.txn, &graph.graph, p)
     }
 
     fn find_block_end(
@@ -445,7 +460,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         graph: &Self::Graph,
         p: Position<ChangeId>,
     ) -> Result<&Vertex<ChangeId>, BlockError<Self::GraphError>> {
-        find_block_end(&self.txn, graph, p)
+        find_block_end(&self.txn, &graph.graph, p)
     }
 }
 
@@ -633,7 +648,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         g: &Self::Graph,
         s: Option<&Vertex<ChangeId>>,
     ) -> Result<Self::GraphCursor, TxnErr<Self::GraphError>> {
-        let mut c = ::sanakirja::btree::cursor::Cursor::new(&self.txn, &g)?;
+        let mut c = ::sanakirja::btree::cursor::Cursor::new(&self.txn, &g.graph)?;
         if let Some(s) = s {
             c.set(&self.txn, s, None)?;
         }
@@ -690,8 +705,8 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
 {
     type Channel = Channel;
 
-    fn graph<'a>(&self, c: &'a Self::Channel) -> &'a Db<Vertex<ChangeId>, SerializedEdge> {
-        &c.graph
+    fn graph<'a>(&self, c: &'a Self::Channel) -> &'a Channel {
+        c
     }
     fn name<'a>(&self, c: &'a Self::Channel) -> &'a str {
         c.name.as_str()
@@ -1298,14 +1313,22 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         UP<SmallStr, SerializedChannel>,
     >;
     sanakirja_cursor!(channels, SmallStr, SerializedChannel);
-    fn iter_channels<'txn>(
+    fn channels<'txn>(
         &'txn self,
         start: &str,
-    ) -> Result<ChannelIterator<'txn, Self>, TxnErr<Self::GraphError>> {
+    ) -> Result<Vec<ChannelRef<Self>>, TxnErr<Self::GraphError>> {
         let name = SmallString::from_str(start);
         let mut cursor = btree::cursor::Cursor::new(&self.txn, &self.channels)?;
         cursor.set(&self.txn, &name, None)?;
-        Ok(ChannelIterator { cursor, txn: self })
+        while let Ok(Some((name, _))) = self.cursor_channels_next(&mut cursor) {
+            self.load_channel(name.as_str())?;
+        }
+        Ok(self
+            .open_channels
+            .lock()
+            .iter()
+            .map(|(_, x)| x.clone())
+            .collect())
     }
 
     type Remotes = UDb<RemoteId, SerializedRemote>;
@@ -1470,7 +1493,7 @@ impl GraphMutTxnT for MutTxn<()> {
         k: &Vertex<ChangeId>,
         e: &SerializedEdge,
     ) -> Result<bool, TxnErr<Self::GraphError>> {
-        Ok(btree::put(&mut self.txn, graph, k, e)?)
+        Ok(btree::put(&mut self.txn, &mut graph.graph, k, e)?)
     }
 
     fn del_graph(
@@ -1479,13 +1502,13 @@ impl GraphMutTxnT for MutTxn<()> {
         k: &Vertex<ChangeId>,
         e: Option<&SerializedEdge>,
     ) -> Result<bool, TxnErr<Self::GraphError>> {
-        Ok(btree::del(&mut self.txn, graph, k, e)?)
+        Ok(btree::del(&mut self.txn, &mut graph.graph, k, e)?)
     }
 
     fn debug(&mut self, graph: &mut Self::Graph, extra: &str) {
         ::sanakirja::debug::debug(
             &self.txn,
-            &[graph],
+            &[&graph.graph],
             format!("debug{}{}", self.counter, extra),
             true,
         );
@@ -1503,7 +1526,7 @@ impl GraphMutTxnT for MutTxn<()> {
     ) -> Result<(), TxnErr<Self::GraphError>> {
         assert!(pos > key.start);
         assert!(pos < key.end);
-        let mut cursor = btree::cursor::Cursor::new(&self.txn, graph)?;
+        let mut cursor = btree::cursor::Cursor::new(&self.txn, &graph.graph)?;
         cursor.set(&self.txn, key, None)?;
         loop {
             match cursor.next(&self.txn) {
@@ -1570,7 +1593,7 @@ impl GraphMutTxnT for MutTxn<()> {
 
 impl ChannelMutTxnT for MutTxn<()> {
     fn graph_mut(c: &mut Self::Channel) -> &mut Self::Graph {
-        &mut c.graph
+        c
     }
     fn touch_channel(&mut self, channel: &mut Self::Channel, t: Option<u64>) {
         use std::time::SystemTime;
@@ -1941,20 +1964,10 @@ impl MutTxnT for MutTxn<()> {
             'outer: for x in btree::rev_iter(&self.txn, &c, None)? {
                 let (_, p) = x?;
                 debug!(target: "drop_channel", "testing unused change: {:?}", p);
-                let mut it0 = self.iter_channels("").map_err(|e| e.0)?;
-                let it1 = self.open_channels.lock();
-                let mut it1 = it1.iter();
-                loop {
-                    let (name, chan) = if let Some(chan) = it0.next() {
-                        chan.map_err(|e| e.0)?
-                    } else if let Some((name, chan)) = it1.next() {
-                        (name.as_ref(), chan.clone())
-                    } else {
-                        break
-                    };
+                for chan in self.channels("").map_err(|e| e.0)? {
                     debug!(target: "drop_channel", "channel: {:?}", name);
-                    assert_ne!(name.as_str(), name0);
                     let chan = chan.read();
+                    assert_ne!(chan.name.as_str(), name0);
                     if self
                         .channel_has_state(&chan.states, &p.b)
                         .map_err(|e| e.0)?

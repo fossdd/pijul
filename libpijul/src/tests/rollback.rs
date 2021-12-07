@@ -22,13 +22,13 @@ fn rollback_conflict_resolution_simple() {
 
     let channelb = txn.write().fork(&channela, "other").unwrap();
 
-    repo.write_file("file")
+    repo.write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\nx\nb\n")
         .unwrap();
     let ha = record_all(&repo, &changes, &txn, &channela, "").unwrap();
 
-    repo.write_file("file")
+    repo.write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\ny\nb\n")
         .unwrap();
@@ -46,7 +46,7 @@ fn rollback_conflict_resolution_simple() {
     // Solve the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf).unwrap().lines().collect();
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|l| l.len() == 1) {
             writeln!(w, "{}", l).unwrap()
         }
@@ -93,13 +93,15 @@ fn rollback_conflict_resolution_swap() -> Result<(), anyhow::Error> {
 
     let channelb = txn.write().fork(&channela, "other")?;
 
-    repo.write_file("file")
+    repo.write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\nx\nb\n")
         .unwrap();
     let ha = record_all(&repo, &changes, &txn, &channela, "")?;
 
-    repo.write_file("file").unwrap().write_all(b"a\ny\nb\n")?;
+    repo.write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(b"a\ny\nb\n")?;
     let hb = record_all(&repo, &changes, &txn, &channelb, "")?;
 
     apply::apply_change_arc(&changes, &txn, &channelb, &ha)?;
@@ -113,7 +115,7 @@ fn rollback_conflict_resolution_swap() -> Result<(), anyhow::Error> {
     // Solve the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|l| l.len() == 1) {
             writeln!(w, "{}", l)?
         }

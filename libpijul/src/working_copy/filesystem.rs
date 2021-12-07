@@ -42,21 +42,35 @@ pub fn filter_ignore(root_: &CanonicalPath, path: &CanonicalPath, is_dir: bool) 
 /// From a path on the filesystem, return the canonical path (a `PathBuf`), and a
 /// prefix relative to the root of the repository (a `String`).
 pub fn get_prefix(
-    repo_path: Option<&CanonicalPath>,
+    repo_path: Option<&Path>,
     prefix: &Path,
-) -> Result<(canonical_path::CanonicalPathBuf, String), std::io::Error> {
+) -> Result<(PathBuf, String), std::io::Error> {
     let mut p = String::new();
     let repo = if let Some(repo) = repo_path {
-        Cow::Borrowed(repo)
+        Cow::Borrowed(repo.into())
     } else {
-        Cow::Owned(canonical_path::CanonicalPathBuf::canonicalize(
-            std::env::current_dir()?,
-        )?)
+        Cow::Owned(std::env::current_dir()?)
     };
     debug!("get prefix {:?} {:?}", repo, prefix);
-    let prefix_ = CanonicalPathBuf::canonicalize(&repo.as_path().join(&prefix))?;
+    let repo_prefix = &repo.join(&prefix);
+    let prefix_ = if let Ok(x) = repo_prefix.canonicalize() {
+        x
+    } else {
+        let mut p = PathBuf::new();
+        for c in repo_prefix.components() {
+            use std::path::Component;
+            match c {
+                Component::Prefix(_) => p.push(c.as_os_str()),
+                Component::RootDir => p.push(c.as_os_str()),
+                Component::CurDir => {},
+                Component::ParentDir => { p.pop(); },
+                Component::Normal(x) => p.push(x),
+            }
+        }
+        p
+    };
     debug!("get prefix {:?}", prefix_);
-    if let Ok(prefix) = prefix_.as_path().strip_prefix(repo.as_path()) {
+    if let Ok(prefix) = prefix_.as_path().strip_prefix(repo) {
         for c in prefix.components() {
             if !p.is_empty() {
                 p.push('/');
@@ -278,16 +292,13 @@ impl FileSystem {
         T::Channel: Send + Sync,
     {
         let (full, prefix) = get_prefix(Some(repo_path.as_ref()), prefix).map_err(AddError::Io)?;
-        {
-            let path = if let Ok(path) = full.as_path().strip_prefix(&repo_path.as_path()) {
-                path
-            } else {
-                return Ok(());
-            };
-            use path_slash::PathExt;
-            let path_str = path.to_slash_lossy();
-            if !txn.read().is_tracked(&path_str)? {
-                self.add_prefix_rec(&txn, repo_path, full, threads, salt)?;
+        if let Ok(full) = CanonicalPathBuf::canonicalize(&full) {
+            if let Ok(path) = full.as_path().strip_prefix(&repo_path.as_path()) {
+                use path_slash::PathExt;
+                let path_str = path.to_slash_lossy();
+                if !txn.read().is_tracked(&path_str)? {
+                    self.add_prefix_rec(&txn, repo_path, full, threads, salt)?;
+                }
             }
         }
         debug!("recording from prefix {:?}", prefix);

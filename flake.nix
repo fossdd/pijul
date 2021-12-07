@@ -1,61 +1,59 @@
 {
   description = "pijul, the sound distributed version control system";
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-21.05";
-  inputs.mozilla = { url = "github:mozilla/nixpkgs-mozilla"; flake = false; };
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-21.11";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+  };
 
   outputs =
     { self
     , nixpkgs
-    , mozilla
+    , rust-overlay
     , ...
     } @ inputs:
     let
       nameValuePair = name: value: { inherit name value; };
       genAttrs = names: f: builtins.listToAttrs (map (n: nameValuePair n (f n)) names);
       allSystems = [ "x86_64-linux" "aarch64-linux" "i686-linux" "x86_64-darwin" ];
+      forAllSystems = f: genAttrs allSystems (system: f system);
 
       rustOverlay = final: prev:
         let
-          rustChannel = prev.rustChannelOf {
-            channel = "1.54.0";
-            sha256 = "sha256-2NfCJiH3wk7sR1XlRf8+IZfY3S9sYKdL8TpMqk82Bq0=";
-          };
-        in
-        {
+          rustChannel = prev.rust-bin.stable."1.56.0";
+        in {
           inherit rustChannel;
-          rustc = rustChannel.rust;
-          cargo = rustChannel.rust;
+          rustc = rustChannel.minimal;
         };
-
-      forAllSystems = f: genAttrs allSystems (system: f {
-        inherit system;
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [
-            (import "${mozilla}/rust-overlay.nix")
-            rustOverlay
-          ];
-        };
-      });
-    in
-    {
-      devShell = forAllSystems ({ system, pkgs, ... }:
-        pkgs.mkShell {
+    in {
+      devShell = forAllSystems (system:
+        let
+          rustDevOverlay = final: prev: {
+            # rust-analyzer needs core source
+            rustc-with-src = prev.rustc.override { extensions = [ "rust-src" ]; };
+          };
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [
+              (import rust-overlay)
+              rustOverlay
+              rustDevOverlay
+            ];
+          };
+        in pkgs.mkShell {
           name = "pijul";
 
           inputsFrom = [ self.packages.${system}.pijul-git ];
 
           # Eventually crate2nix will provide a devShell that includes transitive dependencies for us.
           # https://github.com/kolloch/crate2nix/issues/111
-          buildInputs = with pkgs; [
+          packages = with pkgs; [
             pkg-config
             clang
             openssl
 
-            # rustChannel.rust provides tools like clippy, rustfmt, cargo,
-            # rust-analyzer, rustc, and more.
-            (rustChannel.rust.override { extensions = [ "rust-src" ]; })
+            rust-analyzer rustc-with-src
+            rustfmt
             crate2nix
           ];
 
@@ -63,8 +61,15 @@
         });
 
       packages = forAllSystems
-        ({ system, pkgs, ... }:
+        (system:
           let
+            pkgs = import nixpkgs {
+              inherit system;
+              overlays = [
+                (import rust-overlay)
+                rustOverlay
+              ];
+            };
             pijul =
               let
                 cargoNix = import ./Cargo.nix {
@@ -72,7 +77,7 @@
                   defaultCrateOverrides = pkgs.defaultCrateOverrides // {
                     zstd-seekable = { ... }: {
                       nativeBuildInputs = [ pkgs.clang ]
-                        ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.xcbuild ];
+                                          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.xcbuild ];
                       LIBCLANG_PATH = "${pkgs.llvmPackages.libclang}/lib";
                     };
 
@@ -85,6 +90,7 @@
                         zstd
                         xxHash
                         libsodium
+                        xxHash
                         libiconv
                       ] ++ lib.optionals stdenv.isDarwin (
                         [ openssl ]
@@ -92,14 +98,13 @@
                           CoreServices
                           Security
                           SystemConfiguration
-                      ]));
+                        ]));
                     };
                   };
                 };
               in
-              cargoNix.workspaceMembers.pijul.build;
-          in
-          {
+                cargoNix.workspaceMembers.pijul.build;
+          in {
             inherit pijul;
             pijul-git = pijul.override { features = [ "git" ]; };
           });

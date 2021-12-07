@@ -49,12 +49,16 @@ fn solve_order_conflict() -> Result<(), anyhow::Error> {
     }
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -110,7 +114,7 @@ fn solve_order_conflict() -> Result<(), anyhow::Error> {
     // Alice solves the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for (n, l) in conflict.iter().enumerate() {
             if n == 0 || n == 2 || n == 3 || n == 7 || n == 8 || n == 10 {
                 writeln!(w, "{}", l)?
@@ -255,12 +259,16 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
     )?;
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Charlie edits and records
     repo_charlie
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(charlie)
         .unwrap();
@@ -268,7 +276,7 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -323,7 +331,7 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
     // Alice solves the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|l| l.len() == 1) {
             writeln!(w, "{}", l)?
         }
@@ -402,7 +410,7 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
     }
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_bob.write_file("file").unwrap();
+        let mut w = repo_bob.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|l| l.len() == 1) {
             writeln!(w, "{}", l)?
         }
@@ -489,12 +497,16 @@ fn order_conflict_edit() -> Result<(), anyhow::Error> {
     info!("Done outputting Bob's working_copy");
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -520,7 +532,7 @@ fn order_conflict_edit() -> Result<(), anyhow::Error> {
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     let mut is_conflict = 0;
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             if l.len() == 1 {
                 if is_conflict < 2 {
@@ -609,11 +621,17 @@ fn edit_conflict_sides() -> Result<(), anyhow::Error> {
     info!("Done outputting Bob's working_copy");
 
     // Bob edits and records
-    repo.write_file("file").unwrap().write_all(bob).unwrap();
+    repo.write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
-    repo.write_file("file").unwrap().write_all(alice).unwrap();
+    repo.write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(alice)
+        .unwrap();
     let alice_h = record_all(&repo, &changes, &txn, &channel_alice, "")?;
 
     // Alice applies Bob's change
@@ -635,7 +653,7 @@ fn edit_conflict_sides() -> Result<(), anyhow::Error> {
     // Alice edits sides of the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         let mut ended = false;
         let mut n = 0;
         for l in conflict.iter() {
@@ -737,11 +755,17 @@ fn edit_after_conflict() -> Result<(), anyhow::Error> {
     info!("Done outputting Bob's working_copy");
 
     // Bob edits and records
-    repo.write_file("file").unwrap().write_all(bob).unwrap();
+    repo.write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
-    repo.write_file("file").unwrap().write_all(alice).unwrap();
+    repo.write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(alice)
+        .unwrap();
     let alice_h = record_all(&repo, &changes, &txn, &channel_alice, "")?;
 
     // Alice applies Bob's change
@@ -763,7 +787,7 @@ fn edit_after_conflict() -> Result<(), anyhow::Error> {
     // Alice edits sides of the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             debug!("line: {:?}", l);
             if l.len() > 5 && l.as_bytes()[0] != b'<' {
@@ -860,7 +884,10 @@ fn delete_before_marker() -> Result<(), anyhow::Error> {
     let bob_changes: Vec<_> = bob_edits
         .iter()
         .map(|bob| {
-            repo.write_file("file").unwrap().write_all(bob).unwrap();
+            repo.write_file("file", Inode::ROOT)
+                .unwrap()
+                .write_all(bob)
+                .unwrap();
             record_all(&repo, &changes, &txn, &channel_bob, "").unwrap()
         })
         .collect();
@@ -870,7 +897,10 @@ fn delete_before_marker() -> Result<(), anyhow::Error> {
     let alice_changes: Vec<_> = alice_edits
         .iter()
         .map(|alice| {
-            repo.write_file("file").unwrap().write_all(alice).unwrap();
+            repo.write_file("file", Inode::ROOT)
+                .unwrap()
+                .write_all(alice)
+                .unwrap();
             record_all(&repo, &changes, &txn, &channel_alice, "").unwrap()
         })
         .collect();
@@ -896,7 +926,7 @@ fn delete_before_marker() -> Result<(), anyhow::Error> {
     // Alice edits sides of the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo.write_file("file").unwrap();
+        let mut w = repo.write_file("file", Inode::ROOT).unwrap();
         let mut ended = false;
         for l in conflict.iter() {
             debug!("line: {:?}", l);
@@ -1000,12 +1030,16 @@ fn conflict_last_line() -> Result<(), anyhow::Error> {
         info!("Bob = {:?}", std::str::from_utf8(&buf));
     }
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -1051,7 +1085,7 @@ fn conflict_last_line() -> Result<(), anyhow::Error> {
     // Alice solves the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|l| l.len() <= 2) {
             writeln!(w, "{}", l)?
         }
@@ -1137,12 +1171,16 @@ fn zombie_last_line() -> Result<(), anyhow::Error> {
         info!("Bob = {:?}", std::str::from_utf8(&buf));
     }
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -1196,7 +1234,10 @@ fn zombie_last_line() -> Result<(), anyhow::Error> {
     }
 
     // Alice solves the conflict.
-    repo_alice.write_file("file").unwrap().write_all(b"x")?;
+    repo_alice
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(b"x")?;
     info!("resolving");
     let mut buf_alice = Vec::new();
     repo_alice.read_file("file", &mut buf_alice)?;
@@ -1381,12 +1422,16 @@ fn edit_post_conflict_<
         info!("Bob = {:?}", std::str::from_utf8(&buf));
     }
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -1412,7 +1457,7 @@ fn edit_post_conflict_<
 
     // Alice solves the conflict.
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         resolve(&buf, &mut w)?;
     }
     info!("resolving");
@@ -1503,13 +1548,17 @@ fn nested_conflict() -> Result<(), anyhow::Error> {
     }
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     debug!("Alice records");
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -1534,7 +1583,7 @@ fn nested_conflict() -> Result<(), anyhow::Error> {
     let mut buf = Vec::new();
     repo_alice.read_file("file", &mut buf)?;
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         let buf = std::str::from_utf8(&buf).unwrap();
         w.write_all(buf.replace("x\n", "u\nx\n").as_bytes())?;
     }
@@ -1559,7 +1608,7 @@ fn nested_conflict() -> Result<(), anyhow::Error> {
     buf.clear();
     repo_bob.read_file("file", &mut buf)?;
     {
-        let mut w = repo_bob.write_file("file").unwrap();
+        let mut w = repo_bob.write_file("file", Inode::ROOT).unwrap();
         let buf = std::str::from_utf8(&buf).unwrap();
         w.write_all(buf.replace("x\n", "i\nx\n").as_bytes())?;
     }
@@ -1632,7 +1681,11 @@ fn zombie_context_resolution() -> Result<(), anyhow::Error> {
     let p_alice: Vec<_> = x
         .iter()
         .map(|c| {
-            repo_alice.write_file("file").unwrap().write_all(c).unwrap();
+            repo_alice
+                .write_file("file", Inode::ROOT)
+                .unwrap()
+                .write_all(c)
+                .unwrap();
             record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap()
         })
         .collect();
@@ -1654,7 +1707,10 @@ fn zombie_context_resolution() -> Result<(), anyhow::Error> {
 
     // Bob creates an order conflict just to keep line "c" connected
     // to the root.
-    repo_bob.write_file("file").unwrap().write_all(b"x\nc\n")?;
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(b"x\nc\n")?;
     debug!("bob records conflict");
     let p_bob = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
@@ -1685,7 +1741,10 @@ fn zombie_context_resolution() -> Result<(), anyhow::Error> {
         Ok(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n")
     );
 
-    repo_bob.write_file("file").unwrap().write_all(b"x\nc\n")?;
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(b"x\nc\n")?;
     let resolution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
     output::output_repository_no_pending(
         &repo_bob,
@@ -1761,7 +1820,11 @@ fn zombie_half_survivor() -> Result<(), anyhow::Error> {
     let p_alice: Vec<_> = x
         .iter()
         .map(|c| {
-            repo_alice.write_file("file").unwrap().write_all(c).unwrap();
+            repo_alice
+                .write_file("file", Inode::ROOT)
+                .unwrap()
+                .write_all(c)
+                .unwrap();
             record_all(&repo_alice, &changes, &txn_alice, &channel_alice, "").unwrap()
         })
         .collect();
@@ -1784,7 +1847,7 @@ fn zombie_half_survivor() -> Result<(), anyhow::Error> {
     // Bob creates an order conflict just to keep line "c" connected
     // to the root.
     repo_bob
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\nb\nx\ny\nz\nc\nd\n")
         .unwrap();
@@ -1813,7 +1876,7 @@ fn zombie_half_survivor() -> Result<(), anyhow::Error> {
     );
 
     repo_bob
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(b"a\nz\nd\n")?;
     let resolution = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
@@ -1912,19 +1975,23 @@ fn three_way_zombie() -> Result<(), anyhow::Error> {
 
     // Alice adds a line.
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
     let alice_h = record_all(&repo_alice, &changes, &txn, &channel_alice, "")?;
 
     // Bob deletes the context.
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Charlie also deletes the context.
     repo_charlie
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(charlie)
         .unwrap();
@@ -1949,7 +2016,7 @@ fn three_way_zombie() -> Result<(), anyhow::Error> {
 
     // Alice solves the conflict.
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice_bob)
         .unwrap();
@@ -2043,7 +2110,7 @@ fn cyclic_conflict_resolution() -> Result<(), anyhow::Error> {
         0,
     )?;
     repo_charlie
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(charlie)
         .unwrap();
@@ -2056,12 +2123,16 @@ fn cyclic_conflict_resolution() -> Result<(), anyhow::Error> {
     }
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
@@ -2087,7 +2158,7 @@ fn cyclic_conflict_resolution() -> Result<(), anyhow::Error> {
     // Alice solves the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
@@ -2115,7 +2186,7 @@ fn cyclic_conflict_resolution() -> Result<(), anyhow::Error> {
     debug!("bob: {:?}", std::str::from_utf8(&buf));
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_bob.write_file("file").unwrap();
+        let mut w = repo_bob.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
@@ -2149,7 +2220,7 @@ fn cyclic_conflict_resolution() -> Result<(), anyhow::Error> {
     // Solve it again, in the same way and output the result.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_bob.write_file("file").unwrap();
+        let mut w = repo_bob.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
@@ -2250,16 +2321,20 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
     }
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h1 = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
     repo_bob
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(bob2)
         .unwrap();
     let bob_h2 = record_all(&repo_bob, &changes, &txn, &channel_bob, "")?;
     repo_bob
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(bob3)
         .unwrap();
@@ -2267,19 +2342,19 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
 
     // Alice edits and records
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();
     let alice_h1 = record_all(&repo_alice, &changes, &txn, &channel_alice, "")?;
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice2)
         .unwrap();
     let alice_h2 = record_all(&repo_alice, &changes, &txn, &channel_alice, "")?;
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice3)
         .unwrap();
@@ -2307,7 +2382,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
     // Alice solves the conflict.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
@@ -2338,7 +2413,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
     debug!("bob: {:?}", std::str::from_utf8(&buf));
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_bob.write_file("file").unwrap();
+        let mut w = repo_bob.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter() {
             if l.len() < 10 {
                 writeln!(w, "{}", l)?
@@ -2371,7 +2446,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
         0,
     )?;
     repo_charlie
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(charlie)
         .unwrap();
@@ -2397,7 +2472,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
     // Bob applies Charlie's side
     debug!("applying charlie's patch");
     apply::apply_change_arc(&changes, &txn, &channel_bob, &charlie_h).unwrap();
-    let (alive_, reachable_) = check_alive(&*txn.read(), &channel_bob.read().graph);
+    let (alive_, reachable_) = check_alive(&*txn.read(), &channel_bob.read());
     if !alive_.is_empty() {
         error!("alive (bob0): {:?}", alive_);
     }
@@ -2416,7 +2491,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
         1,
         0,
     )?;
-    let (alive, reachable) = check_alive(&*txn.read(), &channel_bob.read().graph);
+    let (alive, reachable) = check_alive(&*txn.read(), &channel_bob.read());
     if !alive.is_empty() {
         panic!("alive (bob1): {:?}", alive);
     } else if !alive_.is_empty() {
@@ -2432,7 +2507,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
     debug!("Charlie applies");
     apply::apply_change_arc(&changes, &txn, &channel_charlie, &alices_resolution).unwrap();
     apply::apply_change_arc(&changes, &txn, &channel_charlie, &bobs_resolution).unwrap();
-    let (alive, reachable) = check_alive(&*txn.read(), &channel_charlie.read().graph);
+    let (alive, reachable) = check_alive(&*txn.read(), &channel_charlie.read());
     if !alive.is_empty() {
         panic!("alive (charlie0): {:?}", alive);
     }
@@ -2451,7 +2526,7 @@ fn cyclic_zombies() -> Result<(), anyhow::Error> {
         0,
     )?;
 
-    let (alive, reachable) = check_alive(&*txn.read(), &channel_charlie.read().graph);
+    let (alive, reachable) = check_alive(&*txn.read(), &channel_charlie.read());
     if !alive.is_empty() {
         panic!("alive (charlie1): {:?}", alive);
     }
@@ -2522,7 +2597,7 @@ fn cyclic_files() -> Result<(), anyhow::Error> {
 
     let v: Vec<_> = txn_alice.write().iter_working_copy().collect();
     println!("{:?}", v);
-    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel_alice.read().graph);
+    let (alive, reachable) = check_alive(&*txn_alice.read(), &channel_alice.read());
     if !alive.is_empty() {
         panic!("alive: {:?}", alive);
     }

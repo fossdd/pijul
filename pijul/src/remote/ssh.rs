@@ -10,7 +10,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use lazy_static::lazy_static;
 use libpijul::pristine::Position;
 use libpijul::{Base32, Hash, Merkle};
-use log::{debug, error, trace};
+use log::{debug, error, info, trace};
 use regex::Regex;
 use thrussh::client::Session;
 use tokio::sync::Mutex;
@@ -43,8 +43,6 @@ lazy_static! {
 
 #[derive(Debug)]
 pub struct Remote<'a> {
-    addr: &'a str,
-    host: &'a str,
     path: &'a str,
     config: thrussh_config::Config,
 }
@@ -83,16 +81,15 @@ pub fn ssh_remote(addr: &str, with_path: bool) -> Option<Remote> {
     } else {
         ""
     };
-    Some(Remote {
-        addr,
-        host,
-        path,
-        config,
-    })
+    Some(Remote { path, config })
 }
 
 impl<'a> Remote<'a> {
-    pub async fn connect(&mut self, name: &str, channel: &str) -> Result<Ssh, anyhow::Error> {
+    pub async fn connect(
+        &mut self,
+        name: &str,
+        channel: &str,
+    ) -> Result<Option<Ssh>, anyhow::Error> {
         let mut home = dirs_next::home_dir().unwrap();
         home.push(".ssh");
         home.push("known_hosts");
@@ -106,7 +103,13 @@ impl<'a> Remote<'a> {
             state: state.clone(),
             has_errors: has_errors.clone(),
         };
-        let stream = self.config.stream().await?;
+        let stream = match self.config.stream().await {
+            Ok(stream) => stream,
+            Err(e) => {
+                info!("remote connect error: {:?}", e);
+                return Ok(None);
+            }
+        };
         let config = Arc::new(thrussh::client::Config::default());
         let mut h = thrussh::client::connect_stream(config, stream, client).await?;
 
@@ -131,7 +134,7 @@ impl<'a> Remote<'a> {
         } else {
             "pijul".to_string()
         };
-        Ok(Ssh {
+        Ok(Some(Ssh {
             h,
             c,
             channel: channel.to_string(),
@@ -141,7 +144,7 @@ impl<'a> Remote<'a> {
             name: name.to_string(),
             state,
             has_errors,
-        })
+        }))
     }
 
     async fn auth_agent(

@@ -140,6 +140,7 @@ impl Add {
             if self.recursive {
                 use libpijul::working_copy::filesystem::*;
                 let (full, _) = get_prefix(Some(repo_path.as_ref()), path.as_path())?;
+                let full = CanonicalPathBuf::new(&full)?;
                 repo.working_copy.add_prefix_rec(
                     &txn,
                     repo_path.clone(),

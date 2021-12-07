@@ -63,7 +63,10 @@ fn change_non_utf8_file_test() -> Result<(), anyhow::Error> {
         fh.read_to_end(&mut buf)?;
     }
     use std::io::Write;
-    repo.write_file("file").unwrap().write_all(&buf).unwrap();
+    repo.write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(&buf)
+        .unwrap();
     let (h1, change1) = record_all_change(&repo, &store, &txn, &channel, "")?;
 
     // only one line was changed

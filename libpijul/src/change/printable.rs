@@ -627,7 +627,7 @@ fn print_contents<W: WriteChangeLine>(
     encoding: &Option<Encoding>,
 ) -> Result<(), std::io::Error> {
     if contents.is_empty() {
-        return Ok(())
+        return Ok(());
     }
     if let Some(encoding) = encoding {
         let dec = encoding.decode(&contents);

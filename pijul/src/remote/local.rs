@@ -44,7 +44,9 @@ impl Local {
             Ok(*txn.id(&*channel.read()))
         } else {
             Err(anyhow::anyhow!(
-                "Unable to retrieve RemoteId for Local remote"
+                "Channel {} does not exist in repository {}",
+                self.channel,
+                self.name
             ))
         }
     }
@@ -84,12 +86,8 @@ impl Local {
                 });
                 paths_.insert(p);
                 paths_.extend(
-                    libpijul::fs::iter_graph_descendants(
-                        &remote_txn,
-                        &remote_channel.read().graph,
-                        p,
-                    )?
-                    .map(|x| x.unwrap()),
+                    libpijul::fs::iter_graph_descendants(&remote_txn, &remote_channel.read(), p)?
+                        .map(|x| x.unwrap()),
                 );
             }
         }

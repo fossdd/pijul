@@ -116,7 +116,7 @@ impl Protocol {
                         writeln!(o, "{}.{}", h.to_base32(), p.pos.0)?;
                         paths.insert(p);
                         paths.extend(
-                            libpijul::fs::iter_graph_descendants(&*txn, &channel.read().graph, p)?
+                            libpijul::fs::iter_graph_descendants(&*txn, &channel.read(), p)?
                                 .map(|x| x.unwrap()),
                         );
                     } else {

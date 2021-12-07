@@ -101,6 +101,18 @@ pub fn commit<T: pristine::MutTxnT>(
 }
 
 pub trait MutTxnTExt: pristine::MutTxnT {
+    fn apply_root_change_if_needed<C: changestore::ChangeStore, R: rand::Rng>(
+        &mut self,
+        changes: &C,
+        channel: &ChannelRef<Self>,
+        rng: R,
+    ) -> Result<
+        Option<(pristine::Hash, u64, pristine::Merkle)>,
+        crate::apply::ApplyError<C::Error, Self::GraphError>,
+    > {
+        crate::apply::apply_root_change(self, channel, changes, rng)
+    }
+
     fn apply_change_ws<C: changestore::ChangeStore>(
         &mut self,
         changes: &C,

@@ -49,11 +49,15 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
     .unwrap();
 
     // Bob edits and records
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "").unwrap();
 
     repo_bob
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(bob2)
         .unwrap();
@@ -62,7 +66,7 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
     // Alice edits and records
     if let Some(alice) = alice {
         repo_alice
-            .write_file("file")
+            .write_file("file", Inode::ROOT)
             .unwrap()
             .write_all(alice.as_bytes())
             .unwrap();
@@ -123,7 +127,7 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
     // Alice solves the conflict by confirming the deads.
     let conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
     {
-        let mut w = repo_alice.write_file("file").unwrap();
+        let mut w = repo_alice.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|l| l.len() <= 3) {
             writeln!(w, "{}", l)?
         }
@@ -179,7 +183,7 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
 
     // Bob solves the conflict by deleting the offending line.
     {
-        let mut w = repo_bob.write_file("file").unwrap();
+        let mut w = repo_bob.write_file("file", Inode::ROOT).unwrap();
         for l in conflict.iter().filter(|&&l| l != "xyz") {
             writeln!(w, "{}", l)?
         }
@@ -233,13 +237,17 @@ fn missing_context_newedges() -> Result<(), anyhow::Error> {
     }
     // Bob edits and records
     debug!("Bob edits and records");
-    repo_bob.write_file("file").unwrap().write_all(bob).unwrap();
+    repo_bob
+        .write_file("file", Inode::ROOT)
+        .unwrap()
+        .write_all(bob)
+        .unwrap();
     let bob_h = record_all(&repo_bob, &changes, &txn_bob, &channel_bob, "")?;
 
     // Alice edits and records
     debug!("Alice edits and records");
     repo_alice
-        .write_file("file")
+        .write_file("file", Inode::ROOT)
         .unwrap()
         .write_all(alice)
         .unwrap();

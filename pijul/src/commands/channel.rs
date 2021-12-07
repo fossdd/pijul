@@ -28,7 +28,11 @@ pub enum SubCommand {
     /// Switch to a channel.
     /// There must not be unrecorded changes in the working copy.
     #[clap(name = "switch")]
-    Switch { to: Option<String> },
+    Switch {
+        to: Option<String>,
+        #[clap(long = "force", short = 'f')]
+        force: bool,
+    },
     /// Create a new, empty channel.
     #[clap(name = "new")]
     New { name: String },
@@ -42,8 +46,7 @@ impl Channel {
                 let repo = Repository::find_root(self.repo_path)?;
                 let txn = repo.pristine.txn_begin()?;
                 let current = txn.current_channel().ok();
-                for channel in txn.iter_channels("")? {
-                    let (_, channel) = channel?;
+                for channel in txn.channels("")? {
                     let channel = channel.read();
                     let name = txn.name(&*channel);
                     if current == Some(name) {
@@ -65,12 +68,13 @@ impl Channel {
                 }
                 txn.commit()?;
             }
-            Some(SubCommand::Switch { to }) => {
+            Some(SubCommand::Switch { to, force }) => {
                 (crate::commands::reset::Reset {
                     repo_path: self.repo_path,
                     channel: to,
                     dry_run: false,
                     files: Vec::new(),
+                    force,
                 })
                 .switch()?;
             }
