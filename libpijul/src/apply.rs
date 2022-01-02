@@ -11,70 +11,128 @@ pub(crate) use edge::*;
 mod vertex;
 pub(crate) use vertex::*;
 
-#[derive(Debug, Error)]
-pub enum ApplyError<ChangestoreError: std::error::Error, TxnError: std::error::Error + 'static> {
-    #[error("Changestore error: {0}")]
+pub enum ApplyError<ChangestoreError: std::error::Error, T: GraphTxnT + TreeTxnT> {
     Changestore(ChangestoreError),
-    #[error("Local change error: {err}")]
-    LocalChange {
-        #[from]
-        err: LocalApplyError<TxnError>,
-    },
+    LocalChange(LocalApplyError<T>),
 }
 
-#[derive(Debug, Error)]
-pub enum LocalApplyError<TxnError: std::error::Error + 'static> {
-    #[error("Dependency missing: {:?}", hash)]
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> std::fmt::Debug for ApplyError<C, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ApplyError::Changestore(e) => std::fmt::Debug::fmt(e, fmt),
+            ApplyError::LocalChange(e) => std::fmt::Debug::fmt(e, fmt),
+        }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> std::fmt::Display for ApplyError<C, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ApplyError::Changestore(e) => std::fmt::Display::fmt(e, fmt),
+            ApplyError::LocalChange(e) => std::fmt::Display::fmt(e, fmt),
+        }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> std::error::Error for ApplyError<C, T> {}
+
+#[derive(Error)]
+pub enum LocalApplyError<T: GraphTxnT + TreeTxnT> {
     DependencyMissing { hash: crate::pristine::Hash },
-    #[error("Change already on channel: {:?}", hash)]
     ChangeAlreadyOnChannel { hash: crate::pristine::Hash },
-    #[error("Transaction error: {0}")]
-    Txn(TxnError),
-    #[error("Block error: {:?}", block)]
+    Txn(#[from] TxnErr<T::GraphError>),
+    Tree(#[from] TreeErr<T::TreeError>),
     Block { block: Position<ChangeId> },
-    #[error("Invalid change")]
     InvalidChange,
 }
 
-impl<TxnError: std::error::Error> LocalApplyError<TxnError> {
-    fn from_missing(err: MissingError<TxnError>) -> Self {
+impl<T: GraphTxnT + TreeTxnT> std::fmt::Debug for LocalApplyError<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            LocalApplyError::DependencyMissing { hash } => {
+                write!(fmt, "Dependency missing: {:?}", hash)
+            }
+            LocalApplyError::ChangeAlreadyOnChannel { hash } => {
+                write!(fmt, "Change already on channel: {:?}", hash)
+            }
+            LocalApplyError::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+            LocalApplyError::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+            LocalApplyError::Block { block } => write!(fmt, "Block error: {:?}", block),
+            LocalApplyError::InvalidChange => write!(fmt, "Invalid change"),
+        }
+    }
+}
+
+impl<T: GraphTxnT + TreeTxnT> std::fmt::Display for LocalApplyError<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            LocalApplyError::DependencyMissing { hash } => {
+                write!(fmt, "Dependency missing: {:?}", hash)
+            }
+            LocalApplyError::ChangeAlreadyOnChannel { hash } => {
+                write!(fmt, "Change already on channel: {:?}", hash)
+            }
+            LocalApplyError::Txn(e) => std::fmt::Display::fmt(e, fmt),
+            LocalApplyError::Tree(e) => std::fmt::Display::fmt(e, fmt),
+            LocalApplyError::Block { block } => write!(fmt, "Block error: {:?}", block),
+            LocalApplyError::InvalidChange => write!(fmt, "Invalid change"),
+        }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> From<crate::pristine::TxnErr<T::GraphError>>
+    for ApplyError<C, T>
+{
+    fn from(err: crate::pristine::TxnErr<T::GraphError>) -> Self {
+        ApplyError::LocalChange(LocalApplyError::Txn(err))
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> From<crate::pristine::TreeErr<T::TreeError>>
+    for ApplyError<C, T>
+{
+    fn from(err: crate::pristine::TreeErr<T::TreeError>) -> Self {
+        ApplyError::LocalChange(LocalApplyError::Tree(err))
+    }
+}
+
+impl<T: GraphTxnT + TreeTxnT> LocalApplyError<T> {
+    fn from_missing(err: MissingError<T::GraphError>) -> Self {
         match err {
-            MissingError::Txn(e) => LocalApplyError::Txn(e),
+            MissingError::Txn(e) => LocalApplyError::Txn(TxnErr(e)),
             MissingError::Block(e) => e.into(),
             MissingError::Inconsistent(_) => LocalApplyError::InvalidChange,
         }
     }
 }
 
-impl<T: std::error::Error> From<crate::pristine::InconsistentChange<T>> for LocalApplyError<T> {
-    fn from(err: crate::pristine::InconsistentChange<T>) -> Self {
+impl<T: GraphTxnT + TreeTxnT> From<crate::pristine::InconsistentChange<T::GraphError>>
+    for LocalApplyError<T>
+{
+    fn from(err: crate::pristine::InconsistentChange<T::GraphError>) -> Self {
         match err {
-            InconsistentChange::Txn(e) => LocalApplyError::Txn(e),
+            InconsistentChange::Txn(e) => LocalApplyError::Txn(TxnErr(e)),
             _ => LocalApplyError::InvalidChange,
         }
     }
 }
 
-impl<T: std::error::Error> From<crate::pristine::TxnErr<T>> for LocalApplyError<T> {
-    fn from(err: crate::pristine::TxnErr<T>) -> Self {
-        LocalApplyError::Txn(err.0)
-    }
-}
-
-impl<C: std::error::Error, T: std::error::Error> From<crate::pristine::TxnErr<T>>
-    for ApplyError<C, T>
+impl<T: GraphTxnT + TreeTxnT> From<crate::pristine::BlockError<T::GraphError>>
+    for LocalApplyError<T>
 {
-    fn from(err: crate::pristine::TxnErr<T>) -> Self {
-        LocalApplyError::Txn(err.0).into()
-    }
-}
-
-impl<T: std::error::Error> From<crate::pristine::BlockError<T>> for LocalApplyError<T> {
-    fn from(err: crate::pristine::BlockError<T>) -> Self {
+    fn from(err: crate::pristine::BlockError<T::GraphError>) -> Self {
         match err {
-            BlockError::Txn(e) => LocalApplyError::Txn(e),
+            BlockError::Txn(e) => LocalApplyError::Txn(TxnErr(e)),
             BlockError::Block { block } => LocalApplyError::Block { block },
         }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> From<crate::pristine::BlockError<T::GraphError>>
+    for ApplyError<C, T>
+{
+    fn from(err: crate::pristine::BlockError<T::GraphError>) -> Self {
+        ApplyError::LocalChange(LocalApplyError::from(err))
     }
 }
 
@@ -88,7 +146,7 @@ pub fn apply_change_ws<T: MutTxnT, P: ChangeStore>(
     channel: &mut T::Channel,
     hash: &Hash,
     workspace: &mut Workspace,
-) -> Result<(u64, Merkle), ApplyError<P::Error, T::GraphError>> {
+) -> Result<(u64, Merkle), ApplyError<P::Error, T>> {
     debug!("apply_change {:?}", hash.to_base32());
     workspace.clear();
     let change = changes.get_change(&hash).map_err(ApplyError::Changestore)?;
@@ -102,7 +160,9 @@ pub fn apply_change_ws<T: MutTxnT, P: ChangeStore>(
                 continue;
             }
         }
-        return Err((LocalApplyError::DependencyMissing { hash: *hash }).into());
+        return Err(ApplyError::LocalChange(
+            LocalApplyError::DependencyMissing { hash: *hash },
+        ));
     }
 
     let internal = if let Some(&p) = txn.get_internal(&hash.into())? {
@@ -113,9 +173,10 @@ pub fn apply_change_ws<T: MutTxnT, P: ChangeStore>(
         internal
     };
     debug!("internal = {:?}", internal);
-    Ok(apply_change_to_channel(
-        txn, channel, internal, &hash, &change, workspace,
-    )?)
+    Ok(
+        apply_change_to_channel(txn, channel, internal, &hash, &change, workspace)
+            .map_err(ApplyError::LocalChange)?,
+    )
 }
 
 pub fn apply_change_rec_ws<T: TxnT + MutTxnT, P: ChangeStore>(
@@ -125,7 +186,7 @@ pub fn apply_change_rec_ws<T: TxnT + MutTxnT, P: ChangeStore>(
     hash: &Hash,
     workspace: &mut Workspace,
     deps_only: bool,
-) -> Result<(), ApplyError<P::Error, T::GraphError>> {
+) -> Result<(), ApplyError<P::Error, T>> {
     debug!("apply_change {:?}", hash.to_base32());
     workspace.clear();
     let mut dep_stack = vec![(*hash, true, !deps_only)];
@@ -169,7 +230,8 @@ pub fn apply_change_rec_ws<T: TxnT + MutTxnT, P: ChangeStore>(
                 };
                 debug!("internal = {:?}", internal);
                 workspace.clear();
-                apply_change_to_channel(txn, channel, internal, &hash, &change, workspace)?;
+                apply_change_to_channel(txn, channel, internal, &hash, &change, workspace)
+                    .map_err(ApplyError::LocalChange)?;
             }
         }
     }
@@ -182,7 +244,7 @@ pub fn apply_change<T: MutTxnT, P: ChangeStore>(
     txn: &mut T,
     channel: &mut T::Channel,
     hash: &Hash,
-) -> Result<(u64, Merkle), ApplyError<P::Error, T::GraphError>> {
+) -> Result<(u64, Merkle), ApplyError<P::Error, T>> {
     apply_change_ws(changes, txn, channel, hash, &mut Workspace::new())
 }
 
@@ -192,7 +254,7 @@ pub fn apply_change_arc<T: MutTxnT, P: ChangeStore>(
     txn: &ArcTxn<T>,
     channel: &ChannelRef<T>,
     hash: &Hash,
-) -> Result<(u64, Merkle), ApplyError<P::Error, T::GraphError>> {
+) -> Result<(u64, Merkle), ApplyError<P::Error, T>> {
     apply_change_ws(
         changes,
         &mut *txn.write(),
@@ -209,7 +271,7 @@ pub fn apply_change_rec<T: MutTxnT, P: ChangeStore>(
     channel: &mut T::Channel,
     hash: &Hash,
     deps_only: bool,
-) -> Result<(), ApplyError<P::Error, T::GraphError>> {
+) -> Result<(), ApplyError<P::Error, T>> {
     apply_change_rec_ws(
         changes,
         txn,
@@ -220,14 +282,14 @@ pub fn apply_change_rec<T: MutTxnT, P: ChangeStore>(
     )
 }
 
-fn apply_change_to_channel<T: ChannelMutTxnT>(
+fn apply_change_to_channel<T: ChannelMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Channel,
     change_id: ChangeId,
     hash: &Hash,
     change: &Change,
     ws: &mut Workspace,
-) -> Result<(u64, Merkle), LocalApplyError<T::GraphError>> {
+) -> Result<(u64, Merkle), LocalApplyError<T>> {
     ws.assert_empty();
     let n = txn.apply_counter(channel);
     debug!("apply_change_to_channel {:?} {:?}", change_id, hash);
@@ -312,9 +374,7 @@ fn apply_change_to_channel<T: ChannelMutTxnT>(
 /// synchronise the pristine and the working copy after the
 /// application.
 pub fn apply_local_change_ws<
-    T: ChannelMutTxnT
-        + DepsMutTxnT<DepsError = <T as GraphTxnT>::GraphError>
-        + TreeMutTxnT<TreeError = <T as GraphTxnT>::GraphError>,
+    T: ChannelMutTxnT + DepsMutTxnT<DepsError = <T as GraphTxnT>::GraphError> + TreeMutTxnT,
 >(
     txn: &mut T,
     channel: &ChannelRef<T>,
@@ -322,7 +382,7 @@ pub fn apply_local_change_ws<
     hash: &Hash,
     inode_updates: &HashMap<usize, InodeUpdate>,
     workspace: &mut Workspace,
-) -> Result<(u64, Merkle), LocalApplyError<T::GraphError>> {
+) -> Result<(u64, Merkle), LocalApplyError<T>> {
     let mut channel = channel.write();
     let internal: ChangeId = make_changeid(txn, hash)?;
     debug!("make_changeid {:?} {:?}", hash, internal);
@@ -350,16 +410,14 @@ pub fn apply_local_change_ws<
 
 /// Same as [apply_local_change_ws], but allocates its own workspace.
 pub fn apply_local_change<
-    T: ChannelMutTxnT
-        + DepsMutTxnT<DepsError = <T as GraphTxnT>::GraphError>
-        + TreeMutTxnT<TreeError = <T as GraphTxnT>::GraphError>,
+    T: ChannelMutTxnT + DepsMutTxnT<DepsError = <T as GraphTxnT>::GraphError> + TreeMutTxnT,
 >(
     txn: &mut T,
     channel: &ChannelRef<T>,
     change: &Change,
     hash: &Hash,
     inode_updates: &HashMap<usize, InodeUpdate>,
-) -> Result<(u64, Merkle), LocalApplyError<T::GraphError>> {
+) -> Result<(u64, Merkle), LocalApplyError<T>> {
     apply_local_change_ws(
         txn,
         channel,
@@ -370,12 +428,12 @@ pub fn apply_local_change<
     )
 }
 
-fn update_inode<T: ChannelTxnT + TreeMutTxnT<TreeError = <T as GraphTxnT>::GraphError>>(
+fn update_inode<T: ChannelTxnT + TreeMutTxnT>(
     txn: &mut T,
     channel: &T::Channel,
     internal: ChangeId,
     update: &InodeUpdate,
-) -> Result<(), LocalApplyError<T::TreeError>> {
+) -> Result<(), LocalApplyError<T>> {
     debug!("update_inode {:?}", update);
     match *update {
         InodeUpdate::Add { inode, pos, .. } => {
@@ -448,12 +506,12 @@ impl Workspace {
     }
 }
 
-pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT>(
+pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     for (next_vertex, p, inode) in ws.pseudo.drain(..) {
         let (a, b) = if p.flag().is_parent() {
             if let Ok(&dest) = txn.find_block_end(channel, p.dest()) {
@@ -515,13 +573,13 @@ pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn repair_missing_contexts<T: GraphMutTxnT>(
+fn repair_missing_contexts<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
     change: &Change,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     let now = std::time::Instant::now();
     crate::missing_context::repair_parents_of_deleted(txn, channel, &mut ws.missing_context)
         .map_err(LocalApplyError::from_missing)?;
@@ -548,14 +606,14 @@ fn repair_missing_contexts<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn repair_new_vertex_context_up<T: GraphMutTxnT>(
+fn repair_new_vertex_context_up<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
     n: &NewVertex<Option<Hash>>,
     vertex: Vertex<ChangeId>,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     for up in n.up_context.iter() {
         let up = *txn.find_block_end(channel, internal_pos(txn, &up, change_id)?)?;
         if !is_alive(txn, channel, &up)? {
@@ -575,14 +633,14 @@ fn repair_new_vertex_context_up<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn repair_new_vertex_context_down<T: GraphMutTxnT>(
+fn repair_new_vertex_context_down<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
     n: &NewVertex<Option<Hash>>,
     vertex: Vertex<ChangeId>,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     debug!("repairing missing context for {:?}", vertex);
     if n.flag.contains(EdgeFlags::FOLDER) {
         return Ok(());
@@ -615,14 +673,14 @@ fn repair_new_vertex_context_down<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn repair_edge_context<T: GraphMutTxnT>(
+fn repair_edge_context<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
     change: &Change,
     n: &EdgeMap<Option<Hash>>,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     for e in n.edges.iter() {
         assert!(!e.flag.contains(EdgeFlags::PARENT));
         if e.flag.contains(EdgeFlags::DELETED) {
@@ -646,11 +704,11 @@ fn repair_edge_context<T: GraphMutTxnT>(
     Ok(())
 }
 
-pub(crate) fn repair_cyclic_paths<T: GraphMutTxnT>(
+pub(crate) fn repair_cyclic_paths<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     let now = std::time::Instant::now();
     let mut files = std::mem::replace(&mut ws.missing_context.files, HashSet::default());
     for file in files.drain() {
@@ -676,12 +734,12 @@ pub(crate) fn repair_cyclic_paths<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn repair_edge<T: GraphMutTxnT>(
+fn repair_edge<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     to0: Vertex<ChangeId>,
     ws: &mut Workspace,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     debug!("repair_edge {:?}", to0);
     let mut stack = vec![(to0, true, true, true)];
     ws.parents.clear();
@@ -752,12 +810,12 @@ fn repair_edge<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn is_rooted<T: GraphTxnT>(
+fn is_rooted<T: GraphTxnT + TreeTxnT>(
     txn: &T,
     channel: &T::Graph,
     v: Vertex<ChangeId>,
     ws: &mut Workspace,
-) -> Result<bool, LocalApplyError<T::GraphError>> {
+) -> Result<bool, LocalApplyError<T>> {
     let mut alive = false;
     assert!(v.is_empty());
     for e in iter_adjacent(txn, channel, v, EdgeFlags::empty(), EdgeFlags::all())? {
@@ -830,7 +888,7 @@ pub fn apply_root_change<R: rand::Rng, T: MutTxnT, P: ChangeStore>(
     channel: &ChannelRef<T>,
     store: &P,
     rng: R,
-) -> Result<Option<(Hash, u64, Merkle)>, ApplyError<P::Error, T::GraphError>> {
+) -> Result<Option<(Hash, u64, Merkle)>, ApplyError<P::Error, T>> {
     let mut change = {
         // If the graph already has a root.
         {
@@ -843,9 +901,7 @@ pub fn apply_root_change<R: rand::Rng, T: MutTxnT, P: ChangeStore>(
                 EdgeFlags::FOLDER,
                 EdgeFlags::FOLDER | EdgeFlags::BLOCK,
             )? {
-                let v = txn
-                    .find_block(gr, v?.dest())
-                    .map_err(LocalApplyError::from)?;
+                let v = txn.find_block(gr, v?.dest())?;
                 if v.start == v.end {
                     // Already has a root
                     return Ok(None);

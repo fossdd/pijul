@@ -705,7 +705,7 @@ impl Hunk<Option<Hash>, Local> {
                 offsets.insert(end + 1, add_name.end + 1);
 
                 // contents
-                let contents_res = {
+                let contents = if contents.len() > 0 {
                     let mut x = default_newvertex();
                     // The `-1` here comes from the extra 0
                     // padding bytes pushed onto `contents_`.
@@ -720,14 +720,16 @@ impl Hunk<Option<Hash>, Local> {
                     x.start = ChangePosition(contents_.len().into());
                     contents_.extend(&contents);
                     x.end = ChangePosition(contents_.len().into());
-                    x
+                    Some(Atom::NewVertex(x))
+                } else {
+                    None
                 };
                 contents_.push(0);
 
                 Ok(Hunk::FileAdd {
                     add_name: Atom::NewVertex(add_name),
                     add_inode: Atom::NewVertex(add_inode),
-                    contents: Some(Atom::NewVertex(contents_res)),
+                    contents,
                     path: if parent == "" {
                         name
                     } else {
@@ -785,6 +787,7 @@ impl Hunk<Option<Hash>, Local> {
                 let inode = from_printable_pos(changes, pos)?;
                 let change = match change {
                     PrintableAtom::NewVertex(new_vertex) => {
+                        assert!(!contents.is_empty());
                         let mut x = default_newvertex();
                         x.inode = inode;
                         x.flag = EdgeFlags::BLOCK;
@@ -888,14 +891,14 @@ impl Hunk<Option<Hash>, Local> {
                 change,
                 contents,
             } => {
-                // TODO: this code block looks suspect. Check the correctness.
+                // If `contents.is_empty()`, we still need to add a
+                // new empty vertex, so the following is ok:
                 let mut c = default_newvertex();
                 c.inode = from_printable_pos(changes, pos)?;
                 c.up_context =
                     from_printable_pos_vec_offsets(changes, offsets, &change.up_context)?;
                 c.down_context =
                     from_printable_pos_vec_offsets(changes, offsets, &change.down_context)?;
-                // TODO: this maths is probably unnecessarily complicated
                 c.start = ChangePosition(contents_.len().into());
                 c.end = ChangePosition((contents_.len() as u64 + change.end - change.start).into());
                 offsets.insert(change.end, c.end);

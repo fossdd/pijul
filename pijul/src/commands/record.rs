@@ -139,7 +139,7 @@ impl Record {
             (CanonicalPathBuf::canonicalize(&repo.path)?, None)
         };
 
-        let key = super::load_key()?;
+        let (_, key) = super::load_key()?;
 
         txn.write()
             .apply_root_change_if_needed(&repo.changes, &channel, rand::thread_rng())?;
@@ -176,7 +176,7 @@ impl Record {
                     let mut oldest = oldest
                         .duration_since(std::time::SystemTime::UNIX_EPOCH)
                         .unwrap()
-                        .as_secs() as u64;
+                        .as_millis() as u64;
                     if oldest == 0 {
                         // If no diff was done at all, it means that no
                         // existing file changed since last time (some
@@ -185,9 +185,9 @@ impl Record {
                         oldest = std::time::SystemTime::now()
                             .duration_since(std::time::SystemTime::UNIX_EPOCH)
                             .unwrap()
-                            .as_secs() as u64;
+                            .as_millis() as u64;
                     }
-                    txn_.touch_channel(&mut *channel.write(), Some(oldest));
+                    txn_.touch_channel(&mut *channel.write(), Some((oldest / 1000) * 1000));
                 }
                 std::mem::drop(txn_);
                 txn.commit()?;
@@ -306,6 +306,7 @@ impl Record {
                         state.record(
                             txn.clone(),
                             libpijul::Algorithm::default(),
+                            false,
                             &libpijul::DEFAULT_SEPARATOR,
                             channel.clone(),
                             working_copy,
@@ -319,6 +320,7 @@ impl Record {
                 state.record(
                     txn.clone(),
                     libpijul::Algorithm::default(),
+                    false,
                     &libpijul::DEFAULT_SEPARATOR,
                     channel.clone(),
                     working_copy,
@@ -370,8 +372,6 @@ impl Record {
         debug!("has_binary = {:?}", rec.has_binary_files);
         let mut change = if self.all {
             change
-        } else if rec.has_binary_files {
-            bail!("Cannot record a binary change interactively. Please use -a.")
         } else {
             let mut o = Vec::new();
             debug!("write change");
@@ -400,7 +400,11 @@ impl Record {
                 with_errors = Some(err)
             };
             if change.changes.is_empty() {
-                bail!("Empty change")
+                if rec.has_binary_files {
+                    bail!("Cannot record a binary change interactively. Please use -a.")
+                } else {
+                    bail!("Cannot parse change")
+                }
             }
             change
         };

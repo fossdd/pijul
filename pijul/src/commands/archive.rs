@@ -133,8 +133,11 @@ impl Archive {
                 } else {
                     txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
                 };
-                let channel = txn.load_channel(&channel_name)?.unwrap();
-                txn.archive(&repo.changes, &channel, &mut tarball)?
+                if let Some(channel) = txn.load_channel(&channel_name)? {
+                    txn.archive(&repo.changes, &channel, &mut tarball)?
+                } else {
+                    bail!("No such channel: {:?}", channel_name);
+                }
             };
             super::print_conflicts(&conflicts)?;
         }

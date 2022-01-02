@@ -109,6 +109,6 @@
             pijul-git = pijul.override { features = [ "git" ]; };
           });
 
-      defaultPackage = forAllSystems ({ system, ... }: self.packages.${system}.pijul);
+      defaultPackage = forAllSystems (system: self.packages.${system}.pijul);
     };
 }

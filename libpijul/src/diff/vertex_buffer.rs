@@ -154,24 +154,28 @@ impl vertex_buffer::VertexBuffer for Diff {
         Ok(())
     }
 
-    fn begin_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_conflict(&mut self, id: usize, side: &[&Hash]) -> Result<(), std::io::Error> {
         self.begin_conflict_(ConflictType::Order);
-        self.output_conflict_marker(vertex_buffer::START_MARKER)
+        self.output_conflict_marker(vertex_buffer::START_MARKER, id, side)
     }
 
-    fn begin_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_cyclic_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
         let len = self.contents_a.len();
         self.begin_conflict_(ConflictType::Cyclic);
         self.cyclic_conflict_bytes.push((len, len));
-        self.output_conflict_marker(vertex_buffer::START_MARKER)
+        self.output_conflict_marker(vertex_buffer::START_MARKER, id, &[])
     }
 
-    fn begin_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_zombie_conflict(
+        &mut self,
+        id: usize,
+        add_del: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         self.begin_conflict_(ConflictType::Zombie);
-        self.output_conflict_marker(vertex_buffer::START_MARKER)
+        self.output_conflict_marker(vertex_buffer::START_MARKER, id, add_del)
     }
 
-    fn end_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn end_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
         let len = match self.contents_a.last() {
             Some(&b'\n') | None => self.contents_a.len(),
             _ => {
@@ -180,21 +184,21 @@ impl vertex_buffer::VertexBuffer for Diff {
             }
         };
         let chunk = self.pos_a.len();
-        self.output_conflict_marker(vertex_buffer::END_MARKER)?;
+        self.output_conflict_marker(vertex_buffer::END_MARKER, id, &[])?;
         let conflict = self.conflict_stack.pop().unwrap();
         self.marker.insert(len, ConflictMarker::End);
         self.conflict_ends[conflict.counter].end_pos = len;
         self.conflict_ends[conflict.counter].end = chunk;
         Ok(())
     }
-    fn end_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn end_cyclic_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
         debug!("end_cyclic_conflict");
-        self.end_conflict()?;
+        self.end_conflict(id)?;
         self.cyclic_conflict_bytes.last_mut().unwrap().1 = self.contents_a.len();
         Ok(())
     }
 
-    fn conflict_next(&mut self) -> Result<(), std::io::Error> {
+    fn conflict_next(&mut self, id: usize, side: &[&Hash]) -> Result<(), std::io::Error> {
         let len = match self.contents_a.last() {
             Some(&b'\n') | None => self.contents_a.len(),
             _ => {
@@ -204,10 +208,15 @@ impl vertex_buffer::VertexBuffer for Diff {
         };
         self.conflict_stack.last_mut().unwrap().side += 1;
         self.marker.insert(len, ConflictMarker::Next);
-        self.output_conflict_marker(vertex_buffer::SEPARATOR)
+        self.output_conflict_marker(vertex_buffer::SEPARATOR, id, side)
     }
 
-    fn output_conflict_marker(&mut self, marker: &str) -> Result<(), std::io::Error> {
+    fn output_conflict_marker(
+        &mut self,
+        marker: &str,
+        id: usize,
+        sides: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         if let Some(line) = self.pos_a.last_mut() {
             line.before_conflict = true
         }
@@ -216,18 +225,19 @@ impl vertex_buffer::VertexBuffer for Diff {
             self.contents_a.last(),
             marker
         );
-        let pos = match self.contents_a.last() {
-            Some(&b'\n') | None => {
-                let len = self.contents_a.len();
-                self.contents_a.extend(marker.as_bytes().iter().skip(1));
-                len
-            }
-            _ => {
-                let len = self.contents_a.len() + 1;
-                self.contents_a.extend(marker.as_bytes().iter());
-                len
-            }
-        };
+        match self.contents_a.last() {
+            Some(&b'\n') | None => {}
+            _ => self.contents_a.push(b'\n'),
+        }
+        let pos = self.contents_a.len();
+        use std::io::Write;
+        write!(self.contents_a, "{} {}", marker, id)?;
+        for side in sides {
+            let h = side.to_base32();
+            write!(self.contents_a, " [{}]", h.split_at(8).0)?;
+        }
+        self.contents_a.write_all(b"\n")?;
+
         self.pos_a.push(Vertex {
             pos,
             vertex: crate::pristine::Vertex::ROOT,

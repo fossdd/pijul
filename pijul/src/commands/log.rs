@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,8 +8,11 @@ use crate::repository::Repository;
 use anyhow::bail;
 use clap::Parser;
 use libpijul::changestore::*;
-use libpijul::pristine::{sanakirja::Txn, ChannelRef, DepsTxnT, GraphTxnT, TreeTxnT, TxnErr};
+use libpijul::pristine::{
+    sanakirja::Txn, ChannelRef, DepsTxnT, GraphTxnT, TreeErr, TreeTxnT, TxnErr,
+};
 use libpijul::{Base32, TxnT, TxnTExt};
+use log::*;
 use serde::ser::{SerializeSeq, Serializer};
 use serde::Serialize;
 use thiserror::*;
@@ -79,12 +82,20 @@ impl TryFrom<Log> for LogIterator {
 
         let mut id_path = repo.path.join(libpijul::DOT_DIR);
         id_path.push("identities");
+
+        let mut global_id_path = crate::config::global_config_dir();
+        if let Some(ref mut gl) = global_id_path {
+            gl.push("identities")
+        }
+        debug!("global_id_path = {:?}", global_id_path);
+
         Ok(Self {
             txn,
             cmd,
             changes,
             repo_path,
             id_path,
+            global_id_path,
             channel_ref,
             limit,
             offset,
@@ -101,7 +112,9 @@ pub enum Error<E: std::error::Error> {
     #[error(transparent)]
     TxnErr(#[from] TxnErr<libpijul::pristine::sanakirja::SanakirjaError>),
     #[error(transparent)]
-    Fs(#[from] libpijul::FsError<libpijul::pristine::sanakirja::SanakirjaError>),
+    TreeErr(#[from] TreeErr<libpijul::pristine::sanakirja::SanakirjaError>),
+    #[error(transparent)]
+    Fs(#[from] libpijul::FsError<libpijul::pristine::sanakirja::Txn>),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("pijul log couldn't assemble file prefix for pattern `{}`: {} was not a file in the repository at {}", pat, canon_path.display(), repo_path.display())]
@@ -125,7 +138,13 @@ fn get_inodes<E: std::error::Error>(
     txn: &Txn,
     repo_path: &Path,
     pats: &[String],
-) -> Result<Vec<libpijul::Inode>, Error<E>> {
+) -> Result<
+    Vec<(
+        libpijul::Inode,
+        Option<libpijul::pristine::Position<libpijul::ChangeId>>,
+    )>,
+    Error<E>,
+> {
     let mut inodes = Vec::new();
     for pat in pats {
         let canon_path = match Path::new(pat).canonicalize() {
@@ -149,41 +168,15 @@ fn get_inodes<E: std::error::Error>(
             }
             // PathBuf.to_str() returns none iff the path contains invalid UTF-8.
             Ok(None) => return Err(Error::InvalidUtf8(pat.to_string())),
-            Ok(Some(s)) => inodes.push(libpijul::fs::find_inode(txn, s)?),
+            Ok(Some(s)) => {
+                let inode = libpijul::fs::find_inode(txn, s)?;
+                let inode_position = txn.get_inodes(&inode, None)?;
+                inodes.push((inode, inode_position.cloned()))
+            }
         };
     }
     log::debug!("log filters: {:#?}\n", pats);
     Ok(inodes)
-}
-
-/// Given a list of path filters which represent the files/directories for which
-/// the user wants to see the logs, find the subset of relevant change hashes.
-fn filtered_hashes<E: std::error::Error>(
-    txn: &Txn,
-    path: &Path,
-    filters: &[String],
-) -> Result<HashSet<libpijul::Hash>, Error<E>> {
-    let inodes = get_inodes(txn, path, filters)?;
-    let mut hashes = HashSet::<libpijul::Hash>::new();
-    for inode in inodes {
-        // The Position<ChangeId> for the file Inode.
-        let inode_position = match txn.get_inodes(&inode, None)? {
-            None => continue,
-            Some(p) => p,
-        };
-        for pair in txn.iter_touched(inode_position)? {
-            let (position, touched_change_id) = pair?;
-            // Push iff the file ChangeId for this element matches that of the file Inode
-            if &position.change == &inode_position.change {
-                let ser_h = txn.get_external(touched_change_id)?.unwrap();
-                hashes.insert(libpijul::Hash::from(*ser_h));
-            } else {
-                // We've gone past the relevant subset of changes in the iterator.
-                break;
-            }
-        }
-    }
-    Ok(hashes)
 }
 
 /// A single log entry created by [`LogIterator`]. The fields are
@@ -281,6 +274,7 @@ struct LogIterator {
     cmd: Log,
     repo_path: PathBuf,
     id_path: PathBuf,
+    global_id_path: Option<PathBuf>,
     channel_ref: ChannelRef<Txn>,
     limit: usize,
     offset: usize,
@@ -328,43 +322,43 @@ impl LogIterator {
         // A cache of authors to keys. Prevents us from having to do
         // a lot of file-io for looking up the same author multiple times.
         let mut authors = HashMap::new();
+
         let mut id_path = self.id_path.clone();
-        // If the user applied path filters, figure out what change hashes
-        // are to be logged.
-        let mut requested_hashes = filtered_hashes(
-            &self.txn,
-            self.repo_path.as_ref(),
-            self.cmd.filters.as_slice(),
-        )?;
+        let mut global_id_path = self.global_id_path.clone();
 
-        // Get the (Hash, Merkle) pairs for the portion of reverse_log
-        // that are between offset and limit.
-        let hs = self
-            .txn
-            .reverse_log(&*self.channel_ref.read(), None)?
-            .skip(self.offset)
-            .take(self.limit)
-            .map(|res| {
-                res.map(|(_, (ser_h, ser_m))| {
-                    (libpijul::Hash::from(ser_h), libpijul::Merkle::from(ser_m))
-                })
-            });
-
-        for pr in hs {
-            let (h, mrk) = pr?;
-            if (self.cmd.filters.is_empty()) || requested_hashes.remove(&h) {
-                // If there were no path filters applied, OR is this was one of the hashes
-                // marked by the file filters that were applied
-                let entry = self.mk_log_entry(&mut authors, &mut id_path, h, Some(mrk))?;
-                f(entry).map_err(Error::E)?;
-            } else if requested_hashes.is_empty() {
-                // If the user applied path filters, but the relevant change hashes
-                // have been exhausted, we can break early.
-                break;
-            } else {
-                // The user applied path filters; this wasn't a hit, but
-                // there are still hits to be logged.
-                continue;
+        let inodes = get_inodes(&self.txn, &self.repo_path, &self.cmd.filters)?;
+        let mut offset = self.offset;
+        let mut limit = self.limit;
+        for pr in self.txn.reverse_log(&*self.channel_ref.read(), None)? {
+            let (_, (h, mrk)) = pr?;
+            let cid = self.txn.get_internal(h)?.unwrap();
+            let mut is_in_filters = inodes.is_empty();
+            for (_, position) in inodes.iter() {
+                if let Some(position) = position {
+                    is_in_filters = self.txn.get_touched_files(position, Some(cid))?.is_some();
+                    if is_in_filters {
+                        break;
+                    }
+                }
+            }
+            if is_in_filters {
+                if offset == 0 && limit > 0 {
+                    // If there were no path filters applied, OR is this was one of the hashes
+                    // marked by the file filters that were applied
+                    let entry = self.mk_log_entry(
+                        &mut authors,
+                        &mut id_path,
+                        &mut global_id_path,
+                        h.into(),
+                        Some(mrk.into()),
+                    )?;
+                    f(entry).map_err(Error::E)?;
+                    limit -= 1
+                } else if limit > 0 {
+                    offset -= 1
+                } else {
+                    break;
+                }
             }
         }
 
@@ -379,6 +373,7 @@ impl LogIterator {
         &self,
         author_kvs: &'x mut HashMap<String, String>,
         id_path: &mut PathBuf,
+        global_id_path: &mut Option<PathBuf>,
         h: libpijul::Hash,
         m: Option<libpijul::Merkle>,
     ) -> Result<LogEntry, Error<E>> {
@@ -396,14 +391,38 @@ impl LogIterator {
                         Entry::Vacant(e) => {
                             let mut id = None;
                             id_path.push(e.key());
-                            if let Ok(f) = std::fs::File::open(&self.id_path) {
+                            if let Ok(f) = std::fs::File::open(&id_path) {
                                 if let Ok(id_) = serde_json::from_reader::<_, super::Identity>(f) {
                                     id = Some(id_)
                                 }
                             }
                             id_path.pop();
+                            debug!("{:?} {:?}", global_id_path, id);
+                            if let Some(ref mut global_id_path) = global_id_path {
+                                if id.is_none() {
+                                    global_id_path.push(e.key());
+                                    debug!("{:?}", global_id_path);
+                                    if let Ok(f) = std::fs::File::open(&global_id_path) {
+                                        if let Ok(id_) = serde_json::from_reader(f) {
+                                            id = Some(id_)
+                                        } else {
+                                            debug!("wrong identity for {:?}", e.key());
+                                        }
+                                    }
+                                    global_id_path.pop();
+                                }
+                            }
+
                             if let Some(id) = id {
-                                e.insert(id.login)
+                                if let Some(ref name) = id.name {
+                                    if let Some(ref email) = id.email {
+                                        e.insert(format!("{} ({}) <{}>", name, id.login, email))
+                                    } else {
+                                        e.insert(format!("{} ({})", name, id.login))
+                                    }
+                                } else {
+                                    e.insert(id.login)
+                                }
                             } else {
                                 let k = e.key().to_string();
                                 e.insert(k)

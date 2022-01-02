@@ -65,7 +65,11 @@ fn parse_file_del_hunk(i: &str) -> IResult<&str, PrintableHunk> {
     let (i, encoding) = preceded(space0, parse_encoding)(i)?;
     let (i, _) = tuple((space0, newline))(i)?;
     let (i, del_edges) = parse_edges(i)?;
-    let (i, content_edges) = parse_edges(i)?;
+    let (i, content_edges) = if let Ok(x) = parse_edges(i) {
+        x
+    } else {
+        (i, Vec::new())
+    };
     let (i, contents) = parse_contents('-', encoding.clone(), i)?;
     Ok((
         i,
@@ -89,7 +93,11 @@ fn parse_file_undel_hunk(i: &str) -> IResult<&str, PrintableHunk> {
     let (i, encoding) = preceded(space0, parse_encoding)(i)?;
     let (i, _) = tuple((space0, newline))(i)?;
     let (i, undel_edges) = parse_edges(i)?;
-    let (i, content_edges) = parse_edges(i)?;
+    let (i, content_edges) = if let Ok(x) = parse_edges(i) {
+        x
+    } else {
+        (i, Vec::new())
+    };
     let (i, contents) = parse_contents('+', encoding.clone(), i)?;
     Ok((
         i,
@@ -116,7 +124,11 @@ fn parse_file_addition_hunk(i: &str) -> IResult<&str, PrintableHunk> {
 
     let (i, up_context) = preceded(tag("up"), parse_context)(i)?;
     let (i, (start, end)) = delimited(space0, parse_start_end, pair(space0, newline))(i)?;
-    let (i, contents) = parse_contents('+', encoding.clone(), i)?;
+    let (i, contents) = if let PrintablePerms::IsDir = perms {
+        (i, Vec::new())
+    } else {
+        parse_contents('+', encoding.clone(), i)?
+    };
     Ok((
         i,
         FileAddition {
@@ -142,7 +154,11 @@ fn parse_edit_hunk(i: &str) -> IResult<&str, PrintableHunk> {
     let (i, _) = tuple((space0, newline))(i)?;
     let (i, change) = parse_atom(i)?;
     let (i, contents) = if let Ok(s) = parse_contents('+', encoding.clone(), i) {
-        s
+        if s.1.is_empty() {
+            parse_contents('-', encoding.clone(), i)?
+        } else {
+            s
+        }
     } else {
         parse_contents('-', encoding.clone(), i)?
     };
@@ -353,11 +369,14 @@ fn parse_contents(
         |s, r| s + r.as_str(),
     )(i)?;
     let (i, backslash) = opt(complete(tag("\\\n")))(i)?;
+    let has_encoding = encoding.is_some();
     if let Ok(mut vec) = encode(encoding, &res) {
-        if backslash.is_some() && vec[vec.len() - 1] == b'\n' {
-            vec.pop();
-        }
-        if !vec.is_empty() {
+        let not_empty = if backslash.is_some() && vec[vec.len() - 1] == b'\n' {
+            vec.pop().is_some()
+        } else {
+            !vec.is_empty()
+        };
+        if has_encoding || not_empty {
             return Ok((i, vec));
         }
     }

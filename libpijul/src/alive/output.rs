@@ -21,17 +21,18 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
     graph: &Graph,
     sccs: &Vector2<VertexId>,
     conflict: Path,
-) -> Result<(), FileError<P::Error, T::GraphError>> {
+) -> Result<(), FileError<P::Error, T>> {
     let mut stack = vec![ConflictStackElt {
         conflict: vec![conflict],
         side: 0,
         idx: 0,
     }];
-    let mut is_zombie = false;
+    let mut is_zombie = None;
+    let mut id = 0;
     while let Some(mut elt) = stack.pop() {
         let n_sides = elt.conflict.len();
+        let id0 = id;
         if n_sides > 1 && elt.side == 0 && elt.idx == 0 {
-            line_buf.begin_conflict()?;
             elt.conflict.sort_by(|a, b| {
                 let a_ = a
                     .path
@@ -47,21 +48,48 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
                     .unwrap();
                 a_.cmp(&b_)
             });
+            match elt.conflict[elt.side].path[elt.idx] {
+                PathElement::Scc { scc } => {
+                    let vid = sccs[scc][0];
+                    let ext = txn.get_external(&graph[vid].vertex.change)?.unwrap();
+                    line_buf.begin_conflict(id, &[&ext.into()])?;
+                }
+                _ => {
+                    line_buf.begin_conflict(id, &[])?;
+                }
+            }
+            id += 1;
         }
 
         let mut next = None;
         'outer: while elt.side < n_sides {
             if elt.side > 0 && elt.idx == 0 {
-                if is_zombie {
-                    is_zombie = false;
-                    line_buf.end_zombie_conflict()?;
+                if let Some(id) = is_zombie.take() {
+                    line_buf.end_zombie_conflict(id)?;
                 }
-                line_buf.conflict_next()?;
+                match elt.conflict[elt.side].path[elt.idx] {
+                    PathElement::Scc { scc } => {
+                        let vid = sccs[scc][0];
+                        let ext = txn.get_external(&graph[vid].vertex.change)?.unwrap();
+                        line_buf.conflict_next(id0, &[&ext.into()])?;
+                    }
+                    _ => {
+                        line_buf.conflict_next(id0, &[])?;
+                    }
+                }
             }
             while elt.idx < elt.conflict[elt.side].path.len() {
                 match elt.conflict[elt.side].path[elt.idx] {
                     PathElement::Scc { scc } => {
-                        output_scc(changes, txn, graph, &sccs[scc], &mut is_zombie, line_buf)?;
+                        output_scc(
+                            changes,
+                            txn,
+                            graph,
+                            &sccs[scc],
+                            &mut is_zombie,
+                            &mut id,
+                            line_buf,
+                        )?;
                         elt.idx += 1;
                     }
                     PathElement::Conflict { ref mut sides } => {
@@ -82,23 +110,21 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
 
         if elt.side >= n_sides {
             if n_sides > 1 {
-                if is_zombie {
-                    is_zombie = false;
-                    line_buf.end_zombie_conflict()?;
+                if let Some(id) = is_zombie.take() {
+                    line_buf.end_zombie_conflict(id)?;
                 }
-                line_buf.end_conflict()?;
+                line_buf.end_conflict(id0)?;
             }
         } else {
-            if is_zombie {
-                is_zombie = false;
-                line_buf.end_zombie_conflict()?;
+            if let Some(id) = is_zombie.take() {
+                line_buf.end_zombie_conflict(id)?;
             }
             stack.push(elt);
             stack.push(next.unwrap())
         }
     }
-    if is_zombie {
-        line_buf.end_zombie_conflict()?;
+    if let Some(id) = is_zombie.take() {
+        line_buf.end_zombie_conflict(id)?;
     }
     Ok(())
 }
@@ -159,22 +185,26 @@ fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
     txn: &T,
     graph: &Graph,
     scc: &[VertexId],
-    is_zombie: &mut bool,
+    is_zombie: &mut Option<usize>,
+    id: &mut usize,
     vbuf: &mut B,
-) -> Result<(), FileError<P::Error, T::GraphError>> {
+) -> Result<(), FileError<P::Error, T>> {
+    let id_cyclic = *id;
     if scc.len() > 1 {
-        vbuf.begin_cyclic_conflict()?;
+        vbuf.begin_cyclic_conflict(*id)?;
+        *id += 1;
     }
     for &v in scc.iter() {
         let now = std::time::Instant::now();
         if graph[v].flags.contains(Flags::ZOMBIE) {
-            if !*is_zombie {
-                *is_zombie = true;
-                vbuf.begin_zombie_conflict()?;
+            if is_zombie.is_none() {
+                *is_zombie = Some(*id);
+                let hash = txn.get_external(&graph[v].vertex.change)?.unwrap();
+                vbuf.begin_zombie_conflict(*id, &[&hash.into()])?;
+                *id += 1
             }
-        } else if *is_zombie {
-            *is_zombie = false;
-            vbuf.end_zombie_conflict()?;
+        } else if let Some(id) = is_zombie.take() {
+            vbuf.end_zombie_conflict(id)?;
         }
         crate::TIMERS.lock().unwrap().alive_write += now.elapsed();
 
@@ -201,7 +231,7 @@ fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
     }
     let now = std::time::Instant::now();
     if scc.len() > 1 {
-        vbuf.end_cyclic_conflict()?;
+        vbuf.end_cyclic_conflict(id_cyclic)?;
     }
     crate::TIMERS.lock().unwrap().alive_write += now.elapsed();
     Ok(())
@@ -213,8 +243,8 @@ pub fn output_graph<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
     channel: &T::Channel,
     line_buf: &mut B,
     graph: &mut Graph,
-    forward: &mut Vec<(Vertex<ChangeId>, SerializedEdge)>,
-) -> Result<(), crate::output::FileError<P::Error, T::GraphError>> {
+    forward: &mut Vec<super::Redundant>,
+) -> Result<(), crate::output::FileError<P::Error, T>> {
     if graph.lines.len() <= 1 {
         return Ok(());
     }

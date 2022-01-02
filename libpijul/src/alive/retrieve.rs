@@ -117,17 +117,10 @@ pub(crate) fn remove_forward_edges<T: GraphMutTxnT>(
     let (_, forward_scc) = graph.dfs(&scc);
     let mut forward = Vec::new();
     graph.collect_forward_edges(txn, channel, &scc, &forward_scc, &mut forward)?;
-    for &(vertex, edge) in forward.iter() {
-        let dest = *txn.find_block(channel, edge.dest()).unwrap();
-        debug!(target:"libpijul::forward", "deleting forward edge {:?} {:?} {:?}", vertex, dest, edge);
-        del_graph_with_rev(
-            txn,
-            channel,
-            edge.flag(),
-            vertex,
-            dest,
-            edge.introduced_by(),
-        )?;
+    for ve in forward.iter() {
+        let dest = *txn.find_block(channel, ve.e.dest()).unwrap();
+        debug!(target:"libpijul::forward", "deleting forward edge {:?} {:?} {:?}", ve.v, dest, ve.e);
+        del_graph_with_rev(txn, channel, ve.e.flag(), ve.v, dest, ve.e.introduced_by())?;
     }
     Ok(())
 }

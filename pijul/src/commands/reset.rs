@@ -113,6 +113,7 @@ impl Reset {
                 state.record(
                     txn.clone(),
                     libpijul::Algorithm::default(),
+                    false,
                     &libpijul::DEFAULT_SEPARATOR,
                     channel.clone(),
                     &repo.working_copy,
@@ -179,7 +180,7 @@ impl Reset {
                     break;
                 }
             }
-            if paths.is_empty() {
+            if !inodes.is_empty() && paths.is_empty() {
                 paths.insert(String::from(""));
             }
             let mut last = None;
@@ -213,6 +214,7 @@ impl Reset {
                 );
                 last = Some(path)
             }
+            txn.write().touch_channel(&mut *channel.write(), None);
             PROGRESS.join();
         } else {
             PROGRESS
@@ -287,5 +289,5 @@ fn changes_after<T: ChannelTxnT + DepsTxnT>(
 }
 
 fn last_modified<T: ChannelTxnT>(txn: &T, channel: &T::Channel) -> std::time::SystemTime {
-    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(txn.last_modified(channel))
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(txn.last_modified(channel))
 }

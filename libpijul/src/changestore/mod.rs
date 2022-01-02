@@ -36,6 +36,7 @@ pub trait ChangeStore {
     fn get_header(&self, h: &Hash) -> Result<ChangeHeader, Self::Error> {
         Ok(self.get_change(h)?.hashed.header)
     }
+    fn get_tag_header(&self, h: &crate::Merkle) -> Result<ChangeHeader, Self::Error>;
     fn get_contents_ext(
         &self,
         key: Vertex<Option<Hash>>,

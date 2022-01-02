@@ -7,6 +7,8 @@ use libpijul::pristine::{Base32, Position};
 use libpijul::Hash;
 use log::{debug, error, trace};
 
+use crate::remote::CS;
+
 const USER_AGENT: &str = concat!("pijul-", clap::crate_version!());
 
 pub struct Http {
@@ -20,24 +22,34 @@ async fn download_change(
     client: reqwest::Client,
     url: url::Url,
     mut path: PathBuf,
-    c: libpijul::pristine::Hash,
-) -> Result<libpijul::pristine::Hash, anyhow::Error> {
-    libpijul::changestore::filesystem::push_filename(&mut path, &c);
+    c: CS,
+) -> Result<CS, anyhow::Error> {
+    let (req, c32) = match c {
+        CS::Change(c) => {
+            libpijul::changestore::filesystem::push_filename(&mut path, &c);
+            ("change", c.to_base32())
+        }
+        CS::State(c) => {
+            libpijul::changestore::filesystem::push_tag_filename(&mut path, &c);
+            if std::fs::metadata(&path).is_ok() {
+                bail!("Tag already downloaded: {}", c.to_base32())
+            }
+            ("tag", c.to_base32())
+        }
+    };
     std::fs::create_dir_all(&path.parent().unwrap())?;
     let path_ = path.with_extension("tmp");
     let mut f = tokio::fs::File::create(&path_).await?;
-    libpijul::changestore::filesystem::pop_filename(&mut path);
-    let c32 = c.to_base32();
     let url = format!("{}/{}", url, super::DOT_DIR);
     let mut delay = 1f64;
 
     let (send, mut recv) = tokio::sync::mpsc::channel::<Option<bytes::Bytes>>(100);
     let t = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
         while let Some(chunk) = recv.recv().await {
             match chunk {
                 Some(chunk) => {
                     trace!("writing {:?}", chunk.len());
-                    use tokio::io::AsyncWriteExt;
                     f.write_all(&chunk).await?;
                 }
                 None => {
@@ -45,13 +57,14 @@ async fn download_change(
                 }
             }
         }
+        f.flush().await?;
         Ok::<_, std::io::Error>(())
     });
     let mut done = false;
     while !done {
         let mut res = if let Ok(res) = client
             .get(&url)
-            .query(&[("change", &c32)])
+            .query(&[(req, &c32)])
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .send()
             .await
@@ -72,10 +85,25 @@ async fn download_change(
             delay *= 2.;
             continue;
         }
+        let mut size = res
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|x| x.to_str().ok())
+            .unwrap_or("0")
+            .parse::<usize>()
+            .ok();
         while !done {
             match res.chunk().await {
-                Ok(Some(chunk)) => send.send(Some(chunk)).await?,
-                Ok(None) => done = true,
+                Ok(Some(chunk)) => {
+                    if let Some(ref mut s) = size {
+                        *s -= chunk.len();
+                    }
+                    send.send(Some(chunk)).await?;
+                }
+                Ok(None) => match size {
+                    Some(0) | None => done = true,
+                    _ => break,
+                },
                 Err(e) => {
                     debug!("error {:?}", e);
                     error!("Error while downloading {:?} from {:?}, retrying", c32, url);
@@ -90,7 +118,14 @@ async fn download_change(
     std::mem::drop(send);
     t.await??;
     if done {
-        std::fs::rename(&path_, &path_.with_extension("change"))?;
+        match c {
+            CS::Change(_) => {
+                std::fs::rename(&path_, &path)?;
+            }
+            CS::State(_) => {
+                std::fs::rename(&path_, &path)?;
+            }
+        }
     }
     Ok(c)
 }
@@ -101,8 +136,8 @@ impl Http {
     pub async fn download_changes(
         &mut self,
         pro_n: usize,
-        hashes: &mut tokio::sync::mpsc::UnboundedReceiver<libpijul::pristine::Hash>,
-        send: &mut tokio::sync::mpsc::Sender<libpijul::pristine::Hash>,
+        hashes: &mut tokio::sync::mpsc::UnboundedReceiver<CS>,
+        send: &mut tokio::sync::mpsc::Sender<CS>,
         path: &PathBuf,
         _full: bool,
     ) -> Result<(), anyhow::Error> {
@@ -152,10 +187,9 @@ impl Http {
         pro_n: usize,
         mut local: PathBuf,
         to_channel: Option<&str>,
-        changes: &[libpijul::Hash],
+        changes: &[CS],
     ) -> Result<(), anyhow::Error> {
         for c in changes {
-            libpijul::changestore::filesystem::push_filename(&mut local, &c);
             let url = {
                 let mut p = self.url.path().to_string();
                 if !p.ends_with("/") {
@@ -166,23 +200,53 @@ impl Http {
                 u.set_path(&p);
                 u
             };
-            let change = std::fs::read(&local)?;
             let mut to_channel = if let Some(ch) = to_channel {
                 vec![("to_channel", ch)]
             } else {
                 Vec::new()
             };
-            let c = c.to_base32();
-            to_channel.push(("apply", &c));
+            let base32;
+            let body = match c {
+                CS::Change(c) => {
+                    libpijul::changestore::filesystem::push_filename(&mut local, &c);
+                    let change = std::fs::read(&local)?;
+                    base32 = c.to_base32();
+                    to_channel.push(("apply", &base32));
+                    change
+                }
+                CS::State(c) => {
+                    libpijul::changestore::filesystem::push_tag_filename(&mut local, &c);
+                    let mut tag_file = libpijul::tag::OpenTagFile::open(&local, &c)?;
+                    let mut v = Vec::new();
+                    tag_file.short(&mut v)?;
+                    base32 = c.to_base32();
+                    to_channel.push(("tagup", &base32));
+                    v
+                }
+            };
+            libpijul::changestore::filesystem::pop_filename(&mut local);
             debug!("url {:?} {:?}", url, to_channel);
-            self.client
+            let resp = self
+                .client
                 .post(url)
                 .query(&to_channel)
                 .header(reqwest::header::USER_AGENT, USER_AGENT)
-                .body(change)
+                .body(body)
                 .send()
                 .await?;
-            libpijul::changestore::filesystem::pop_filename(&mut local);
+            let stat = resp.status();
+            if !stat.is_success() {
+                let body = resp.text().await?;
+                if !body.is_empty() {
+                    bail!("The HTTP server returned an error: {}", body)
+                } else {
+                    if let Some(reason) = stat.canonical_reason() {
+                        bail!("HTTP Error {}: {}", stat.as_u16(), reason)
+                    } else {
+                        bail!("HTTP Error {}", stat.as_u16())
+                    }
+                }
+            }
             super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
         }
         Ok(())
@@ -190,7 +254,7 @@ impl Http {
 
     pub async fn download_changelist<
         A,
-        F: FnMut(&mut A, u64, Hash, libpijul::Merkle) -> Result<(), anyhow::Error>,
+        F: FnMut(&mut A, u64, Hash, libpijul::Merkle, bool) -> Result<(), anyhow::Error>,
     >(
         &self,
         mut f: F,
@@ -236,7 +300,7 @@ impl Http {
             for l in data.lines() {
                 if !l.is_empty() {
                     match super::parse_line(l)? {
-                        super::ListLine::Change { n, m, h } => f(a, n, h, m)?,
+                        super::ListLine::Change { n, m, h, tag } => f(a, n, h, m, tag)?,
                         super::ListLine::Position(pos) => {
                             result.insert(pos);
                         }
@@ -256,7 +320,7 @@ impl Http {
     pub async fn get_state(
         &mut self,
         mid: Option<u64>,
-    ) -> Result<Option<(u64, libpijul::Merkle)>, anyhow::Error> {
+    ) -> Result<Option<(u64, libpijul::Merkle, libpijul::Merkle)>, anyhow::Error> {
         debug!("get_state {:?}", self.url);
         let url = format!("{}/{}", self.url, super::DOT_DIR);
         let q = if let Some(mid) = mid {
@@ -281,12 +345,14 @@ impl Http {
         let resp = std::str::from_utf8(&resp)?;
         debug!("resp = {:?}", resp);
         let mut s = resp.split_whitespace();
-        if let (Some(n), Some(m)) = (
+        if let (Some(n), Some(m), Some(m2)) = (
             s.next().and_then(|s| s.parse().ok()),
             s.next()
                 .and_then(|m| libpijul::Merkle::from_base32(m.as_bytes())),
+            s.next()
+                .and_then(|m| libpijul::Merkle::from_base32(m.as_bytes())),
         ) {
-            Ok(Some((n, m)))
+            Ok(Some((n, m, m2)))
         } else {
             Ok(None)
         }

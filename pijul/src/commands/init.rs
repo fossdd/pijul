@@ -21,7 +21,7 @@ pub struct Init {
 
 impl Init {
     pub fn run(self) -> Result<(), anyhow::Error> {
-        let repo = Repository::init(self.path, self.kind.as_ref())?;
+        let repo = Repository::init(self.path, self.kind.as_deref(), None)?;
         let mut txn = repo.pristine.mut_txn_begin()?;
         let channel_name = self
             .channel

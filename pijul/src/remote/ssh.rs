@@ -16,6 +16,7 @@ use thrussh::client::Session;
 use tokio::sync::Mutex;
 
 use super::parse_line;
+use crate::remote::CS;
 
 pub struct Ssh {
     pub h: thrussh::client::Handle<SshClient>,
@@ -295,18 +296,18 @@ pub struct SshClient {
 enum State {
     None,
     State {
-        sender: Option<tokio::sync::oneshot::Sender<Option<(u64, Merkle)>>>,
+        sender: Option<tokio::sync::oneshot::Sender<Option<(u64, Merkle, Merkle)>>>,
     },
     Id {
         sender: Option<tokio::sync::oneshot::Sender<Option<libpijul::pristine::RemoteId>>>,
     },
     Changes {
-        sender: Option<tokio::sync::mpsc::Sender<Hash>>,
+        sender: Option<tokio::sync::mpsc::Sender<CS>>,
         remaining_len: usize,
         file: std::fs::File,
         path: PathBuf,
         final_path: PathBuf,
-        hashes: Vec<libpijul::pristine::Hash>,
+        hashes: Vec<CS>,
         current: usize,
     },
     Changelist {
@@ -452,11 +453,14 @@ impl thrussh::client::Handler for SshClient {
                         // remote returns the standard "-\n"), this
                         // returns None.
                         let mut s = std::str::from_utf8(&data).unwrap().split(' ');
-                        debug!("s = {:?}", s);
-                        if let (Some(n), Some(m)) = (s.next(), s.next()) {
+                        if let (Some(n), Some(m), Some(m2)) = (s.next(), s.next(), s.next()) {
                             let n = n.parse().unwrap();
                             sender
-                                .send(Some((n, Merkle::from_base32(m.trim().as_bytes()).unwrap())))
+                                .send(Some((
+                                    n,
+                                    Merkle::from_base32(m.trim().as_bytes()).unwrap(),
+                                    Merkle::from_base32(m2.trim().as_bytes()).unwrap(),
+                                )))
                                 .unwrap_or(());
                         } else {
                             sender.send(None).unwrap_or(());
@@ -505,16 +509,26 @@ impl thrussh::client::Handler for SshClient {
                             *remaining_len = 0;
                             file.flush()?;
 
-                            libpijul::changestore::filesystem::push_filename(
-                                final_path,
-                                &hashes[*current],
-                            );
-                            final_path.set_extension("change");
-                            debug!("moving {:?} to {:?}", path, final_path);
-                            std::fs::create_dir_all(&final_path.parent().unwrap())?;
-                            let r = std::fs::rename(&path, &final_path);
-                            libpijul::changestore::filesystem::pop_filename(final_path);
-                            r?;
+                            match hashes[*current] {
+                                CS::Change(ref h) => {
+                                    libpijul::changestore::filesystem::push_filename(final_path, h);
+                                    debug!("moving {:?} to {:?}", path, final_path);
+                                    std::fs::create_dir_all(&final_path.parent().unwrap())?;
+                                    let r = std::fs::rename(&path, &final_path);
+                                    libpijul::changestore::filesystem::pop_filename(final_path);
+                                    r?;
+                                }
+                                CS::State(h) => {
+                                    libpijul::changestore::filesystem::push_tag_filename(
+                                        final_path, &h,
+                                    );
+                                    debug!("moving {:?} to {:?}", path, final_path);
+                                    std::fs::create_dir_all(&final_path.parent().unwrap())?;
+                                    let r = std::fs::rename(&path, &final_path);
+                                    libpijul::changestore::filesystem::pop_filename(final_path);
+                                    r?;
+                                }
+                            }
                             debug!("sending {:?}", hashes[*current]);
                             if let Some(ref mut sender) = sender {
                                 if sender.send(hashes[*current]).await.is_err() {
@@ -720,7 +734,7 @@ impl Ssh {
     pub async fn get_state(
         &mut self,
         mid: Option<u64>,
-    ) -> Result<Option<(u64, Merkle)>, anyhow::Error> {
+    ) -> Result<Option<(u64, Merkle, Merkle)>, anyhow::Error> {
         debug!("get_state");
         let (sender, receiver) = tokio::sync::oneshot::channel();
         *self.state.lock().await = State::State {
@@ -846,7 +860,7 @@ impl Ssh {
 
     pub async fn download_changelist<
         A,
-        F: FnMut(&mut A, u64, Hash, libpijul::Merkle) -> Result<(), anyhow::Error>,
+        F: FnMut(&mut A, u64, Hash, libpijul::Merkle, bool) -> Result<(), anyhow::Error>,
     >(
         &mut self,
         mut f: F,
@@ -872,7 +886,7 @@ impl Ssh {
         let mut result = HashSet::new();
         while let Some(Some(m)) = receiver.recv().await {
             match m {
-                super::ListLine::Change { n, h, m } => f(a, n, h, m)?,
+                super::ListLine::Change { n, h, m, tag } => f(a, n, h, m, tag)?,
                 super::ListLine::Position(pos) => {
                     result.insert(pos);
                 }
@@ -893,28 +907,49 @@ impl Ssh {
         pro_n: usize,
         mut local: PathBuf,
         to_channel: Option<&str>,
-        changes: &[Hash],
+        changes: &[CS],
     ) -> Result<(), anyhow::Error> {
         self.run_protocol().await?;
         debug!("upload_changes");
         for c in changes {
             debug!("{:?}", c);
-            libpijul::changestore::filesystem::push_filename(&mut local, &c);
-            let mut change_file = std::fs::File::open(&local)?;
-            let change_len = change_file.metadata()?.len();
-            let mut change = thrussh::CryptoVec::new_zeroed(change_len as usize);
-            use std::io::Read;
-            change_file.read_exact(&mut change[..])?;
             let to_channel = if let Some(t) = to_channel {
                 t
             } else {
                 self.channel.as_str()
             };
-            self.c
-                .data(format!("apply {} {} {}\n", to_channel, c.to_base32(), change_len).as_bytes())
-                .await?;
-            self.c.data(&change[..]).await?;
-            libpijul::changestore::filesystem::pop_filename(&mut local);
+            match c {
+                CS::Change(c) => {
+                    libpijul::changestore::filesystem::push_filename(&mut local, &c);
+                    let mut change_file = std::fs::File::open(&local)?;
+                    let change_len = change_file.metadata()?.len();
+                    let mut change = thrussh::CryptoVec::new_zeroed(change_len as usize);
+                    use std::io::Read;
+                    change_file.read_exact(&mut change[..])?;
+                    self.c
+                        .data(
+                            format!("apply {} {} {}\n", to_channel, c.to_base32(), change_len)
+                                .as_bytes(),
+                        )
+                        .await?;
+                    self.c.data(&change[..]).await?;
+                    libpijul::changestore::filesystem::pop_filename(&mut local);
+                }
+                CS::State(c) => {
+                    libpijul::changestore::filesystem::push_tag_filename(&mut local, &c);
+                    let mut tag_file = libpijul::tag::OpenTagFile::open(&local, &c)?;
+                    let mut v = Vec::new();
+                    tag_file.short(&mut v)?;
+                    self.c
+                        .data(
+                            format!("tagup {} {} {}\n", c.to_base32(), to_channel, v.len())
+                                .as_bytes(),
+                        )
+                        .await?;
+                    self.c.data(&v[..]).await?;
+                    libpijul::changestore::filesystem::pop_filename(&mut local);
+                }
+            }
             super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
         }
         Ok(())
@@ -923,8 +958,8 @@ impl Ssh {
     pub async fn download_changes(
         &mut self,
         pro_n: usize,
-        c: &mut tokio::sync::mpsc::UnboundedReceiver<libpijul::pristine::Hash>,
-        sender: &mut tokio::sync::mpsc::Sender<libpijul::pristine::Hash>,
+        c: &mut tokio::sync::mpsc::UnboundedReceiver<CS>,
+        sender: &mut tokio::sync::mpsc::Sender<CS>,
         changes_dir: &mut PathBuf,
         full: bool,
     ) -> Result<(), anyhow::Error> {
@@ -935,8 +970,8 @@ impl Ssh {
     async fn download_changes_(
         &mut self,
         pro_n: usize,
-        c: &mut tokio::sync::mpsc::UnboundedReceiver<libpijul::pristine::Hash>,
-        sender: Option<&mut tokio::sync::mpsc::Sender<libpijul::pristine::Hash>>,
+        c: &mut tokio::sync::mpsc::UnboundedReceiver<CS>,
+        sender: Option<&mut tokio::sync::mpsc::Sender<CS>>,
         changes_dir: &mut PathBuf,
         full: bool,
     ) -> Result<(), anyhow::Error> {
@@ -972,14 +1007,22 @@ impl Ssh {
                 hashes.push(h);
             }
             debug!("download_change {:?} {:?}", h, full);
-            if full {
-                self.c
-                    .data(format!("change {}\n", h.to_base32()).as_bytes())
-                    .await?;
-            } else {
-                self.c
-                    .data(format!("partial {}\n", h.to_base32()).as_bytes())
-                    .await?;
+            match h {
+                CS::Change(h) if full => {
+                    self.c
+                        .data(format!("change {}\n", h.to_base32()).as_bytes())
+                        .await?;
+                }
+                CS::Change(h) => {
+                    self.c
+                        .data(format!("partial {}\n", h.to_base32()).as_bytes())
+                        .await?;
+                }
+                CS::State(h) => {
+                    self.c
+                        .data(format!("tag {}\n", h.to_base32()).as_bytes())
+                        .await?;
+                }
             }
         }
         if !received {

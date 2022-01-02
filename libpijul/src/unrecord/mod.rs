@@ -8,19 +8,18 @@ use std::collections::{HashMap, HashSet};
 
 mod working_copy;
 
-#[derive(Debug, Error)]
-pub enum UnrecordError<
-    ChangestoreError: std::error::Error + 'static,
-    TxnError: std::error::Error + 'static,
-> {
+#[derive(Error)]
+pub enum UnrecordError<ChangestoreError: std::error::Error + 'static, T: GraphTxnT + TreeTxnT> {
     #[error("Changestore error: {0}")]
     Changestore(ChangestoreError),
     #[error(transparent)]
-    Txn(TxnError),
+    Txn(#[from] TxnErr<T::GraphError>),
     #[error(transparent)]
-    Block(#[from] crate::pristine::BlockError<TxnError>),
+    Tree(#[from] TreeErr<T::TreeError>),
     #[error(transparent)]
-    InconsistentChange(#[from] crate::pristine::InconsistentChange<TxnError>),
+    Block(#[from] crate::pristine::BlockError<T::GraphError>),
+    #[error(transparent)]
+    InconsistentChange(#[from] crate::pristine::InconsistentChange<T::GraphError>),
     #[error("Change not in channel: {}", hash.to_base32())]
     ChangeNotInChannel { hash: ChangeId },
     #[error("Change {} is depended upon by {}", change_id.to_base32(), dependent.to_base32())]
@@ -29,18 +28,37 @@ pub enum UnrecordError<
         dependent: ChangeId,
     },
     #[error(transparent)]
-    Missing(#[from] crate::missing_context::MissingError<TxnError>),
+    Missing(#[from] crate::missing_context::MissingError<T::GraphError>),
     #[error(transparent)]
-    LocalApply(#[from] crate::apply::LocalApplyError<TxnError>),
+    LocalApply(#[from] crate::apply::LocalApplyError<T>),
     #[error(transparent)]
-    Apply(#[from] crate::apply::ApplyError<ChangestoreError, TxnError>),
+    Apply(#[from] crate::apply::ApplyError<ChangestoreError, T>),
 }
 
-impl<T: std::error::Error + 'static, C: std::error::Error + 'static> std::convert::From<TxnErr<T>>
-    for UnrecordError<C, T>
-{
-    fn from(t: TxnErr<T>) -> Self {
-        UnrecordError::Txn(t.0)
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> std::fmt::Debug for UnrecordError<C, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            UnrecordError::Changestore(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::Block(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::InconsistentChange(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::ChangeNotInChannel { hash } => {
+                write!(fmt, "Change not in channel: {}", hash.to_base32())
+            }
+            UnrecordError::ChangeIsDependedUpon {
+                change_id,
+                dependent,
+            } => write!(
+                fmt,
+                "Change {} is depended upon: {}",
+                change_id.to_base32(),
+                dependent.to_base32()
+            ),
+            UnrecordError::Missing(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::LocalApply(e) => std::fmt::Debug::fmt(e, fmt),
+            UnrecordError::Apply(e) => std::fmt::Debug::fmt(e, fmt),
+        }
     }
 }
 
@@ -50,7 +68,7 @@ pub fn unrecord<T: MutTxnT, P: ChangeStore>(
     changes: &P,
     hash: &Hash,
     salt: u64,
-) -> Result<bool, UnrecordError<P::Error, T::GraphError>> {
+) -> Result<bool, UnrecordError<P::Error, T>> {
     let change = changes
         .get_change(hash)
         .map_err(UnrecordError::Changestore)?;
@@ -82,13 +100,13 @@ pub fn unrecord<T: MutTxnT, P: ChangeStore>(
 }
 
 fn del_channel_changes<
-    T: ChannelMutTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>,
+    T: ChannelMutTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError> + TreeTxnT,
     P: ChangeStore,
 >(
     txn: &mut T,
     channel: &mut T::Channel,
     change_id: ChangeId,
-) -> Result<(), UnrecordError<P::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<P::Error, T>> {
     let timestamp = if let Some(&ts) = txn.get_changeset(txn.changes(channel), &change_id)? {
         ts
     } else {
@@ -111,6 +129,10 @@ fn del_channel_changes<
     }
 
     txn.del_changes(channel, change_id, timestamp.into())?;
+
+    let tags = txn.tags_mut(channel);
+    txn.del_tags(tags, timestamp.into())?;
+
     Ok(())
 }
 
@@ -142,7 +164,7 @@ fn unapply<
     change_id: ChangeId,
     change: &Change,
     salt: u64,
-) -> Result<(), UnrecordError<C::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<C::Error, T>> {
     let mut clean_inodes = HashSet::new();
     let mut ws = Workspace::default();
     for change_ in change.changes.iter().rev().flat_map(|r| r.rev_iter()) {
@@ -234,13 +256,13 @@ struct Workspace {
     must_reintroduce: HashSet<(Vertex<ChangeId>, Vertex<ChangeId>)>,
 }
 
-fn unapply_newvertex<T: GraphMutTxnT, C: ChangeStore>(
+fn unapply_newvertex<T: GraphMutTxnT + TreeTxnT, C: ChangeStore>(
     txn: &mut T,
     channel: &mut T::Graph,
     change_id: ChangeId,
     ws: &mut Workspace,
     new_vertex: &NewVertex<Option<Hash>>,
-) -> Result<(), UnrecordError<C::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<C::Error, T>> {
     let mut pos = Position {
         change: change_id,
         pos: new_vertex.start,
@@ -279,12 +301,12 @@ fn unapply_newvertex<T: GraphMutTxnT, C: ChangeStore>(
 }
 
 impl Workspace {
-    fn perform_del<C: ChangeStore, T: GraphMutTxnT>(
+    fn perform_del<C: ChangeStore, T: GraphMutTxnT + TreeTxnT>(
         &mut self,
         txn: &mut T,
         channel: &mut T::Graph,
         vertex: Vertex<ChangeId>,
-    ) -> Result<(), UnrecordError<C::Error, T::GraphError>> {
+    ) -> Result<(), UnrecordError<C::Error, T>> {
         for e in self.del.drain(..) {
             let (a, b) = if e.flag().is_parent() {
                 (*txn.find_block_end(channel, e.dest())?, vertex)
@@ -304,12 +326,12 @@ impl Workspace {
     }
 }
 
-fn repair_newvertex_contexts<T: GraphMutTxnT, C: ChangeStore>(
+fn repair_newvertex_contexts<T: GraphMutTxnT + TreeTxnT, C: ChangeStore>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
-) -> Result<(), UnrecordError<C::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<C::Error, T>> {
     debug!("up = {:#?}", ws.up);
     for (up, inode) in ws.up.drain() {
         if !is_alive(txn, channel, &up)? {
@@ -359,7 +381,7 @@ fn repair_newvertex_contexts<T: GraphMutTxnT, C: ChangeStore>(
     Ok(())
 }
 
-fn unapply_edges<T: GraphMutTxnT, P: ChangeStore>(
+fn unapply_edges<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
     changes: &P,
     txn: &mut T,
     channel: &mut T::Graph,
@@ -367,7 +389,7 @@ fn unapply_edges<T: GraphMutTxnT, P: ChangeStore>(
     newedges: &EdgeMap<Option<Hash>>,
     change: &Change,
     ws: &mut Workspace,
-) -> Result<(), UnrecordError<P::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<P::Error, T>> {
     debug!("newedges = {:#?}", newedges);
     let ext: Hash = txn.get_external(&change_id)?.unwrap().into();
     ws.must_reintroduce.clear();
@@ -427,7 +449,7 @@ fn unapply_edges<T: GraphMutTxnT, P: ChangeStore>(
     Ok(())
 }
 
-fn must_reintroduce<T: GraphTxnT, C: ChangeStore>(
+fn must_reintroduce<T: GraphTxnT + TreeTxnT, C: ChangeStore>(
     txn: &T,
     channel: &T::Graph,
     changes: &C,
@@ -436,7 +458,7 @@ fn must_reintroduce<T: GraphTxnT, C: ChangeStore>(
     intro: Hash,
     intro_id: ChangeId,
     current_id: ChangeId,
-) -> Result<bool, UnrecordError<C::Error, T::GraphError>> {
+) -> Result<bool, UnrecordError<C::Error, T>> {
     debug!("a = {:?}, b = {:?}", a, b);
     // does a patch introduced by an edge parallel to
     // this one remove this edge from the graph?
@@ -466,13 +488,13 @@ fn must_reintroduce<T: GraphTxnT, C: ChangeStore>(
     edge_is_in_channel(txn, changes, b_ext, intro, &mut stack)
 }
 
-fn edge_is_in_channel<T: GraphTxnT, C: ChangeStore>(
+fn edge_is_in_channel<T: GraphTxnT + TreeTxnT, C: ChangeStore>(
     txn: &T,
     changes: &C,
     pos: Position<Option<Hash>>,
     introduced_by: Hash,
     stack: &mut Vec<ChangeId>,
-) -> Result<bool, UnrecordError<C::Error, T::GraphError>> {
+) -> Result<bool, UnrecordError<C::Error, T>> {
     let mut visited = HashSet::new();
     while let Some(s) = stack.pop() {
         if !visited.insert(s) {
@@ -493,13 +515,13 @@ fn edge_is_in_channel<T: GraphTxnT, C: ChangeStore>(
     Ok(true)
 }
 
-fn remove_zombies<T: GraphMutTxnT, C: ChangeStore>(
+fn remove_zombies<T: GraphMutTxnT + TreeTxnT, C: ChangeStore>(
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut Workspace,
     change_id: ChangeId,
     newedges: &EdgeMap<Option<Hash>>,
-) -> Result<(), UnrecordError<C::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<C::Error, T>> {
     debug!("remove_zombies, change_id = {:?}", change_id);
     for edge in newedges.edges.iter() {
         let to = internal_pos(txn, &edge.to.start_pos(), change_id)?;
@@ -554,14 +576,14 @@ fn collect_zombies<T: GraphTxnT>(
     Ok(())
 }
 
-fn repair_edges_context<T: GraphMutTxnT, P: ChangeStore>(
+fn repair_edges_context<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
     changes: &P,
     txn: &mut T,
     channel: &mut T::Graph,
     ws: &mut crate::missing_context::Workspace,
     change_id: ChangeId,
     n: &EdgeMap<Option<Hash>>,
-) -> Result<(), UnrecordError<P::Error, T::GraphError>> {
+) -> Result<(), UnrecordError<P::Error, T>> {
     debug!("repair_edges_context");
     let change_hash: Hash = txn.get_external(&change_id)?.unwrap().into();
     for e in n.edges.iter() {

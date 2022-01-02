@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use super::{make_changelist, parse_changelist};
+use crate::remote::CS;
+use crate::repository::Repository;
 use anyhow::{anyhow, bail};
 use clap::Parser;
 use libpijul::changestore::ChangeStore;
 use libpijul::*;
 use log::debug;
-
-use crate::repository::Repository;
 
 #[derive(Parser, Debug)]
 pub struct Unrecord {
@@ -71,12 +71,14 @@ impl Unrecord {
             let txn = txn.read();
             let hashes_ = txn
                 .reverse_log(&*channel.read(), None)?
-                .map(|h| (h.unwrap().1).0.into())
+                .map(|h| CS::Change((h.unwrap().1).0.into()))
                 .take(number_of_changes)
                 .collect::<Vec<_>>();
             let o = make_changelist(&repo.changes, &hashes_, "unrecord")?;
             for h in parse_changelist(&edit::edit_bytes(&o[..])?).iter() {
-                hashes.push((*h, *txn.get_internal(&h.into())?.unwrap()))
+                if let CS::Change(h) = h {
+                    hashes.push((*h, *txn.get_internal(&h.into())?.unwrap()))
+                }
             }
         } else {
             let txn = txn.read();

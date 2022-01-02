@@ -20,51 +20,61 @@ use crate::small_string::*;
 use crate::HashSet;
 use std::iter::Iterator;
 
-#[derive(Debug, Error)]
-pub enum FsError<T: std::error::Error + 'static> {
+#[derive(Error)]
+pub enum FsError<T: TreeTxnT> {
+    #[error("Inode not found")]
+    InodeNotFound(Inode),
     #[error(transparent)]
     NotFound(#[from] FsNotFound),
     #[error("File already in repository: {0}")]
     AlreadyInRepo(String),
     #[error(transparent)]
-    Txn(T),
+    Tree(#[from] TreeErr<T::TreeError>),
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 }
 
-#[derive(Debug, Error)]
-pub enum FsErrorC<C: std::error::Error + 'static, T: std::error::Error + 'static> {
+impl<T: TreeTxnT> std::fmt::Debug for FsError<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            FsError::InodeNotFound(inode) => write!(fmt, "Inode not found: {}", inode.to_base32()),
+            FsError::NotFound(e) => std::fmt::Debug::fmt(e, fmt),
+            FsError::AlreadyInRepo(e) => write!(fmt, "File already in repository: {}", e),
+            FsError::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+            FsError::InvalidPath(e) => write!(fmt, "Invalid path: {}", e),
+        }
+    }
+}
+
+#[derive(Error)]
+pub enum FsErrorC<C: std::error::Error + 'static, T: GraphTxnT> {
     #[error(transparent)]
-    Txn(T),
+    Txn(#[from] TxnErr<T::GraphError>),
     #[error(transparent)]
     Changestore(C),
     #[error(transparent)]
     NotFound(#[from] FsNotFound),
 }
 
+impl<C: std::error::Error + 'static, T: GraphTxnT> std::fmt::Debug for FsErrorC<C, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            FsErrorC::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+            FsErrorC::Changestore(e) => std::fmt::Debug::fmt(e, fmt),
+            FsErrorC::NotFound(e) => std::fmt::Debug::fmt(e, fmt),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("Path not found: {0}")]
 pub struct FsNotFound(String);
-
-impl<T: std::error::Error + 'static> std::convert::From<TxnErr<T>> for FsError<T> {
-    fn from(e: TxnErr<T>) -> Self {
-        FsError::Txn(e.0)
-    }
-}
-
-impl<C: std::error::Error + 'static, T: std::error::Error + 'static> std::convert::From<TxnErr<T>>
-    for FsErrorC<C, T>
-{
-    fn from(e: TxnErr<T>) -> Self {
-        FsErrorC::Txn(e.0)
-    }
-}
 
 pub(crate) fn create_new_inode<T: TreeMutTxnT>(
     txn: &mut T,
     parent_id: &PathId,
     salt: u64,
-) -> Result<Inode, TxnErr<T::TreeError>> {
+) -> Result<Inode, TreeErr<T::TreeError>> {
     use std::hash::{BuildHasher, Hash, Hasher};
     let mut s = crate::Hasher::default().build_hasher();
     (parent_id, salt).hash(&mut s);
@@ -79,7 +89,7 @@ pub(crate) fn create_new_inode<T: TreeMutTxnT>(
 
 /// Test whether `inode` is the inode of a directory (as opposed to a
 /// file).
-pub fn is_directory<T: TreeTxnT>(txn: &T, inode: Inode) -> Result<bool, TxnErr<T::TreeError>> {
+pub fn is_directory<T: TreeTxnT>(txn: &T, inode: Inode) -> Result<bool, TreeErr<T::TreeError>> {
     if inode == Inode::ROOT {
         return Ok(true);
     }
@@ -98,7 +108,7 @@ pub fn is_directory<T: TreeTxnT>(txn: &T, inode: Inode) -> Result<bool, TxnErr<T
 fn closest_in_repo_ancestor<'a, T: TreeTxnT>(
     txn: &T,
     path: &'a str,
-) -> Result<(Inode, std::iter::Peekable<crate::path::Components<'a>>), TxnErr<T::TreeError>> {
+) -> Result<(Inode, std::iter::Peekable<crate::path::Components<'a>>), TreeErr<T::TreeError>> {
     let mut components = crate::path::components(path).peekable();
     let mut fileid = OwnedPathId::inode(Inode::ROOT);
     while let Some(c) = components.peek() {
@@ -133,7 +143,7 @@ fn closest_in_repo_ancestor<'a, T: TreeTxnT>(
 }
 
 /// Find the inode corresponding to that path, if it exists.
-pub fn find_inode<T: TreeTxnT>(txn: &T, path: &str) -> Result<Inode, FsError<T::TreeError>> {
+pub fn find_inode<T: TreeTxnT>(txn: &T, path: &str) -> Result<Inode, FsError<T>> {
     debug!("find_inode");
     let (inode, mut remaining_path_components) = closest_in_repo_ancestor(txn, path)?;
     debug!("/find_inode");
@@ -146,7 +156,7 @@ pub fn find_inode<T: TreeTxnT>(txn: &T, path: &str) -> Result<Inode, FsError<T::
 }
 
 /// Returns whether a path is registered in the working copy.
-pub fn is_tracked<T: TreeTxnT>(txn: &T, path: &str) -> Result<bool, TxnErr<T::TreeError>> {
+pub fn is_tracked<T: TreeTxnT>(txn: &T, path: &str) -> Result<bool, TreeErr<T::TreeError>> {
     debug!("is_tracked {:?}", path);
     let (_, mut remaining_path_components) = closest_in_repo_ancestor(txn, path)?;
     debug!("/is_tracked {:?}", path);
@@ -157,7 +167,7 @@ pub fn is_tracked<T: TreeTxnT>(txn: &T, path: &str) -> Result<bool, TxnErr<T::Tr
 pub fn inode_filename<T: TreeTxnT>(
     txn: &T,
     inode: Inode,
-) -> Result<Option<String>, TxnErr<T::TreeError>> {
+) -> Result<Option<String>, TreeErr<T::TreeError>> {
     let mut components = Vec::new();
     let mut current = inode;
     loop {
@@ -195,7 +205,7 @@ fn make_new_child<T: TreeMutTxnT>(
     is_dir: bool,
     child_inode: Option<Inode>,
     salt: u64,
-) -> Result<Inode, FsError<T::TreeError>> {
+) -> Result<Inode, FsError<T>> {
     let parent_id = OwnedPathId {
         parent_inode,
         basename: SmallString::from_str(filename),
@@ -243,7 +253,7 @@ pub fn add_inode<T: TreeMutTxnT>(
     path: &str,
     is_dir: bool,
     salt: u64,
-) -> Result<Inode, FsError<T::TreeError>> {
+) -> Result<Inode, FsError<T>> {
     debug!("add_inode");
     if let Some(parent) = crate::path::parent(path) {
         let (current_inode, unrecorded_path) = closest_in_repo_ancestor(txn, parent)?;
@@ -272,7 +282,7 @@ pub fn move_file<T: TreeMutTxnT>(
     origin: &str,
     destination: &str,
     salt: u64,
-) -> Result<(), FsError<T::TreeError>> {
+) -> Result<(), FsError<T>> {
     debug!("move_file: {},{}", origin, destination);
     move_file_by_inode(txn, find_inode(txn, origin)?, destination, salt)?;
     Ok(())
@@ -283,8 +293,13 @@ pub fn move_file_by_inode<T: TreeMutTxnT>(
     inode: Inode,
     destination: &str,
     salt: u64,
-) -> Result<(), FsError<T::TreeError>> {
-    let fileref = txn.get_revtree(&inode, None)?.unwrap().to_owned();
+) -> Result<(), FsError<T>> {
+    debug!("inode = {:?}", inode);
+    let fileref = if let Some(inode) = txn.get_revtree(&inode, None)? {
+        inode.to_owned()
+    } else {
+        return Err(FsError::InodeNotFound(inode));
+    };
     debug!("fileref = {:?}", fileref);
     del_tree_with_rev(txn, &fileref, &inode)?;
     debug!("inode={:?} destination={}", inode, destination);
@@ -306,7 +321,7 @@ pub(crate) fn rec_delete<T: TreeMutTxnT>(
     parent: &PathId,
     inode: Inode,
     delete_inodes: bool,
-) -> Result<(), FsError<T::TreeError>> {
+) -> Result<(), FsError<T>> {
     let file_id = OwnedPathId {
         parent_inode: inode,
         basename: SmallString::new(),
@@ -349,7 +364,7 @@ pub(crate) fn rec_delete<T: TreeMutTxnT>(
 }
 
 /// Removes a file from the repository.
-pub fn remove_file<T: TreeMutTxnT>(txn: &mut T, path: &str) -> Result<(), FsError<T::TreeError>> {
+pub fn remove_file<T: TreeMutTxnT>(txn: &mut T, path: &str) -> Result<(), FsError<T>> {
     debug!("remove file {:?}", path);
     let inode = find_inode(txn, path)?;
     let parent = if inode.is_root() {
@@ -839,7 +854,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
     txn: &T,
     channel: &T::Channel,
     path: &str,
-) -> Result<(Position<ChangeId>, bool), FsErrorC<C::Error, T::GraphError>> {
+) -> Result<(Position<ChangeId>, bool), FsErrorC<C::Error, T>> {
     use crate::pristine::*;
     debug!("follow_oldest_path = {:?}", path);
     let mut current = Position::ROOT;
@@ -848,10 +863,8 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
     let mut name_buf = Vec::new();
     let mut ambiguous = false;
     for c in crate::path::components(path) {
-        let mut next = None;
-        let mut has_descendants = true;
-        'outer: while has_descendants {
-            has_descendants = false;
+        'outer: loop {
+            let mut next = None;
             debug!("follow_oldest_path, loop {:?}", current);
             for name in iter_adjacent(
                 txn,
@@ -860,7 +873,6 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                 flag0,
                 flag1,
             )? {
-                has_descendants = true;
                 let name = name?;
                 let name_dest = txn.find_block(txn.graph(channel), name.dest()).unwrap();
                 if name_dest.start == name_dest.end {
@@ -880,6 +892,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                         &mut name_buf,
                     )
                     .map_err(FsErrorC::Changestore)?;
+                debug!("{:?}", std::str::from_utf8(&name_buf));
                 let FileMetadata { basename, .. } = FileMetadata::read(&name_buf);
                 if basename == c {
                     let age = txn
@@ -900,7 +913,8 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                 current = iter_adjacent(txn, txn.graph(channel), *next, flag0, flag1)?
                     .next()
                     .unwrap()?
-                    .dest()
+                    .dest();
+                break;
             } else {
                 return Err(FsErrorC::NotFound(FsNotFound(path.to_string())));
             }
@@ -915,7 +929,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
     channel: &T::Channel,
     youngest: bool,
     mut v: Position<ChangeId>,
-) -> Result<Option<(String, bool)>, crate::output::FileError<C::Error, T::GraphError>> {
+) -> Result<Option<(String, bool)>, crate::output::FileError<C::Error, T>> {
     debug!("oldest_path = {:?}", v);
     let mut path = Vec::new();
     let mut name_buf = Vec::new();
@@ -932,7 +946,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
                 assert!(path.is_empty());
                 return Ok(None);
             }
-            Err(BlockError::Txn(t)) => return Err(crate::output::FileError::Txn(t)),
+            Err(BlockError::Txn(t)) => return Err(crate::output::FileError::Txn(TxnErr(t))),
         };
         if *inode_vertex != v.inode_vertex() {
             info!(

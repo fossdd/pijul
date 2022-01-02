@@ -12,9 +12,9 @@ pub fn put_newedge<T, F, K>(
     n: &NewEdge<Option<Hash>>,
     apply_check: F,
     mut known: K,
-) -> Result<(), LocalApplyError<T::GraphError>>
+) -> Result<(), LocalApplyError<T>>
 where
-    T: GraphMutTxnT,
+    T: GraphMutTxnT + TreeTxnT,
     F: Fn(Vertex<ChangeId>, Vertex<ChangeId>) -> bool,
     K: FnMut(&Hash) -> bool,
 {
@@ -102,9 +102,9 @@ fn collect_nondeleted_zombies<T, K>(
     source: Vertex<ChangeId>,
     target: Vertex<ChangeId>,
     zombies: &mut Vec<ChangeId>,
-) -> Result<(), LocalApplyError<T::GraphError>>
+) -> Result<(), LocalApplyError<T>>
 where
-    T: GraphMutTxnT,
+    T: GraphMutTxnT + TreeTxnT,
     K: FnMut(&Hash) -> bool,
 {
     for v in iter_deleted_parents(txn, graph, source)? {
@@ -130,13 +130,13 @@ where
     Ok(())
 }
 
-fn check_valid<T: GraphMutTxnT>(
+fn check_valid<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     graph: &mut T::Graph,
     inode: Position<Option<Hash>>,
     n: &NewEdge<Option<Hash>>,
     ws: &mut super::Workspace,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     if n.flag.contains(EdgeFlags::DELETED) {
         ws.missing_context
             .load_graph(txn, graph, inode)
@@ -153,7 +153,7 @@ fn check_valid<T: GraphMutTxnT>(
     Ok(())
 }
 
-pub(crate) fn find_source_vertex<T: GraphMutTxnT>(
+pub(crate) fn find_source_vertex<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     from: &Position<Option<Hash>>,
@@ -161,7 +161,7 @@ pub(crate) fn find_source_vertex<T: GraphMutTxnT>(
     inode: Position<Option<Hash>>,
     flag: EdgeFlags,
     ws: &mut super::Workspace,
-) -> Result<Vertex<ChangeId>, LocalApplyError<T::GraphError>> {
+) -> Result<Vertex<ChangeId>, LocalApplyError<T>> {
     debug!("find_source_vertex");
     let mut source = *txn.find_block_end(&channel, internal_pos(txn, &from, change)?)?;
     debug!("source = {:?}", source);
@@ -174,7 +174,7 @@ pub(crate) fn find_source_vertex<T: GraphMutTxnT>(
     Ok(source)
 }
 
-pub(crate) fn find_target_vertex<T: GraphMutTxnT>(
+pub(crate) fn find_target_vertex<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     to: &Vertex<Option<Hash>>,
@@ -182,7 +182,7 @@ pub(crate) fn find_target_vertex<T: GraphMutTxnT>(
     inode: Position<Option<Hash>>,
     flag: EdgeFlags,
     ws: &mut super::Workspace,
-) -> Result<Vertex<ChangeId>, LocalApplyError<T::GraphError>> {
+) -> Result<Vertex<ChangeId>, LocalApplyError<T>> {
     let to_pos = internal_pos(txn, &to.start_pos(), change)?;
     debug!("find_target_vertex, to = {:?}", to);
     let mut target = *txn.find_block(channel, to_pos)?;
@@ -196,13 +196,13 @@ pub(crate) fn find_target_vertex<T: GraphMutTxnT>(
     Ok(target)
 }
 
-fn collect_pseudo_edges<T: GraphMutTxnT>(
+fn collect_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     apply: &mut super::Workspace,
     inode: Position<Option<Hash>>,
     v: Vertex<ChangeId>,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     for e in iter_adjacent(
         txn,
         &channel,
@@ -235,13 +235,13 @@ fn collect_pseudo_edges<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn reconnect_pseudo_edges<T: GraphMutTxnT>(
+fn reconnect_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     channel: &mut T::Graph,
     inode: Position<Option<Hash>>,
     ws: &mut super::Workspace,
     target: Vertex<ChangeId>,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     if ws.parents.is_empty() || ws.children.is_empty() {
         return Ok(());
     }

@@ -44,7 +44,7 @@ impl Git {
         let repo = if let Ok(repo) = Repository::find_root(self.repo_path.clone()) {
             repo
         } else {
-            Repository::init(self.repo_path.clone(), None)?
+            Repository::init(self.repo_path.clone(), None, None)?
         };
         let git = git2::Repository::open(&repo.path)?;
         let st = git.statuses(None)?;
@@ -730,10 +730,7 @@ fn record_apply<
     repo_path: &CanonicalPathBuf,
     prefixes: &[PathBuf],
     header: libpijul::change::ChangeHeader,
-) -> Result<
-    (usize, Option<libpijul::Hash>, libpijul::Merkle),
-    libpijul::LocalApplyError<T::GraphError>,
-> {
+) -> Result<(usize, Option<libpijul::Hash>, libpijul::Merkle), libpijul::LocalApplyError<T>> {
     debug!("record_apply {:?}", prefixes);
     let mut state = libpijul::RecordBuilder::new();
     let num_cpus = num_cpus::get();

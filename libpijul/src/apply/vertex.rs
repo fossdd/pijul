@@ -3,14 +3,14 @@ use crate::change::{Change, NewVertex};
 use crate::pristine::*;
 use crate::{ChangeId, EdgeFlags, Hash, Vertex};
 
-pub fn put_newvertex<T: GraphMutTxnT>(
+pub fn put_newvertex<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     graph: &mut T::Graph,
     ch: &Change,
     ws: &mut Workspace,
     change: ChangeId,
     n: &NewVertex<Option<Hash>>,
-) -> Result<(), LocalApplyError<T::GraphError>> {
+) -> Result<(), LocalApplyError<T>> {
     let vertex = Vertex {
         change,
         start: n.start,
@@ -70,13 +70,13 @@ pub fn put_newvertex<T: GraphMutTxnT>(
     Ok(())
 }
 
-fn put_up_context<T: GraphMutTxnT>(
+fn put_up_context<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     graph: &mut T::Graph,
     ch: &Change,
     ws: &mut Workspace,
     up: Position<ChangeId>,
-) -> Result<bool, LocalApplyError<T::GraphError>> {
+) -> Result<bool, LocalApplyError<T>> {
     let up_vertex = if up.change.is_root() {
         Vertex::ROOT
     } else {
@@ -119,13 +119,13 @@ fn put_up_context<T: GraphMutTxnT>(
     Ok(is_non_folder)
 }
 
-fn put_down_context<T: GraphMutTxnT>(
+fn put_down_context<T: GraphMutTxnT + TreeTxnT>(
     txn: &mut T,
     graph: &mut T::Graph,
     ch: &Change,
     ws: &mut Workspace,
     down: Position<ChangeId>,
-) -> Result<bool, LocalApplyError<T::GraphError>> {
+) -> Result<bool, LocalApplyError<T>> {
     let k = *txn.find_block(&graph, down)?;
     assert_eq!(k.change, down.change);
     assert!(k.end >= down.pos);

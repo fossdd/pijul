@@ -48,6 +48,7 @@ fn hash_mism() -> Result<(), anyhow::Error> {
         .record(
             txn.clone(),
             Algorithm::Myers,
+            false,
             &crate::DEFAULT_SEPARATOR,
             channel.clone(),
             &repo,

@@ -118,6 +118,7 @@ pub struct SerializedRemote {
     rev: L64,
     states: L64,
     id_rev: L64,
+    tags: L64,
     path: SmallStr,
 }
 
@@ -154,7 +155,21 @@ pub struct ChannelRef<T: ChannelTxnT> {
     pub(crate) r: Arc<RwLock<T::Channel>>,
 }
 
+impl<T: ChannelTxnT> ChannelRef<T> {
+    pub fn new(t: T::Channel) -> Self {
+        ChannelRef {
+            r: Arc::new(RwLock::new(t)),
+        }
+    }
+}
+
 pub struct ArcTxn<T>(pub Arc<RwLock<T>>);
+
+impl<T> ArcTxn<T> {
+    pub fn new(t: T) -> Self {
+        ArcTxn(Arc::new(RwLock::new(t)))
+    }
+}
 
 impl<T> Clone for ArcTxn<T> {
     fn clone(&self) -> Self {
@@ -221,6 +236,7 @@ pub struct Remote<T: TxnT> {
     pub rev: T::Revremote,
     pub states: T::Remotestates,
     pub id_rev: L64,
+    pub tags: T::Tags,
     pub path: SmallString,
 }
 
@@ -238,7 +254,7 @@ impl<T: TxnT> Clone for RemoteRef<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RemoteId(pub(crate) [u8; 16]);
 
 impl RemoteId {
@@ -278,6 +294,12 @@ impl std::fmt::Display for RemoteId {
     }
 }
 
+impl std::fmt::Debug for RemoteId {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "{}", data_encoding::BASE32_NOPAD.encode(&self.0))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum HashPrefixError<T: std::error::Error + 'static> {
     #[error("Failed to parse hash prefix: {0}")]
@@ -300,10 +322,10 @@ pub enum ForkError<T: std::error::Error + 'static> {
 
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct TxnErr<E: std::error::Error + 'static>(pub E);
+pub struct TxnErr<E: std::error::Error + std::fmt::Debug + 'static>(pub E);
 
 pub trait GraphTxnT: Sized {
-    type GraphError: std::error::Error + Send + Sync + 'static;
+    type GraphError: std::error::Error + std::fmt::Debug + Send + Sync + 'static;
     table!(graph);
     get!(graph, Vertex<ChangeId>, SerializedEdge, GraphError);
     /// Returns the external hash of an internal change identifier, if
@@ -352,7 +374,7 @@ pub trait ChannelTxnT: GraphTxnT {
     type Channel: Sync + Send;
 
     fn name<'a>(&self, channel: &'a Self::Channel) -> &'a str;
-    fn id<'a>(&self, c: &'a Self::Channel) -> &'a RemoteId;
+    fn id<'a>(&self, c: &'a Self::Channel) -> Option<&'a RemoteId>;
     fn graph<'a>(&self, channel: &'a Self::Channel) -> &'a Self::Graph;
     fn apply_counter(&self, channel: &Self::Channel) -> u64;
     fn last_modified(&self, channel: &Self::Channel) -> u64;
@@ -434,11 +456,7 @@ pub trait ChannelTxnT: GraphTxnT {
     ) -> Result<Option<L64>, TxnErr<Self::GraphError>>;
 
     type Tags;
-    fn get_tags(
-        &self,
-        channel: &Self::Tags,
-        c: &L64,
-    ) -> Result<Option<&SerializedHash>, TxnErr<Self::GraphError>>;
+    fn is_tagged(&self, tags: &Self::Tags, t: u64) -> Result<bool, TxnErr<Self::GraphError>>;
 
     type TagsCursor;
     fn cursor_tags<'txn>(
@@ -446,32 +464,41 @@ pub trait ChannelTxnT: GraphTxnT {
         channel: &Self::Tags,
         pos: Option<L64>,
     ) -> Result<
-        crate::pristine::Cursor<Self, &'txn Self, Self::TagsCursor, L64, SerializedHash>,
+        crate::pristine::Cursor<
+            Self,
+            &'txn Self,
+            Self::TagsCursor,
+            L64,
+            Pair<SerializedMerkle, SerializedMerkle>,
+        >,
         TxnErr<Self::GraphError>,
     >;
 
     fn cursor_tags_next(
         &self,
         cursor: &mut Self::TagsCursor,
-    ) -> Result<Option<(&L64, &SerializedHash)>, TxnErr<Self::GraphError>>;
+    ) -> Result<Option<(&L64, &Pair<SerializedMerkle, SerializedMerkle>)>, TxnErr<Self::GraphError>>;
 
     fn cursor_tags_prev(
         &self,
         cursor: &mut Self::TagsCursor,
-    ) -> Result<Option<(&L64, &SerializedHash)>, TxnErr<Self::GraphError>>;
+    ) -> Result<Option<(&L64, &Pair<SerializedMerkle, SerializedMerkle>)>, TxnErr<Self::GraphError>>;
 
     fn iter_tags(
         &self,
         channel: &Self::Tags,
         from: u64,
-    ) -> Result<Cursor<Self, &Self, Self::TagsCursor, L64, SerializedHash>, TxnErr<Self::GraphError>>;
+    ) -> Result<
+        Cursor<Self, &Self, Self::TagsCursor, L64, Pair<SerializedMerkle, SerializedMerkle>>,
+        TxnErr<Self::GraphError>,
+    >;
 
     fn rev_iter_tags(
         &self,
         channel: &Self::Tags,
         from: Option<u64>,
     ) -> Result<
-        RevCursor<Self, &Self, Self::TagsCursor, L64, SerializedHash>,
+        RevCursor<Self, &Self, Self::TagsCursor, L64, Pair<SerializedMerkle, SerializedMerkle>>,
         TxnErr<Self::GraphError>,
     >;
 }
@@ -570,46 +597,50 @@ pub trait DepsTxnT: Sized {
     iter!(rev_touched_files, ChangeId, Position<ChangeId>, DepsError);
 }
 
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct TreeErr<E: std::error::Error + std::fmt::Debug + 'static>(pub E);
+
 pub trait TreeTxnT: Sized {
-    type TreeError: std::error::Error + Send + Sync + 'static;
+    type TreeError: std::error::Error + std::fmt::Debug + Send + Sync + 'static;
     table!(tree);
-    table_get!(tree, PathId, Inode, TreeError);
-    iter!(tree, PathId, Inode, TreeError);
+    table_get!(tree, PathId, Inode, TreeError, TreeErr);
+    iter!(tree, PathId, Inode, TreeError, TreeErr);
 
     table!(revtree);
-    table_get!(revtree, Inode, PathId, TreeError);
-    iter!(revtree, Inode, PathId, TreeError);
+    table_get!(revtree, Inode, PathId, TreeError, TreeErr);
+    iter!(revtree, Inode, PathId, TreeError, TreeErr);
 
     table!(inodes);
     table!(revinodes);
-    table_get!(inodes, Inode, Position<ChangeId>, TreeError);
-    table_get!(revinodes, Position<ChangeId>, Inode, TreeError);
+    table_get!(inodes, Inode, Position<ChangeId>, TreeError, TreeErr);
+    table_get!(revinodes, Position<ChangeId>, Inode, TreeError, TreeErr);
 
     table!(partials);
-    cursor!(partials, SmallStr, Position<ChangeId>, TreeError);
-    cursor!(inodes, Inode, Position<ChangeId>, TreeError);
+    cursor!(partials, SmallStr, Position<ChangeId>, TreeError, TreeErr);
+    cursor!(inodes, Inode, Position<ChangeId>, TreeError, TreeErr);
     fn iter_inodes(
         &self,
     ) -> Result<
         Cursor<Self, &Self, Self::InodesCursor, Inode, Position<ChangeId>>,
-        TxnErr<Self::TreeError>,
+        TreeErr<Self::TreeError>,
     >;
 
     // #[cfg(debug_assertions)]
-    cursor!(revinodes, Position<ChangeId>, Inode, TreeError);
+    cursor!(revinodes, Position<ChangeId>, Inode, TreeError, TreeErr);
     // #[cfg(debug_assertions)]
     fn iter_revinodes(
         &self,
     ) -> Result<
         Cursor<Self, &Self, Self::RevinodesCursor, Position<ChangeId>, Inode>,
-        TxnErr<Self::TreeError>,
+        TreeErr<Self::TreeError>,
     >;
     fn iter_partials<'txn>(
         &'txn self,
         channel: &str,
     ) -> Result<
         Cursor<Self, &'txn Self, Self::PartialsCursor, SmallStr, Position<ChangeId>>,
-        TxnErr<Self::TreeError>,
+        TreeErr<Self::TreeError>,
     >;
 }
 
@@ -627,6 +658,13 @@ pub trait TxnT:
         &self,
         prefix: &str,
     ) -> Result<(Hash, ChangeId), HashPrefixError<Self::GraphError>>;
+
+    fn state_from_prefix(
+        &self,
+        channel: &Self::Channel,
+        s: &str,
+    ) -> Result<(Merkle, L64), HashPrefixError<Self::GraphError>>;
+
     fn hash_from_prefix_remote(
         &self,
         remote: &RemoteRef<Self>,
@@ -658,6 +696,7 @@ pub trait TxnT:
     table!(remotes);
     cursor!(remotes, RemoteId, SerializedRemote);
     table!(remote);
+    table!(remotetags);
     table!(revremote);
     table!(remotestates);
     cursor!(remote, L64, Pair<SerializedHash, SerializedMerkle>);
@@ -697,11 +736,24 @@ pub trait TxnT:
         remote: &Self::Remote,
     ) -> Result<Option<(u64, &Pair<SerializedHash, SerializedMerkle>)>, TxnErr<Self::GraphError>>;
 
+    fn last_remote_tag(
+        &self,
+        remote: &Self::Tags,
+    ) -> Result<Option<(u64, &SerializedMerkle, &SerializedMerkle)>, TxnErr<Self::GraphError>>;
+
+    /// Find the last state greater than or equal to n.
     fn get_remote_state(
         &self,
         remote: &Self::Remote,
         n: u64,
     ) -> Result<Option<(u64, &Pair<SerializedHash, SerializedMerkle>)>, TxnErr<Self::GraphError>>;
+
+    /// Find the last tag less than or equal to n (opposite of get_remote_state).
+    fn get_remote_tag(
+        &self,
+        remote: &Self::Tags,
+        n: u64,
+    ) -> Result<Option<(u64, &Pair<SerializedMerkle, SerializedMerkle>)>, TxnErr<Self::GraphError>>;
 
     fn remote_has_change(
         &self,
@@ -712,7 +764,7 @@ pub trait TxnT:
         &self,
         remote: &RemoteRef<Self>,
         hash: &SerializedMerkle,
-    ) -> Result<bool, TxnErr<Self::GraphError>>;
+    ) -> Result<Option<u64>, TxnErr<Self::GraphError>>;
 
     fn current_channel(&self) -> Result<&str, Self::GraphError>;
 }
@@ -778,7 +830,7 @@ pub fn iter_adj_all<'txn, T: GraphTxnT>(
 pub(crate) fn tree_path<T: TreeTxnT>(
     txn: &T,
     v: &Position<ChangeId>,
-) -> Result<Option<String>, TxnErr<T::TreeError>> {
+) -> Result<Option<String>, TreeErr<T::TreeError>> {
     if let Some(mut inode) = txn.get_revinodes(v, None)? {
         let mut components = Vec::new();
         while !inode.is_root() {
@@ -880,7 +932,7 @@ pub fn changeid_log<'db, 'txn: 'db, T: ChannelTxnT>(
     T::cursor_revchangeset_ref(txn, txn.rev_changes(&channel), Some(from))
 }
 
-pub(crate) fn current_state<'db, 'txn: 'db, T: ChannelTxnT>(
+pub fn current_state<'db, 'txn: 'db, T: ChannelTxnT>(
     txn: &'txn T,
     channel: &'db T::Channel,
 ) -> Result<Merkle, TxnErr<T::GraphError>> {
@@ -1441,10 +1493,19 @@ initialized_rev_cursor!(
     ChannelTxnT,
     GraphError
 );
-initialized_cursor!(tree, PathId, Inode, TreeTxnT, TreeError);
-initialized_cursor!(revtree, Inode, PathId, TreeTxnT, TreeError);
+initialized_cursor!(tags, L64, Pair<SerializedMerkle, SerializedMerkle>, ChannelTxnT, GraphError);
+initialized_rev_cursor!(tags, L64, Pair<SerializedMerkle, SerializedMerkle>, ChannelTxnT, GraphError);
+initialized_cursor!(tree, PathId, Inode, TreeTxnT, TreeError, TreeErr);
+initialized_cursor!(revtree, Inode, PathId, TreeTxnT, TreeError, TreeErr);
 initialized_cursor!(dep, ChangeId, ChangeId, DepsTxnT, DepsError);
-initialized_cursor!(partials, SmallStr, Position<ChangeId>, TreeTxnT, TreeError);
+initialized_cursor!(
+    partials,
+    SmallStr,
+    Position<ChangeId>,
+    TreeTxnT,
+    TreeError,
+    TreeErr
+);
 initialized_cursor!(
     rev_touched_files,
     ChangeId,
@@ -1461,10 +1522,22 @@ initialized_cursor!(
 );
 initialized_cursor!(remote, L64, Pair<SerializedHash, SerializedMerkle>);
 initialized_rev_cursor!(remote, L64, Pair<SerializedHash, SerializedMerkle>);
-initialized_cursor!(inodes, Inode, Position<ChangeId>, TreeTxnT, TreeError);
-initialized_cursor!(revinodes, Position<ChangeId>, Inode, TreeTxnT, TreeError);
-initialized_cursor!(tags, L64, SerializedHash, ChannelTxnT, GraphError);
-initialized_rev_cursor!(tags, L64, SerializedHash, ChannelTxnT, GraphError);
+initialized_cursor!(
+    inodes,
+    Inode,
+    Position<ChangeId>,
+    TreeTxnT,
+    TreeError,
+    TreeErr
+);
+initialized_cursor!(
+    revinodes,
+    Position<ChangeId>,
+    Inode,
+    TreeTxnT,
+    TreeError,
+    TreeErr
+);
 
 /// An iterator for nodes adjacent to `key` through an edge with flags smaller than `max_flag`.
 pub struct AdjacentIterator<'txn, T: GraphTxnT> {
@@ -1715,15 +1788,17 @@ pub trait ChannelMutTxnT: ChannelTxnT + GraphMutTxnT {
 
     fn put_tags(
         &mut self,
-        channel: &mut Self::Channel,
-        t: ApplyTimestamp,
-        h: &Hash,
+        channel: &mut Self::Tags,
+        n: u64,
+        m: &Merkle,
     ) -> Result<(), TxnErr<Self::GraphError>>;
+
+    fn tags_mut<'a>(&mut self, channel: &'a mut Self::Channel) -> &'a mut Self::Tags;
 
     fn del_tags(
         &mut self,
-        channel: &mut Self::Channel,
-        t: ApplyTimestamp,
+        channel: &mut Self::Tags,
+        n: u64,
     ) -> Result<(), TxnErr<Self::GraphError>>;
 }
 
@@ -1735,21 +1810,21 @@ pub trait DepsMutTxnT: DepsTxnT {
 }
 
 pub trait TreeMutTxnT: TreeTxnT {
-    put_del!(inodes, Inode, Position<ChangeId>, TreeError);
-    put_del!(revinodes, Position<ChangeId>, Inode, TreeError);
-    put_del!(tree, PathId, Inode, TreeError);
-    put_del!(revtree, Inode, PathId, TreeError);
+    put_del!(inodes, Inode, Position<ChangeId>, TreeError, TreeErr);
+    put_del!(revinodes, Position<ChangeId>, Inode, TreeError, TreeErr);
+    put_del!(tree, PathId, Inode, TreeError, TreeErr);
+    put_del!(revtree, Inode, PathId, TreeError, TreeErr);
     fn put_partials(
         &mut self,
         k: &str,
         e: Position<ChangeId>,
-    ) -> Result<bool, TxnErr<Self::TreeError>>;
+    ) -> Result<bool, TreeErr<Self::TreeError>>;
 
     fn del_partials(
         &mut self,
         k: &str,
         e: Option<Position<ChangeId>>,
-    ) -> Result<bool, TxnErr<Self::TreeError>>;
+    ) -> Result<bool, TreeErr<Self::TreeError>>;
 }
 
 /// The trait of immutable transactions.
@@ -1800,13 +1875,13 @@ pub trait MutTxnT:
         remote: &mut RemoteRef<Self>,
         k: u64,
         v: (Hash, Merkle),
-    ) -> Result<bool, Self::GraphError>;
+    ) -> Result<bool, TxnErr<Self::GraphError>>;
 
     fn del_remote(
         &mut self,
         remote: &mut RemoteRef<Self>,
         k: u64,
-    ) -> Result<bool, Self::GraphError>;
+    ) -> Result<bool, TxnErr<Self::GraphError>>;
 
     fn drop_remote(&mut self, remote: RemoteRef<Self>) -> Result<bool, Self::GraphError>;
 
@@ -1819,7 +1894,7 @@ pub(crate) fn put_inodes_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     inode: &Inode,
     position: &Position<ChangeId>,
-) -> Result<(), TxnErr<T::TreeError>> {
+) -> Result<(), TreeErr<T::TreeError>> {
     txn.put_inodes(inode, position)?;
     txn.put_revinodes(position, inode)?;
     Ok(())
@@ -1829,7 +1904,7 @@ pub(crate) fn del_inodes_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     inode: &Inode,
     position: &Position<ChangeId>,
-) -> Result<bool, TxnErr<T::TreeError>> {
+) -> Result<bool, TreeErr<T::TreeError>> {
     if txn.del_inodes(inode, Some(position))? {
         assert!(txn.del_revinodes(position, Some(inode))?);
         Ok(true)
@@ -1842,7 +1917,7 @@ pub(crate) fn put_tree_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     file_id: &PathId,
     inode: &Inode,
-) -> Result<(), TxnErr<T::TreeError>> {
+) -> Result<(), TreeErr<T::TreeError>> {
     if txn.put_tree(file_id, inode)? {
         txn.put_revtree(inode, file_id)?;
     }
@@ -1853,7 +1928,7 @@ pub(crate) fn del_tree_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     file_id: &PathId,
     inode: &Inode,
-) -> Result<bool, TxnErr<T::TreeError>> {
+) -> Result<bool, TreeErr<T::TreeError>> {
     if txn.del_tree(file_id, Some(inode))? {
         if !file_id.basename.is_empty() {
             assert!(txn.del_revtree(inode, Some(file_id))?);
@@ -2098,7 +2173,11 @@ pub fn last_common_state<T: ChannelTxnT>(
         if let Some(aa_) = txn.channel_has_state(txn.states(c0), &state)? {
             aa = aa_.into();
             a_was_found = true;
-            a = mid
+            if a == mid {
+                break;
+            } else {
+                a = mid
+            }
         } else {
             b = mid
         }

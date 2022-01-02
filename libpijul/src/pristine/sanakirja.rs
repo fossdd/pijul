@@ -50,9 +50,21 @@ impl std::convert::From<::sanakirja::Error> for TxnErr<SanakirjaError> {
     }
 }
 
+impl std::convert::From<::sanakirja::Error> for TreeErr<SanakirjaError> {
+    fn from(e: ::sanakirja::Error) -> Self {
+        TreeErr(e.into())
+    }
+}
+
 impl std::convert::From<TxnErr<::sanakirja::Error>> for TxnErr<SanakirjaError> {
     fn from(e: TxnErr<::sanakirja::Error>) -> Self {
         TxnErr(e.0.into())
+    }
+}
+
+impl std::convert::From<TreeErr<::sanakirja::Error>> for TreeErr<SanakirjaError> {
+    fn from(e: TreeErr<::sanakirja::Error>) -> Self {
+        TreeErr(e.0.into())
     }
 }
 
@@ -325,7 +337,8 @@ impl Txn {
             let revchanges: UDb<L64, Pair<ChangeId, SerializedMerkle>> =
                 UDb::from_page(tup.revchanges.into());
             let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.states.into());
-            let tags: UDb<L64, SerializedHash> = UDb::from_page(tup.tags.into());
+            let tags: UDb<L64, Pair<SerializedMerkle, SerializedMerkle>> =
+                UDb::from_page(tup.tags.into());
             debug!("check: graph 0x{:x}", graph.db);
             graph.add_refs(&self.txn, refs).unwrap();
             debug!("check: changes 0x{:x}", changes.db);
@@ -444,7 +457,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         _: &Self::Graph,
         a: &mut Self::Adj,
     ) -> Option<Result<&'a SerializedEdge, TxnErr<Self::GraphError>>> {
-        next_adj(&self.txn, a)
+        next_adj(&self.txn, a).map(|x| x.map_err(|x| TxnErr(x.into())))
     }
 
     fn find_block(
@@ -452,7 +465,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         graph: &Self::Graph,
         p: Position<ChangeId>,
     ) -> Result<&Vertex<ChangeId>, BlockError<Self::GraphError>> {
-        find_block(&self.txn, &graph.graph, p)
+        Ok(find_block(&self.txn, &graph.graph, p)?)
     }
 
     fn find_block_end(
@@ -460,15 +473,27 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         graph: &Self::Graph,
         p: Position<ChangeId>,
     ) -> Result<&Vertex<ChangeId>, BlockError<Self::GraphError>> {
-        find_block_end(&self.txn, &graph.graph, p)
+        Ok(find_block_end(&self.txn, &graph.graph, p)?)
+    }
+}
+
+impl std::convert::From<BlockError<::sanakirja::Error>> for BlockError<SanakirjaError> {
+    fn from(e: BlockError<::sanakirja::Error>) -> Self {
+        match e {
+            BlockError::Txn(t) => BlockError::Txn(t.into()),
+            BlockError::Block { block } => BlockError::Block { block },
+        }
     }
 }
 
 #[doc(hidden)]
-pub fn next_adj<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
+pub fn next_adj<'a, T: ::sanakirja::LoadPage>(
     txn: &'a T,
     a: &mut Adj,
-) -> Option<Result<&'a SerializedEdge, TxnErr<SanakirjaError>>> {
+) -> Option<Result<&'a SerializedEdge, T::Error>>
+where
+    T::Error: std::error::Error,
+{
     loop {
         let x: Result<Option<(&Vertex<ChangeId>, &SerializedEdge)>, _> = a.cursor.next(txn);
         match x {
@@ -485,7 +510,7 @@ pub fn next_adj<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
                     return None;
                 }
             }
-            Err(e) => return Some(Err(TxnErr(e.into()))),
+            Err(e) => return Some(Err(e.into())),
             Ok(None) => {
                 return None;
             }
@@ -494,11 +519,14 @@ pub fn next_adj<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
 }
 
 #[doc(hidden)]
-pub fn find_block<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
+pub fn find_block<'a, T: ::sanakirja::LoadPage>(
     txn: &'a T,
     graph: &::sanakirja::btree::Db<Vertex<ChangeId>, SerializedEdge>,
     p: Position<ChangeId>,
-) -> Result<&'a Vertex<ChangeId>, BlockError<SanakirjaError>> {
+) -> Result<&'a Vertex<ChangeId>, BlockError<T::Error>>
+where
+    T::Error: std::error::Error,
+{
     if p.change.is_root() {
         return Ok(&Vertex::ROOT);
     }
@@ -551,11 +579,14 @@ pub fn find_block<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
 }
 
 #[doc(hidden)]
-pub fn find_block_end<'a, T: ::sanakirja::LoadPage<Error = ::sanakirja::Error>>(
+pub fn find_block_end<'a, T: ::sanakirja::LoadPage>(
     txn: &'a T,
     graph: &::sanakirja::btree::Db<Vertex<ChangeId>, SerializedEdge>,
     p: Position<ChangeId>,
-) -> Result<&'a Vertex<ChangeId>, BlockError<SanakirjaError>> {
+) -> Result<&'a Vertex<ChangeId>, BlockError<T::Error>>
+where
+    T::Error: std::error::Error,
+{
     if p.change.is_root() {
         return Ok(&Vertex::ROOT);
     }
@@ -693,7 +724,7 @@ pub struct Channel {
     pub changes: Db<ChangeId, L64>,
     pub revchanges: UDb<L64, Pair<ChangeId, SerializedMerkle>>,
     pub states: UDb<SerializedMerkle, L64>,
-    pub tags: UDb<L64, SerializedHash>,
+    pub tags: Db<L64, Pair<SerializedMerkle, SerializedMerkle>>,
     pub apply_counter: ApplyTimestamp,
     pub name: SmallString,
     pub last_modified: u64,
@@ -711,8 +742,8 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
     fn name<'a>(&self, c: &'a Self::Channel) -> &'a str {
         c.name.as_str()
     }
-    fn id<'a>(&self, c: &'a Self::Channel) -> &'a RemoteId {
-        &c.id
+    fn id<'a>(&self, c: &'a Self::Channel) -> Option<&'a RemoteId> {
+        Some(&c.id)
     }
     fn apply_counter(&self, channel: &Self::Channel) -> u64 {
         channel.apply_counter.into()
@@ -893,26 +924,33 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         }
     }
 
-    type Tags = UDb<L64, SerializedHash>;
-    fn get_tags(
-        &self,
-        channel: &Self::Tags,
-        c: &L64,
-    ) -> Result<Option<&SerializedHash>, TxnErr<Self::GraphError>> {
-        match btree::get(&self.txn, channel, c, None)? {
-            Some((k, v)) if k == c => Ok(Some(v)),
-            _ => Ok(None),
+    type Tags = Db<L64, Pair<SerializedMerkle, SerializedMerkle>>;
+
+    fn is_tagged(&self, tags: &Self::Tags, t: u64) -> Result<bool, TxnErr<Self::GraphError>> {
+        let t: L64 = t.into();
+        match btree::get(&self.txn, tags, &t, None)? {
+            Some((k, _)) => Ok(k == &t),
+            _ => Ok(false),
         }
     }
 
-    type TagsCursor =
-        ::sanakirja::btree::cursor::Cursor<L64, SerializedHash, UP<L64, SerializedHash>>;
+    type TagsCursor = ::sanakirja::btree::cursor::Cursor<
+        L64,
+        Pair<SerializedMerkle, SerializedMerkle>,
+        P<L64, Pair<SerializedMerkle, SerializedMerkle>>,
+    >;
     fn cursor_tags<'txn>(
         &'txn self,
         channel: &Self::Tags,
         k: Option<L64>,
     ) -> Result<
-        crate::pristine::Cursor<Self, &'txn Self, Self::TagsCursor, L64, SerializedHash>,
+        crate::pristine::Cursor<
+            Self,
+            &'txn Self,
+            Self::TagsCursor,
+            L64,
+            Pair<SerializedMerkle, SerializedMerkle>,
+        >,
         TxnErr<Self::GraphError>,
     > {
         let mut cursor = btree::cursor::Cursor::new(&self.txn, channel)?;
@@ -930,7 +968,8 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
     fn cursor_tags_next(
         &self,
         cursor: &mut Self::TagsCursor,
-    ) -> Result<Option<(&L64, &SerializedHash)>, TxnErr<Self::GraphError>> {
+    ) -> Result<Option<(&L64, &Pair<SerializedMerkle, SerializedMerkle>)>, TxnErr<Self::GraphError>>
+    {
         if let Ok(x) = cursor.next(&self.txn) {
             Ok(x)
         } else {
@@ -941,7 +980,8 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
     fn cursor_tags_prev(
         &self,
         cursor: &mut Self::TagsCursor,
-    ) -> Result<Option<(&L64, &SerializedHash)>, TxnErr<Self::GraphError>> {
+    ) -> Result<Option<(&L64, &Pair<SerializedMerkle, SerializedMerkle>)>, TxnErr<Self::GraphError>>
+    {
         if let Ok(x) = cursor.prev(&self.txn) {
             Ok(x)
         } else {
@@ -954,7 +994,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         channel: &Self::Tags,
         from: u64,
     ) -> Result<
-        super::Cursor<Self, &Self, Self::TagsCursor, L64, SerializedHash>,
+        super::Cursor<Self, &Self, Self::TagsCursor, L64, Pair<SerializedMerkle, SerializedMerkle>>,
         TxnErr<Self::GraphError>,
     > {
         self.cursor_tags(channel, Some(from.into()))
@@ -965,7 +1005,13 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         channel: &Self::Tags,
         from: Option<u64>,
     ) -> Result<
-        super::RevCursor<Self, &Self, Self::TagsCursor, L64, SerializedHash>,
+        super::RevCursor<
+            Self,
+            &Self,
+            Self::TagsCursor,
+            L64,
+            Pair<SerializedMerkle, SerializedMerkle>,
+        >,
         TxnErr<Self::GraphError>,
     > {
         let mut cursor = btree::cursor::Cursor::new(&self.txn, channel)?;
@@ -1070,21 +1116,21 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
     type TreeError = SanakirjaError;
     type Inodes = Db<Inode, Position<ChangeId>>;
     type Revinodes = Db<Position<ChangeId>, Inode>;
-    sanakirja_table_get!(inodes, Inode, Position<ChangeId>, TreeError);
-    sanakirja_table_get!(revinodes, Position<ChangeId>, Inode, TreeError);
-    sanakirja_cursor!(inodes, Inode, Position<ChangeId>);
+    sanakirja_table_get!(inodes, Inode, Position<ChangeId>, TreeError, TreeErr);
+    sanakirja_table_get!(revinodes, Position<ChangeId>, Inode, TreeError, TreeErr);
+    sanakirja_cursor!(inodes, Inode, Position<ChangeId>, TreeErr);
     // #[cfg(debug_assertions)]
-    sanakirja_cursor!(revinodes, Position<ChangeId>, Inode);
+    sanakirja_cursor!(revinodes, Position<ChangeId>, Inode, TreeErr);
 
     type Tree = UDb<PathId, Inode>;
-    sanakirja_table_get!(tree, PathId, Inode, TreeError,);
+    sanakirja_table_get!(tree, PathId, Inode, TreeError, TreeErr);
     type TreeCursor = ::sanakirja::btree::cursor::Cursor<PathId, Inode, UP<PathId, Inode>>;
-    sanakirja_iter!(tree, PathId, Inode,);
+    sanakirja_iter!(tree, PathId, Inode, TreeErr);
     type RevtreeCursor = ::sanakirja::btree::cursor::Cursor<Inode, PathId, UP<Inode, PathId>>;
-    sanakirja_iter!(revtree, Inode, PathId);
+    sanakirja_iter!(revtree, Inode, PathId, TreeErr);
 
     type Revtree = UDb<Inode, PathId>;
-    sanakirja_table_get!(revtree, Inode, PathId, TreeError,);
+    sanakirja_table_get!(revtree, Inode, PathId, TreeError, TreeErr);
 
     type Partials = UDb<SmallStr, Position<ChangeId>>;
     type PartialsCursor = ::sanakirja::btree::cursor::Cursor<
@@ -1092,14 +1138,14 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         Position<ChangeId>,
         UP<SmallStr, Position<ChangeId>>,
     >;
-    sanakirja_cursor!(partials, SmallStr, Position<ChangeId>,);
+    sanakirja_cursor!(partials, SmallStr, Position<ChangeId>, TreeErr);
     type InodesCursor =
         ::sanakirja::btree::cursor::Cursor<Inode, Position<ChangeId>, P<Inode, Position<ChangeId>>>;
     fn iter_inodes(
         &self,
     ) -> Result<
         super::Cursor<Self, &Self, Self::InodesCursor, Inode, Position<ChangeId>>,
-        TxnErr<Self::TreeError>,
+        TreeErr<Self::TreeError>,
     > {
         self.cursor_inodes(&self.inodes, None)
     }
@@ -1112,7 +1158,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         &self,
     ) -> Result<
         super::Cursor<Self, &Self, Self::RevinodesCursor, Position<ChangeId>, Inode>,
-        TxnErr<SanakirjaError>,
+        TreeErr<SanakirjaError>,
     > {
         self.cursor_revinodes(&self.revinodes, None)
     }
@@ -1122,7 +1168,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         k: &str,
     ) -> Result<
         super::Cursor<Self, &'txn Self, Self::PartialsCursor, SmallStr, Position<ChangeId>>,
-        TxnErr<SanakirjaError>,
+        TreeErr<SanakirjaError>,
     > {
         let k0 = SmallString::from_str(k);
         self.cursor_partials(&self.partials, Some((&k0, None)))
@@ -1143,7 +1189,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
                     changes: Db::from_page(tup.changes.into()),
                     revchanges: UDb::from_page(tup.revchanges.into()),
                     states: UDb::from_page(tup.states.into()),
-                    tags: UDb::from_page(tup.tags.into()),
+                    tags: Db::from_page(tup.tags.into()),
                     apply_counter: tup.apply_counter.into(),
                     last_modified: tup.last_modified.into(),
                     id: tup.id,
@@ -1181,6 +1227,46 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
                 continue;
             } else {
                 let e: Hash = e.into();
+                let b32 = e.to_base32();
+                debug!("{:?}", b32);
+                let (b32, _) = b32.split_at(s.len().min(b32.len()));
+                if b32 != s {
+                    break;
+                } else if result.is_none() {
+                    result = Some((e, *i))
+                } else {
+                    return Err(super::HashPrefixError::Ambiguous(s.to_string()));
+                }
+            }
+        }
+        if let Some(result) = result {
+            Ok(result)
+        } else {
+            Err(super::HashPrefixError::NotFound(s.to_string()))
+        }
+    }
+
+    fn state_from_prefix(
+        &self,
+        channel: &Self::Channel,
+        s: &str,
+    ) -> Result<(Merkle, L64), super::HashPrefixError<Self::GraphError>> {
+        let h: SerializedMerkle = if let Some(ref h) = Merkle::from_prefix(s) {
+            h.into()
+        } else {
+            return Err(super::HashPrefixError::Parse(s.to_string()));
+        };
+        let mut result = None;
+        debug!("h = {:?}", h);
+        for x in btree::iter(&self.txn, &channel.states, Some((&h, None)))
+            .map_err(|e| super::HashPrefixError::Txn(e.into()))?
+        {
+            let (e, i) = x.map_err(|e| super::HashPrefixError::Txn(e.into()))?;
+            debug!("{:?} {:?}", e, i);
+            if e < &h {
+                continue;
+            } else {
+                let e: Merkle = e.into();
                 let b32 = e.to_base32();
                 debug!("{:?}", b32);
                 let (b32, _) = b32.split_at(s.len().min(b32.len()));
@@ -1277,6 +1363,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
                         rev: UDb::from_page(remote.rev.into()),
                         states: UDb::from_page(remote.states.into()),
                         id_rev: remote.id_rev.into(),
+                        tags: Db::from_page(remote.tags.into()),
                         path: remote.path.to_owned(),
                     };
                     for x in btree::iter(&self.txn, &r.remote, None).unwrap() {
@@ -1350,6 +1437,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
     type Remote = UDb<L64, Pair<SerializedHash, SerializedMerkle>>;
     type Revremote = UDb<SerializedHash, L64>;
     type Remotestates = UDb<SerializedMerkle, L64>;
+    type Remotetags = UDb<L64, Pair<SerializedMerkle, SerializedMerkle>>;
     type RemoteCursor = ::sanakirja::btree::cursor::Cursor<
         L64,
         Pair<SerializedHash, SerializedMerkle>,
@@ -1406,6 +1494,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
                             rev: UDb::from_page(remote.rev.into()),
                             states: UDb::from_page(remote.states.into()),
                             id_rev: remote.id_rev.into(),
+                            tags: Db::from_page(remote.tags.into()),
                             path: remote.path.to_owned(),
                         })),
                         id: name,
@@ -1424,9 +1513,22 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         remote: &Self::Remote,
     ) -> Result<Option<(u64, &Pair<SerializedHash, SerializedMerkle>)>, TxnErr<Self::GraphError>>
     {
+        debug!("last_remote: {:?}", remote);
         if let Some(x) = btree::rev_iter(&self.txn, remote, None)?.next() {
             let (&k, v) = x?;
             Ok(Some((k.into(), v)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn last_remote_tag(
+        &self,
+        remote: &Self::Tags,
+    ) -> Result<Option<(u64, &SerializedMerkle, &SerializedMerkle)>, TxnErr<Self::GraphError>> {
+        if let Some(x) = btree::rev_iter(&self.txn, remote, None)?.next() {
+            let (&k, v) = x?;
+            Ok(Some((k.into(), &v.a, &v.b)))
         } else {
             Ok(None)
         }
@@ -1448,6 +1550,21 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         Ok(None)
     }
 
+    fn get_remote_tag(
+        &self,
+        remote: &Self::Tags,
+        n: u64,
+    ) -> Result<Option<(u64, &Pair<SerializedMerkle, SerializedMerkle>)>, TxnErr<Self::GraphError>>
+    {
+        let n = n.into();
+        if let Some(x) = btree::rev_iter(&self.txn, remote, Some((&n, None)))?.next() {
+            let (&k, m) = x?;
+            Ok(Some((k.into(), m)))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn remote_has_change(
         &self,
         remote: &RemoteRef<Self>,
@@ -1462,10 +1579,10 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         &self,
         remote: &RemoteRef<Self>,
         m: &SerializedMerkle,
-    ) -> Result<bool, TxnErr<Self::GraphError>> {
+    ) -> Result<Option<u64>, TxnErr<Self::GraphError>> {
         match btree::get(&self.txn, &remote.db.lock().states, m, None)? {
-            Some((k, _)) if k == m => Ok(true),
-            _ => Ok(false),
+            Some((k, v)) if k == m => Ok(Some((*v).into())),
+            _ => Ok(None),
         }
     }
     fn current_channel(&self) -> Result<&str, Self::GraphError> {
@@ -1601,7 +1718,7 @@ impl ChannelMutTxnT for MutTxn<()> {
         if let Some(t) = t {
             channel.last_modified = t.into()
         } else if let Ok(duration) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-            channel.last_modified = duration.as_secs().into()
+            channel.last_modified = (duration.as_millis() as u64 / 1000) * 1000
         }
     }
 
@@ -1620,7 +1737,10 @@ impl ChannelMutTxnT for MutTxn<()> {
             channel.apply_counter += 1;
             debug!("put_changes {:?} {:?}", t, p);
             let m = if let Some(x) = btree::rev_iter(&self.txn, &channel.revchanges, None)?.next() {
-                (&(x?.1).b).into()
+                let (a, b) = x?;
+                let a: u64 = (*a).into();
+                assert!(a < t);
+                (&b.b).into()
             } else {
                 Merkle::zero()
             };
@@ -1640,6 +1760,12 @@ impl ChannelMutTxnT for MutTxn<()> {
                 &t.into(),
                 &Pair { a: p, b: m.into() }
             )?);
+            assert!(btree::put(
+                &mut self.txn,
+                &mut channel.states,
+                &m.into(),
+                &t.into(),
+            )?);
             Ok(Some(m.into()))
         }
     }
@@ -1655,7 +1781,7 @@ impl ChannelMutTxnT for MutTxn<()> {
         for x in btree::iter(&self.txn, &channel.revchanges, Some((&tl, None)))? {
             let (t_, p) = x?;
             if *t_ >= tl {
-                repl.push((*t_, p.a))
+                repl.push((*t_, p.a, p.b))
             }
         }
         let mut m = Merkle::zero();
@@ -1666,17 +1792,19 @@ impl ChannelMutTxnT for MutTxn<()> {
                 break;
             }
         }
-        for (t_, p) in repl.iter() {
+        for (t_, p, m0) in repl.iter() {
             debug!("del_changes {:?} {:?}", t_, p);
             btree::del(&mut self.txn, &mut channel.revchanges, t_, None)?;
+            btree::del(&mut self.txn, &mut channel.states, m0, None)?;
             if *t_ > tl {
-                m = m.next(&self.get_external(p)?.unwrap().into());
+                m = m.next(self.get_external(p)?.unwrap());
                 btree::put(
                     &mut self.txn,
                     &mut channel.revchanges,
                     t_,
                     &Pair { a: *p, b: m.into() },
                 )?;
+                btree::put(&mut self.txn, &mut channel.states, &m.into(), t_)?;
             }
         }
         btree::del(&mut self.txn, &mut channel.tags, &t.into(), None)?;
@@ -1688,24 +1816,69 @@ impl ChannelMutTxnT for MutTxn<()> {
         )?)
     }
 
+    fn tags_mut<'a>(&mut self, channel: &'a mut Self::Channel) -> &'a mut Self::Tags {
+        &mut channel.tags
+    }
+
     fn put_tags(
         &mut self,
-        channel: &mut Self::Channel,
-        t: ApplyTimestamp,
-        h: &Hash,
+        channel: &mut Self::Tags,
+        n: u64,
+        m: &Merkle,
     ) -> Result<(), TxnErr<Self::GraphError>> {
-        btree::put(&mut self.txn, &mut channel.tags, &t.into(), &h.into())?;
-        Ok(())
+        debug!("put_tags {:?}", m);
+        let mm: SerializedMerkle = m.into();
+        if btree::get(&self.txn, &channel, &n.into(), None)?.is_some() {
+            debug!("already tagged");
+            Ok(())
+        } else {
+            let tl = n.into();
+            let mut repl = vec![(tl, mm)];
+            replay_tags(self, channel, tl, &mut repl)?;
+            Ok(())
+        }
     }
 
     fn del_tags(
         &mut self,
-        channel: &mut Self::Channel,
-        t: ApplyTimestamp,
+        channel: &mut Self::Tags,
+        t: u64,
     ) -> Result<(), TxnErr<Self::GraphError>> {
-        btree::del(&mut self.txn, &mut channel.tags, &t.into(), None)?;
+        replay_tags(self, channel, t.into(), &mut Vec::new())?;
         Ok(())
     }
+}
+
+fn replay_tags(
+    txn: &mut MutTxn<()>,
+    channel: &mut Db<L64, Pair<SerializedMerkle, SerializedMerkle>>,
+    tl: L64,
+    repl: &mut Vec<(L64, SerializedMerkle)>,
+) -> Result<(), TxnErr<SanakirjaError>> {
+    let del = repl.is_empty();
+    for x in btree::iter(&txn.txn, &channel, Some((&tl, None)))? {
+        let (t_, p) = x?;
+        if *t_ >= tl {
+            repl.push((*t_, p.a))
+        }
+    }
+    let mut m = Merkle::zero();
+    for x in btree::rev_iter(&txn.txn, &channel, Some((&tl, None)))? {
+        let (t_, mm) = x?;
+        if t_ < &tl {
+            m = (&mm.b).into();
+            break;
+        }
+    }
+    for (t_, p) in repl.iter() {
+        debug!("del_tags {:?} {:?}", t_, p);
+        btree::del(&mut txn.txn, channel, t_, None)?;
+        if *t_ > tl || !del {
+            m = m.next(p);
+            btree::put(&mut txn.txn, channel, t_, &Pair { a: *p, b: m.into() })?;
+        }
+    }
+    Ok(())
 }
 
 impl DepsMutTxnT for MutTxn<()> {
@@ -1716,33 +1889,28 @@ impl DepsMutTxnT for MutTxn<()> {
 }
 
 impl TreeMutTxnT for MutTxn<()> {
-    sanakirja_put_del!(inodes, Inode, Position<ChangeId>, TreeError);
-    sanakirja_put_del!(revinodes, Position<ChangeId>, Inode, TreeError);
+    sanakirja_put_del!(inodes, Inode, Position<ChangeId>, TreeError, TreeErr);
+    sanakirja_put_del!(revinodes, Position<ChangeId>, Inode, TreeError, TreeErr);
 
-    sanakirja_put_del!(tree, PathId, Inode, TreeError,);
-    sanakirja_put_del!(revtree, Inode, PathId, TreeError,);
+    sanakirja_put_del!(tree, PathId, Inode, TreeError, TreeErr);
+    sanakirja_put_del!(revtree, Inode, PathId, TreeError, TreeErr);
 
     fn put_partials(
         &mut self,
         k: &str,
         e: Position<ChangeId>,
-    ) -> Result<bool, TxnErr<Self::TreeError>> {
+    ) -> Result<bool, TreeErr<Self::TreeError>> {
         let k = SmallString::from_str(k);
-        Ok(btree::put(&mut self.txn, &mut self.partials, &k, &e)?)
+        btree::put(&mut self.txn, &mut self.partials, &k, &e).map_err(|e| TreeErr(e.into()))
     }
 
     fn del_partials(
         &mut self,
         k: &str,
         e: Option<Position<ChangeId>>,
-    ) -> Result<bool, TxnErr<Self::TreeError>> {
+    ) -> Result<bool, TreeErr<Self::TreeError>> {
         let k = SmallString::from_str(k);
-        Ok(btree::del(
-            &mut self.txn,
-            &mut self.partials,
-            &k,
-            e.as_ref(),
-        )?)
+        btree::del(&mut self.txn, &mut self.partials, &k, e.as_ref()).map_err(|e| TreeErr(e.into()))
     }
 }
 
@@ -1752,7 +1920,7 @@ impl MutTxnT for MutTxn<()> {
         remote: &mut RemoteRef<Self>,
         k: u64,
         v: (Hash, Merkle),
-    ) -> Result<bool, Self::GraphError> {
+    ) -> Result<bool, TxnErr<Self::GraphError>> {
         let mut remote = remote.db.lock();
         let h = (&v.0).into();
         let m: SerializedMerkle = (&v.1).into();
@@ -1762,7 +1930,11 @@ impl MutTxnT for MutTxn<()> {
             &k.into(),
             &Pair { a: h, b: m.clone() },
         )?;
+        debug!("remote.remote after put: {:?}", remote.remote);
         btree::put(&mut self.txn, &mut remote.states, &m, &k.into())?;
+        // if v.2 {
+        //     self.put_tags(&mut remote.tags, k, &v.1)?;
+        // }
         Ok(btree::put(&mut self.txn, &mut remote.rev, &h, &k.into())?)
     }
 
@@ -1770,7 +1942,7 @@ impl MutTxnT for MutTxn<()> {
         &mut self,
         remote: &mut RemoteRef<Self>,
         k: u64,
-    ) -> Result<bool, Self::GraphError> {
+    ) -> Result<bool, TxnErr<Self::GraphError>> {
         let mut remote = remote.db.lock();
         let k = k.into();
         match btree::get(&self.txn, &remote.remote, &k, None)? {
@@ -1805,7 +1977,7 @@ impl MutTxnT for MutTxn<()> {
                             changes: Db::from_page(b.changes.into()),
                             revchanges: UDb::from_page(b.revchanges.into()),
                             states: UDb::from_page(b.states.into()),
-                            tags: UDb::from_page(b.tags.into()),
+                            tags: Db::from_page(b.tags.into()),
                             apply_counter: b.apply_counter.into(),
                             last_modified: b.last_modified.into(),
                             id: b.id,
@@ -1950,7 +2122,7 @@ impl MutTxnT for MutTxn<()> {
                     Db::from_page(chan.changes.into()),
                     UDb::from_page(chan.revchanges.into()),
                     UDb::from_page(chan.states.into()),
-                    UDb::from_page(chan.tags.into()),
+                    Db::from_page(chan.tags.into()),
                 ))
             } else {
                 None
@@ -2032,6 +2204,7 @@ impl MutTxnT for MutTxn<()> {
                             rev: UDb::from_page(remote.rev.into()),
                             states: UDb::from_page(remote.states.into()),
                             id_rev: remote.id_rev.into(),
+                            tags: Db::from_page(remote.tags.into()),
                             path: SmallString::from_str(path),
                         })),
                         id,
@@ -2043,6 +2216,7 @@ impl MutTxnT for MutTxn<()> {
                                 rev: btree::create_db_(&mut self.txn)?,
                                 states: btree::create_db_(&mut self.txn)?,
                                 id_rev: 0u64.into(),
+                                tags: btree::create_db(&mut self.txn)?,
                                 path: SmallString::from_str(path),
                             })),
                             id,
@@ -2155,7 +2329,7 @@ impl Txn {
                     changes: Db::from_page(c.changes.into()),
                     revchanges: UDb::from_page(c.revchanges.into()),
                     states: UDb::from_page(c.states.into()),
-                    tags: UDb::from_page(c.tags.into()),
+                    tags: Db::from_page(c.tags.into()),
                     apply_counter: c.apply_counter.into(),
                     last_modified: c.last_modified.into(),
                     id: c.id,
@@ -2210,6 +2384,7 @@ impl<T> MutTxn<T> {
             _rev: r.rev.db.into(),
             _states: r.states.db.into(),
             _id_rev: r.id_rev.into(),
+            _tags: r.tags.db.into(),
             _path: r.path.clone(),
         };
         debug!("put {:?}", rr);
@@ -2359,17 +2534,19 @@ impl Storable for SerializedRemote {
     }
 }
 
+const REMOTE_LEN: usize = 40;
+
 impl UnsizedStorable for SerializedRemote {
     const ALIGN: usize = 8;
 
     fn size(&self) -> usize {
-        33 + self.path.len()
+        REMOTE_LEN + 1 + self.path.len()
     }
     unsafe fn onpage_size(p: *const u8) -> usize {
-        33 + (*p.add(32)) as usize
+        REMOTE_LEN + 1 + (*p.add(REMOTE_LEN)) as usize
     }
     unsafe fn from_raw_ptr<'a, T>(_: &T, p: *const u8) -> &'a Self {
-        let len = *p.add(32) as usize;
+        let len = *p.add(REMOTE_LEN) as usize;
         let m: &SerializedRemote =
             std::mem::transmute(std::slice::from_raw_parts(p, 1 + len as usize));
         m
@@ -2378,11 +2555,11 @@ impl UnsizedStorable for SerializedRemote {
         std::ptr::copy(
             &self.remote as *const L64 as *const u8,
             p,
-            33 + self.path.len(),
+            REMOTE_LEN + 1 + self.path.len(),
         );
         debug!(
             "write_to_page: {:?}",
-            std::slice::from_raw_parts(p, 33 + self.path.len())
+            std::slice::from_raw_parts(p, REMOTE_LEN + 1 + self.path.len())
         );
     }
 }
@@ -2393,13 +2570,14 @@ struct OwnedSerializedRemote {
     _rev: L64,
     _states: L64,
     _id_rev: L64,
+    _tags: L64,
     _path: SmallString,
 }
 
 impl std::ops::Deref for OwnedSerializedRemote {
     type Target = SerializedRemote;
     fn deref(&self) -> &Self::Target {
-        let len = 33 + self._path.len() as usize;
+        let len = REMOTE_LEN + 1 + self._path.len() as usize;
         unsafe {
             std::mem::transmute(std::slice::from_raw_parts(
                 self as *const Self as *const u8,

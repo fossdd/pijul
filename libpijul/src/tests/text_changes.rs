@@ -72,10 +72,66 @@ quickcheck! {
   }
 }
 
+use crate::quickcheck::{Arbitrary, Gen};
+
 #[test]
 #[cfg(feature = "text-changes")]
 fn hunk_roundtrip_test() {
-    fn go(hunk: PrintableHunk) {
+    fn go(mut hunk: PrintableHunk) {
+        match hunk {
+            PrintableHunk::FileAddition {
+                ref perms,
+                ref mut contents,
+                ..
+            } => {
+                if let PrintablePerms::IsDir = perms {
+                    contents.clear()
+                }
+            }
+            PrintableHunk::FileDel {
+                ref mut del_edges, ..
+            } => {
+                if del_edges.is_empty() {
+                    del_edges.push(PrintableEdge::arbitrary(&mut Gen::new(3)))
+                }
+            }
+            PrintableHunk::FileUndel {
+                ref mut undel_edges,
+                ..
+            } => {
+                if undel_edges.is_empty() {
+                    undel_edges.push(PrintableEdge::arbitrary(&mut Gen::new(3)))
+                }
+            }
+            PrintableHunk::Replace {
+                ref mut change_contents,
+                ref mut replacement_contents,
+                ..
+            } => {
+                if change_contents.is_empty() {
+                    change_contents.push(b'a')
+                }
+                if replacement_contents.is_empty() {
+                    replacement_contents.push(b'b')
+                }
+            }
+            PrintableHunk::Edit {
+                ref mut change,
+                ref mut contents,
+                ..
+            } => {
+                if let PrintableAtom::Edges(ref mut change) = change {
+                    if change.is_empty() {
+                        change.push(PrintableEdge::arbitrary(&mut Gen::new(3)))
+                    }
+                }
+                if std::str::from_utf8(contents).is_err() {
+                    contents.clear();
+                    contents.extend(b"bla\n".iter().cloned())
+                }
+            }
+            _ => {}
+        }
         let mut w = Vec::new();
         hunk.write(&mut &mut w).unwrap();
         let s = std::str::from_utf8(&w).unwrap();

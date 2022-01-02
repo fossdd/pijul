@@ -1,5 +1,5 @@
 use super::*;
-use crate::change::Change;
+use crate::change::{Change, ChangeHeader};
 use crate::pristine::{ChangeId, Hash, Vertex};
 use crate::HashMap;
 use std::sync::{Arc, RwLock};
@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 /// A change store in memory, i.e. basically a hash table.
 pub struct Memory {
     changes: Arc<RwLock<HashMap<Hash, Change>>>,
+    tags: Arc<RwLock<HashMap<crate::Merkle, ChangeHeader>>>,
 }
 
 impl Memory {
@@ -37,6 +38,12 @@ impl ChangeStore for Memory {
         let p = changes.get(&hash).unwrap();
         !p.contents.is_empty()
     }
+
+    fn get_tag_header(&self, h: &crate::Merkle) -> Result<ChangeHeader, Self::Error> {
+        let changes = self.tags.read().unwrap();
+        Ok(changes.get(&h).unwrap().clone())
+    }
+
     fn get_contents<F: Fn(ChangeId) -> Option<Hash>>(
         &self,
         hash: F,

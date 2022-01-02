@@ -1221,6 +1221,7 @@ fn zombie_last_line() -> Result<(), anyhow::Error> {
             .record(
                 txn.clone(),
                 Algorithm::default(),
+                false,
                 &crate::DEFAULT_SEPARATOR,
                 channel_alice.clone(),
                 &repo_alice,

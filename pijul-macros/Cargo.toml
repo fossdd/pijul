@@ -1,7 +1,7 @@
 [package]
 name = "pijul-macros"
 description = "Macros used to write libpijul."
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Pierre-Étienne Meunier <pmeunier@mailbox.org>"]
 edition = "2018"
 repository = "https://nest.pijul.com/pijul/pijul"

@@ -1,6 +1,6 @@
 use super::*;
 use crate::change::{Change, ChangeFile};
-use crate::pristine::{Base32, ChangeId, Hash, Vertex};
+use crate::pristine::{Base32, ChangeId, Hash, Merkle, Vertex};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +30,8 @@ pub enum Error {
     ChangeFile(#[from] crate::change::ChangeError),
     #[error(transparent)]
     Persist(#[from] tempfile::PersistError),
+    #[error(transparent)]
+    Tag(#[from] crate::tag::TagError),
 }
 
 pub fn push_filename(changes_dir: &mut PathBuf, hash: &Hash) {
@@ -38,6 +40,14 @@ pub fn push_filename(changes_dir: &mut PathBuf, hash: &Hash) {
     changes_dir.push(a);
     changes_dir.push(b);
     changes_dir.set_extension("change");
+}
+
+pub fn push_tag_filename(changes_dir: &mut PathBuf, hash: &Merkle) {
+    let h32 = hash.to_base32();
+    let (a, b) = h32.split_at(2);
+    changes_dir.push(a);
+    changes_dir.push(b);
+    changes_dir.set_extension("tag");
 }
 
 pub fn pop_filename(changes_dir: &mut PathBuf) {
@@ -49,6 +59,12 @@ impl FileSystem {
     pub fn filename(&self, hash: &Hash) -> PathBuf {
         let mut path = self.changes_dir.clone();
         push_filename(&mut path, hash);
+        path
+    }
+
+    pub fn tag_filename(&self, hash: &Merkle) -> PathBuf {
+        let mut path = self.changes_dir.clone();
+        push_tag_filename(&mut path, hash);
         path
     }
 
@@ -145,6 +161,12 @@ impl ChangeStore for FileSystem {
         let path = self.filename(h);
         let p = crate::change::ChangeFile::open(*h, &path.to_str().unwrap())?;
         Ok(p.hashed().header.clone())
+    }
+
+    fn get_tag_header(&self, h: &Merkle) -> Result<ChangeHeader, Self::Error> {
+        let path = self.tag_filename(h);
+        let mut p = crate::tag::OpenTagFile::open(&path, h)?;
+        Ok(p.header()?)
     }
 
     fn get_contents<F: Fn(ChangeId) -> Option<Hash>>(

@@ -13,12 +13,9 @@ use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-#[derive(Debug, Error)]
-pub enum RecordError<
-    C: std::error::Error + 'static,
-    W: std::error::Error,
-    T: std::error::Error + 'static,
-> {
+#[derive(Error)]
+pub enum RecordError<C: std::error::Error + 'static, W: std::error::Error, T: GraphTxnT + TreeTxnT>
+{
     #[error("Changestore error: {0}")]
     Changestore(C),
     #[error("Working copy error: {0}")]
@@ -26,7 +23,9 @@ pub enum RecordError<
     #[error("System time error: {0}")]
     SystemTimeError(#[from] std::time::SystemTimeError),
     #[error(transparent)]
-    Txn(T),
+    Txn(#[from] TxnErr<T::GraphError>),
+    #[error(transparent)]
+    Tree(#[from] TreeErr<T::TreeError>),
     #[error(transparent)]
     Diff(#[from] diff::DiffError<C, T>),
     #[error("Path not in repository: {0}")]
@@ -35,22 +34,25 @@ pub enum RecordError<
     Io(#[from] std::io::Error),
 }
 
-impl<
-        C: std::error::Error + 'static,
-        W: std::error::Error + 'static,
-        T: std::error::Error + 'static,
-    > std::convert::From<TxnErr<T>> for RecordError<C, W, T>
+impl<C: std::error::Error, W: std::error::Error, T: GraphTxnT + TreeTxnT> std::fmt::Debug
+    for RecordError<C, W, T>
 {
-    fn from(e: TxnErr<T>) -> Self {
-        RecordError::Txn(e.0)
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            RecordError::Changestore(e) => std::fmt::Debug::fmt(e, fmt),
+            RecordError::WorkingCopy(e) => std::fmt::Debug::fmt(e, fmt),
+            RecordError::SystemTimeError(e) => std::fmt::Debug::fmt(e, fmt),
+            RecordError::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+            RecordError::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+            RecordError::Diff(e) => std::fmt::Debug::fmt(e, fmt),
+            RecordError::PathNotInRepo(p) => write!(fmt, "Path not in repository: {}", p),
+            RecordError::Io(e) => std::fmt::Debug::fmt(e, fmt),
+        }
     }
 }
 
-impl<
-        C: std::error::Error + 'static,
-        W: std::error::Error + 'static,
-        T: std::error::Error + 'static,
-    > std::convert::From<crate::output::FileError<C, T>> for RecordError<C, W, T>
+impl<C: std::error::Error + 'static, W: std::error::Error + 'static, T: GraphTxnT + TreeTxnT>
+    std::convert::From<crate::output::FileError<C, T>> for RecordError<C, W, T>
 {
     fn from(e: crate::output::FileError<C, T>) -> Self {
         match e {
@@ -98,7 +100,7 @@ pub struct Recorded {
     /// returns now().
     pub oldest_change: std::time::SystemTime,
     /// Redundant edges found during the comparison.
-    pub redundant: Vec<(Vertex<ChangeId>, SerializedEdge)>,
+    pub redundant: Vec<crate::alive::Redundant>,
     /// Force a re-diff
     force_rediff: bool,
     deleted_vertices: Arc<Mutex<HashSet<Position<ChangeId>>>>,
@@ -229,21 +231,21 @@ impl RecordItem {
 }
 
 /// Ignore inodes that are in another channel
-fn get_inodes_<T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>>(
+fn get_inodes_<T: ChannelTxnT + TreeTxnT, C: ChangeStore, W: WorkingCopyRead>(
     txn: &ArcTxn<T>,
     channel: &ChannelRef<T>,
     inode: &Inode,
-) -> Result<Option<Position<ChangeId>>, TxnErr<T::GraphError>> {
+) -> Result<Option<Position<ChangeId>>, RecordError<C::Error, W::Error, T>> {
     let txn = txn.read();
     let channel = channel.r.read();
-    Ok(get_inodes(&*txn, &*channel, inode)?.map(|x| *x))
+    Ok(get_inodes::<_, C, W>(&*txn, &*channel, inode)?.map(|x| *x))
 }
 
-fn get_inodes<'a, T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>>(
+fn get_inodes<'a, T: ChannelTxnT + TreeTxnT, C: ChangeStore, W: WorkingCopyRead>(
     txn: &'a T,
     channel: &T::Channel,
     inode: &Inode,
-) -> Result<Option<&'a Position<ChangeId>>, TxnErr<T::GraphError>> {
+) -> Result<Option<&'a Position<ChangeId>>, RecordError<C::Error, W::Error, T>> {
     if let Some(vertex) = txn.get_inodes(inode, None)? {
         if let Some(e) = iter_adjacent(
             txn,
@@ -254,7 +256,7 @@ fn get_inodes<'a, T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphE
         )?
         .next()
         {
-            if e?.flag().is_alive_parent() {
+            if e?.flag().is_parent() {
                 return Ok(Some(vertex));
             }
         }
@@ -283,19 +285,16 @@ impl Builder {
         &mut self,
         txn: ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
+        stop_early: bool,
         diff_separator: &regex::bytes::Regex,
         channel: ChannelRef<T>,
         working_copy: &W,
         changes: &C,
         prefix: &str,
         _n_workers: usize,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
-        T: ChannelMutTxnT
-            + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>
-            + Send
-            + Sync
-            + 'static,
+        T: ChannelMutTxnT + TreeTxnT + Send + Sync + 'static,
         T::Channel: Send + Sync,
         <W as WorkingCopyRead>::Error: 'static,
     {
@@ -324,6 +323,7 @@ impl Builder {
                         rec.lock().record_existing_file(
                             &txn,
                             diff_algorithm,
+                            stop_early,
                             &sep,
                             &channel,
                             working_copy.clone(),
@@ -340,7 +340,7 @@ impl Builder {
                         std::thread::park_timeout(std::time::Duration::from_secs(1));
                     }
                 }
-                Ok::<_, RecordError<C::Error, W::Error, T::GraphError>>(())
+                Ok::<_, RecordError<C::Error, W::Error, T>>(())
             }))
         }
         info!("Starting to record");
@@ -405,7 +405,7 @@ impl Builder {
                     root_vertices.push(Position::ROOT)
                 }
                 Position::ROOT.to_option()
-            } else if let Some(vertex) = get_inodes_(&txn, &channel, &item.inode)? {
+            } else if let Some(vertex) = get_inodes_::<_, C, W>(&txn, &channel, &item.inode)? {
                 {
                     let mut txn = txn.write();
                     let mut channel = channel.r.write();
@@ -514,6 +514,7 @@ impl Builder {
                 rec.lock().record_existing_file(
                     &txn,
                     diff_algorithm,
+                    stop_early,
                     diff_separator,
                     &channel,
                     working_copy.clone(),
@@ -540,11 +541,7 @@ impl Builder {
         Ok(())
     }
 
-    fn delete_obsolete_children<
-        T: GraphTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopyRead,
-        C: ChangeStore,
-    >(
+    fn delete_obsolete_children<T: GraphTxnT + TreeTxnT, W: WorkingCopyRead, C: ChangeStore>(
         &mut self,
         txn: &T,
         channel: &T::Graph,
@@ -552,7 +549,7 @@ impl Builder {
         changes: &C,
         full_path: &str,
         v: Position<ChangeId>,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as WorkingCopyRead>::Error: 'static,
     {
@@ -615,12 +612,7 @@ impl Builder {
         Ok(())
     }
 
-    fn push_children<
-        'a,
-        T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopyRead,
-        C: ChangeStore,
-    >(
+    fn push_children<'a, T: ChannelTxnT + TreeTxnT, W: WorkingCopyRead, C: ChangeStore>(
         &mut self,
         txn: &T,
         channel: &T::Channel,
@@ -631,7 +623,7 @@ impl Builder {
         stack: &mut Vec<(RecordItem, Components<'a>)>,
         prefix: &str,
         changes: &C,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
@@ -679,7 +671,7 @@ impl Builder {
                     },
                     components.clone(),
                 ));
-            } else if let Some(vertex) = get_inodes(txn, &channel, child_inode)? {
+            } else if let Some(vertex) = get_inodes::<_, C, W>(txn, &channel, child_inode)? {
                 let rec = self.recorded();
                 let mut rec = rec.lock();
                 rec.record_deleted_file(
@@ -712,13 +704,21 @@ fn modified_since_last_commit<T: ChannelTxnT, W: WorkingCopyRead>(
             "last_modified = {:?}, channel.last = {:?}",
             last_modified
                 .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs(),
+                .as_millis(),
             txn.last_modified(channel)
         );
-        Ok(last_modified
+        // Account for low-resolution filesystems, by truncating the
+        // channel modification time if the file modification time is
+        // a multiple of 1000.
+        let last_mod = last_modified
             .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-            >= txn.last_modified(channel))
+            .as_millis() as u64;
+        let channel_mod = if last_mod % 1000 == 0 {
+            (txn.last_modified(channel) / 1000) * 1000
+        } else {
+            txn.last_modified(channel)
+        };
+        Ok(last_mod >= channel_mod)
     } else {
         Ok(true)
     }
@@ -883,14 +883,11 @@ impl Recorded {
         }
     }
 
-    fn record_existing_file<
-        T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopyRead + Clone,
-        C: ChangeStore,
-    >(
+    fn record_existing_file<T: ChannelTxnT + TreeTxnT, W: WorkingCopyRead + Clone, C: ChangeStore>(
         &mut self,
         txn: &ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
+        stop_early: bool,
         diff_sep: &regex::bytes::Regex,
         channel: &ChannelRef<T>,
         working_copy: W,
@@ -898,7 +895,7 @@ impl Recorded {
         item: &RecordItem,
         new_papa: Option<Position<Option<ChangeId>>>,
         vertex: Position<ChangeId>,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
@@ -909,17 +906,17 @@ impl Recorded {
         // Former parent(s) of vertex
         let txn_ = txn.read();
         let channel_ = channel.read();
-        let (former_parents, is_deleted) =
+        let (former_parents, is_deleted, encoding) =
             collect_former_parents::<C, W, T>(changes, &*txn_, &*channel_, vertex)?;
         debug!(
             "record_existing_file: {:?} {:?} {:?}",
             item, former_parents, is_deleted,
         );
-        assert!(!former_parents.is_empty());
         if let Ok(new_meta) = working_copy.file_metadata(&item.full_path) {
             self.record_nondeleted(
                 &*txn_,
                 diff_algorithm,
+                stop_early,
                 diff_sep,
                 &*channel_,
                 working_copy,
@@ -930,6 +927,7 @@ impl Recorded {
                 new_meta,
                 &former_parents,
                 is_deleted,
+                encoding,
             )?
         } else {
             debug!("calling record_deleted_file on {:?}", item.full_path);
@@ -945,14 +943,11 @@ impl Recorded {
         Ok(())
     }
 
-    fn record_nondeleted<
-        T: ChannelTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopyRead + Clone,
-        C: ChangeStore,
-    >(
+    fn record_nondeleted<T: ChannelTxnT + TreeTxnT, W: WorkingCopyRead + Clone, C: ChangeStore>(
         &mut self,
         txn: &T,
         diff_algorithm: diff::Algorithm,
+        stop_early: bool,
         diff_sep: &regex::bytes::Regex,
         channel: &T::Channel,
         working_copy: W,
@@ -963,11 +958,31 @@ impl Recorded {
         new_meta: InodeMetadata,
         former_parents: &[Parent],
         is_deleted: bool,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+        encoding: Option<Encoding>,
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
-        if former_parents.len() > 1
+        if former_parents.is_empty() {
+            // This is the case where the inode exists both in the
+            // graph and in the inode tables, but isn't alive in the
+            // graph.
+            //
+            // This can happen (1) when outputting a tag that has this
+            // file, after recording the deletion of the file, or (2)
+            // when recording after applying, but before outputting,
+            // but this is a misuse of the library.
+            debug!("new_papa = {:?}", new_papa);
+            self.record_moved_file::<_, _, W>(
+                changes,
+                txn,
+                channel,
+                &item,
+                vertex,
+                new_papa.unwrap(),
+                encoding,
+            )?
+        } else if former_parents.len() > 1
             || former_parents[0].basename != item.basename
             || former_parents[0].metadata != item.metadata
             || former_parents[0].parent != item.v_papa
@@ -1000,6 +1015,7 @@ impl Recorded {
                 txn,
                 channel,
                 diff_algorithm,
+                stop_early,
                 item.full_path.clone(),
                 item.inode,
                 vertex.to_option(),
@@ -1026,7 +1042,7 @@ impl Recorded {
         Ok(())
     }
 
-    fn record_moved_file<T: ChannelTxnT, C: ChangeStore, W: WorkingCopyRead>(
+    fn record_moved_file<T: ChannelTxnT + TreeTxnT, C: ChangeStore, W: WorkingCopyRead>(
         &mut self,
         changes: &C,
         txn: &T,
@@ -1035,7 +1051,7 @@ impl Recorded {
         vertex: Position<ChangeId>,
         new_papa: Position<Option<ChangeId>>,
         encoding: Option<Encoding>,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
     {
@@ -1166,12 +1182,12 @@ impl Recorded {
     }
 }
 
-fn collect_former_parents<C: ChangeStore, W: WorkingCopyRead, T: ChannelTxnT>(
+fn collect_former_parents<C: ChangeStore, W: WorkingCopyRead, T: ChannelTxnT + TreeTxnT>(
     changes: &C,
     txn: &T,
     channel: &T::Channel,
     vertex: Position<ChangeId>,
-) -> Result<(Vec<Parent>, bool), RecordError<C::Error, W::Error, T::GraphError>>
+) -> Result<(Vec<Parent>, bool, Option<Encoding>), RecordError<C::Error, W::Error, T>>
 where
     W::Error: 'static,
 {
@@ -1179,6 +1195,7 @@ where
     let f0 = EdgeFlags::FOLDER | EdgeFlags::PARENT;
     let f1 = EdgeFlags::all();
     let mut is_deleted = true;
+    let mut encoding_ = None;
     for name_ in iter_adjacent(txn, txn.graph(channel), vertex.inode_vertex(), f0, f1)? {
         debug!("name_ = {:?}", name_);
         let name_ = name_?;
@@ -1186,11 +1203,7 @@ where
             debug!("continue");
             continue;
         }
-        if name_.flag().contains(EdgeFlags::DELETED) {
-            debug!("is_deleted {:?}", name_);
-            is_deleted = true;
-            break;
-        }
+
         let name_dest = txn
             .find_block_end(txn.graph(channel), name_.dest())
             .unwrap();
@@ -1210,9 +1223,21 @@ where
             "former basename of {:?}: {:?} {:?}",
             vertex, basename, metadata
         );
+
+        if name_.flag().contains(EdgeFlags::DELETED) {
+            debug!("is_deleted {:?}", name_);
+            is_deleted = true;
+            if encoding_.is_none() {
+                encoding_ = encoding
+            }
+            break;
+        }
         if let Some(v_papa) = iter_adjacent(txn, txn.graph(channel), *name_dest, f0, f1)?.next() {
             let v_papa = v_papa?;
             if !v_papa.flag().contains(EdgeFlags::DELETED) {
+                if encoding_.is_none() {
+                    encoding_ = encoding.clone()
+                }
                 former_parents.push(Parent {
                     basename: basename.to_string(),
                     metadata,
@@ -1222,7 +1247,7 @@ where
             }
         }
     }
-    Ok((former_parents, is_deleted))
+    Ok((former_parents, is_deleted, encoding_))
 }
 
 #[derive(Debug)]
@@ -1234,7 +1259,7 @@ struct MovedEdges {
     n_alive_names: usize,
 }
 
-fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopyRead>(
+fn collect_moved_edges<T: GraphTxnT + TreeTxnT, C: ChangeStore, W: WorkingCopyRead>(
     txn: &T,
     changes: &C,
     channel: &T::Graph,
@@ -1242,7 +1267,7 @@ fn collect_moved_edges<T: GraphTxnT, C: ChangeStore, W: WorkingCopyRead>(
     current_pos: Position<ChangeId>,
     new_meta: InodeMetadata,
     name: &str,
-) -> Result<MovedEdges, RecordError<C::Error, W::Error, T::GraphError>>
+) -> Result<MovedEdges, RecordError<C::Error, W::Error, T>>
 where
     <W as crate::working_copy::WorkingCopyRead>::Error: 'static,
 {
@@ -1486,11 +1511,7 @@ fn is_root_vertex<T: GraphTxnT>(
 }
 
 impl Recorded {
-    fn record_deleted_file<
-        T: GraphTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-        W: WorkingCopyRead,
-        C: ChangeStore,
-    >(
+    fn record_deleted_file<T: GraphTxnT + TreeTxnT, W: WorkingCopyRead, C: ChangeStore>(
         &mut self,
         txn: &T,
         channel: &T::Graph,
@@ -1498,7 +1519,7 @@ impl Recorded {
         full_path: &str,
         current_vertex: Position<ChangeId>,
         changes: &C,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as WorkingCopyRead>::Error: 'static,
     {
@@ -1579,7 +1600,7 @@ impl Recorded {
         Ok(())
     }
 
-    fn delete_inode_vertex<T: GraphTxnT, C: ChangeStore, W: WorkingCopyRead>(
+    fn delete_inode_vertex<T: GraphTxnT + TreeTxnT, C: ChangeStore, W: WorkingCopyRead>(
         &mut self,
         changes: &C,
         txn: &T,
@@ -1587,7 +1608,7 @@ impl Recorded {
         vertex: Vertex<ChangeId>,
         inode: Position<ChangeId>,
         path: &str,
-    ) -> Result<(), RecordError<C::Error, W::Error, T::GraphError>>
+    ) -> Result<(), RecordError<C::Error, W::Error, T>>
     where
         <W as WorkingCopyRead>::Error: 'static,
     {

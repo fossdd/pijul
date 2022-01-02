@@ -40,6 +40,7 @@ where
     state.record(
         txn.clone(),
         Algorithm::default(),
+        false,
         &crate::DEFAULT_SEPARATOR,
         channel.clone(),
         repo,

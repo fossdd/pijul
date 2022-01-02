@@ -366,7 +366,7 @@ impl Graph {
         channel: &T::Graph,
         scc: &Vector2<VertexId>,
         forward_scc: &HashSet<(usize, usize)>,
-        forward: &mut Vec<(Vertex<ChangeId>, SerializedEdge)>,
+        forward: &mut Vec<super::Redundant>,
     ) -> Result<(), TxnErr<T::GraphError>> {
         for &(a, b) in forward_scc.iter() {
             for cousin in scc[a].iter() {
@@ -388,7 +388,10 @@ impl Graph {
                                 EdgeFlags::DELETED,
                             )?
                         {
-                            forward.push((self[*cousin].vertex, edge))
+                            forward.push(super::Redundant {
+                                v: self[*cousin].vertex,
+                                e: edge,
+                            })
                         }
                     }
                 }

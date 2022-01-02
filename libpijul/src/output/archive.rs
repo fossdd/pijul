@@ -95,10 +95,10 @@ impl<W: std::io::Write> Archive for Tarball<W> {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum ArchiveError<
     P: std::error::Error + 'static,
-    T: std::error::Error + 'static,
+    T: GraphTxnT + TreeTxnT,
     A: std::error::Error + 'static,
 > {
     #[error(transparent)]
@@ -106,7 +106,9 @@ pub enum ArchiveError<
     #[error(transparent)]
     P(P),
     #[error(transparent)]
-    Txn(T),
+    Txn(#[from] TxnErr<T::GraphError>),
+    #[error(transparent)]
+    Tree(#[from] TreeErr<T::TreeError>),
     #[error(transparent)]
     Unrecord(#[from] crate::unrecord::UnrecordError<P, T>),
     #[error(transparent)]
@@ -119,20 +121,27 @@ pub enum ArchiveError<
     Output(#[from] crate::output::PristineOutputError<P, T>),
 }
 
-impl<
-        P: std::error::Error + 'static,
-        T: std::error::Error + 'static,
-        A: std::error::Error + 'static,
-    > std::convert::From<TxnErr<T>> for ArchiveError<P, T, A>
+impl<P: std::error::Error + 'static, T: GraphTxnT + TreeTxnT, A: std::error::Error + 'static>
+    std::fmt::Debug for ArchiveError<P, T, A>
 {
-    fn from(e: TxnErr<T>) -> Self {
-        ArchiveError::Txn(e.0)
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ArchiveError::A(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::P(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::Unrecord(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::Apply(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::File(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::Output(e) => std::fmt::Debug::fmt(e, fmt),
+            ArchiveError::StateNotFound { state } => write!(fmt, "State not found: {:?}", state),
+        }
     }
 }
 
 pub(crate) fn archive<
     'a,
-    T: ChannelTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>,
+    T: ChannelTxnT + TreeTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>,
     P: ChangeStore,
     I: Iterator<Item = &'a str>,
     A: Archive,
@@ -142,7 +151,7 @@ pub(crate) fn archive<
     channel: &ChannelRef<T>,
     prefix: &mut I,
     arch: &mut A,
-) -> Result<Vec<Conflict>, ArchiveError<P::Error, T::GraphError, A::Error>> {
+) -> Result<Vec<Conflict>, ArchiveError<P::Error, T, A::Error>> {
     let channel = channel.read();
     let mut conflicts = Vec::new();
     let mut files = HashMap::default();

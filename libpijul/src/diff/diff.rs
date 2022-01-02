@@ -12,8 +12,16 @@ impl Default for Algorithm {
     }
 }
 
-pub(super) fn diff(lines_a: &[Line], lines_b: &[Line], algorithm: Algorithm) -> D {
-    let mut dd = diffs::Replace::new(D(Vec::with_capacity(lines_a.len() + lines_b.len())));
+pub(super) fn diff(
+    lines_a: &[Line],
+    lines_b: &[Line],
+    algorithm: Algorithm,
+    stop_early: bool,
+) -> D {
+    let mut dd = diffs::Replace::new(D {
+        r: Vec::with_capacity(lines_a.len() + lines_b.len()),
+        stop_early,
+    });
     match algorithm {
         Algorithm::Patience => diffs::patience::diff(
             &mut dd,
@@ -24,7 +32,7 @@ pub(super) fn diff(lines_a: &[Line], lines_b: &[Line], algorithm: Algorithm) -> 
             0,
             lines_b.len(),
         )
-        .unwrap(),
+        .unwrap_or(()),
         Algorithm::Myers => diffs::myers::diff(
             &mut dd,
             lines_a,
@@ -34,29 +42,32 @@ pub(super) fn diff(lines_a: &[Line], lines_b: &[Line], algorithm: Algorithm) -> 
             0,
             lines_b.len(),
         )
-        .unwrap(),
+        .unwrap_or(()),
     }
     dd.into_inner()
 }
 #[derive(Debug)]
-pub struct D(pub Vec<Replacement>);
+pub struct D {
+    pub r: Vec<Replacement>,
+    pub stop_early: bool,
+}
 
 impl D {
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.r.len()
     }
 }
 
 impl std::ops::Index<usize> for D {
     type Output = Replacement;
     fn index(&self, i: usize) -> &Replacement {
-        self.0.index(i)
+        self.r.index(i)
     }
 }
 
 impl std::ops::IndexMut<usize> for D {
     fn index_mut(&mut self, i: usize) -> &mut Replacement {
-        self.0.index_mut(i)
+        self.r.index_mut(i)
     }
 }
 
@@ -73,25 +84,33 @@ impl diffs::Diff for D {
     type Error = ();
     fn delete(&mut self, old: usize, old_len: usize, new: usize) -> std::result::Result<(), ()> {
         debug!("Diff::delete {:?} {:?} {:?}", old, old_len, new);
-        self.0.push(Replacement {
+        self.r.push(Replacement {
             old,
             old_len,
             new,
             new_len: 0,
             is_cyclic: false,
         });
-        Ok(())
+        if self.stop_early {
+            Err(())
+        } else {
+            Ok(())
+        }
     }
     fn insert(&mut self, old: usize, new: usize, new_len: usize) -> std::result::Result<(), ()> {
         debug!("Diff::insert {:?} {:?} {:?}", old, new, new_len);
-        self.0.push(Replacement {
+        self.r.push(Replacement {
             old,
             old_len: 0,
             new,
             new_len,
             is_cyclic: false,
         });
-        Ok(())
+        if self.stop_early {
+            Err(())
+        } else {
+            Ok(())
+        }
     }
     fn replace(
         &mut self,
@@ -104,14 +123,18 @@ impl diffs::Diff for D {
             "Diff::replace {:?} {:?} {:?} {:?}",
             old, old_len, new, new_len
         );
-        self.0.push(Replacement {
+        self.r.push(Replacement {
             old,
             old_len,
             new,
             new_len,
             is_cyclic: false,
         });
-        Ok(())
+        if self.stop_early {
+            Err(())
+        } else {
+            Ok(())
+        }
     }
 }
 fn line_index(lines_a: &[Line], pos_bytes: usize) -> usize {
@@ -129,14 +152,14 @@ pub struct Deleted {
 impl D {
     pub(super) fn is_deleted(&self, lines_a: &[Line], pos: usize) -> Option<Deleted> {
         let line = line_index(lines_a, pos);
-        match self.0.binary_search_by(|repl| repl.old.cmp(&line)) {
-            Ok(i) if self.0[i].old_len > 0 => Some(Deleted {
-                replaced: self.0[i].new_len > 0,
+        match self.r.binary_search_by(|repl| repl.old.cmp(&line)) {
+            Ok(i) if self.r[i].old_len > 0 => Some(Deleted {
+                replaced: self.r[i].new_len > 0,
                 next: pos + lines_a[line].l.len(),
             }),
             Err(i) if i == 0 => None,
-            Err(i) if line < self.0[i - 1].old + self.0[i - 1].old_len => Some(Deleted {
-                replaced: self.0[i - 1].new_len > 0,
+            Err(i) if line < self.r[i - 1].old + self.r[i - 1].old_len => Some(Deleted {
+                replaced: self.r[i - 1].new_len > 0,
                 next: pos + lines_a[line].l.len(),
             }),
             _ => None,

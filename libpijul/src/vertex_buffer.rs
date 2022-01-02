@@ -1,10 +1,10 @@
 use crate::pristine::*;
 
-pub const START_MARKER: &str = "\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n";
+pub const START_MARKER: &str = ">>>>>>>";
 
-pub const SEPARATOR: &str = "\n================================\n";
+pub const SEPARATOR: &str = "=======";
 
-pub const END_MARKER: &str = "\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n";
+pub const END_MARKER: &str = "<<<<<<<";
 
 /// A trait for outputting keys and their contents. This trait allows
 /// to retain more information about conflicts than directly
@@ -16,27 +16,36 @@ pub trait VertexBuffer {
         E: From<std::io::Error>,
         F: FnOnce(&mut Vec<u8>) -> Result<(), E>;
 
-    fn output_conflict_marker(&mut self, s: &str) -> Result<(), std::io::Error>;
-    fn begin_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(START_MARKER)
+    fn output_conflict_marker(
+        &mut self,
+        s: &str,
+        id: usize,
+        sides: &[&Hash],
+    ) -> Result<(), std::io::Error>;
+    fn begin_conflict(&mut self, id: usize, side: &[&Hash]) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(START_MARKER, id, side)
     }
-    fn begin_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.begin_conflict()
+    fn begin_zombie_conflict(
+        &mut self,
+        id: usize,
+        add_del: &[&Hash],
+    ) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(START_MARKER, id, add_del)
     }
-    fn begin_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.begin_conflict()
+    fn begin_cyclic_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(START_MARKER, id, &[])
     }
-    fn conflict_next(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(SEPARATOR)
+    fn conflict_next(&mut self, id: usize, side: &[&Hash]) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(SEPARATOR, id, side)
     }
-    fn end_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(END_MARKER)
+    fn end_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(END_MARKER, id, &[])
     }
-    fn end_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.end_conflict()
+    fn end_zombie_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
+        self.end_conflict(id)
     }
-    fn end_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(END_MARKER)
+    fn end_cyclic_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(END_MARKER, id, &[])
     }
 }
 
@@ -95,40 +104,54 @@ impl<'a, 'b, W: std::io::Write> VertexBuffer for ConflictsWriter<'a, 'b, W> {
         Ok(())
     }
 
-    fn output_conflict_marker(&mut self, s: &str) -> Result<(), std::io::Error> {
+    fn output_conflict_marker(
+        &mut self,
+        s: &str,
+        id: usize,
+        sides: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         debug!("output_conflict_marker {:?}", self.new_line);
         if !self.new_line {
             self.lines += 2;
-            self.w.write_all(s.as_bytes())?;
+            self.w.write_all(b"\n")?;
         } else {
             self.lines += 1;
-            debug!("{:?}", &s.as_bytes()[1..]);
-            self.w.write_all(&s.as_bytes()[1..])?;
+            debug!("{:?}", s.as_bytes());
         }
+        write!(self.w, "{} {}", s, id)?;
+        for side in sides {
+            let h = side.to_base32();
+            write!(self.w, " [{}]", h.split_at(8).0)?;
+        }
+        self.w.write_all(b"\n")?;
         self.new_line = true;
         Ok(())
     }
 
-    fn begin_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_conflict(&mut self, id: usize, side: &[&Hash]) -> Result<(), std::io::Error> {
         self.conflicts.push(crate::output::Conflict::Order {
             path: self.path.to_string(),
             line: self.lines,
         });
-        self.output_conflict_marker(START_MARKER)
+        self.output_conflict_marker(START_MARKER, id, side)
     }
-    fn begin_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_zombie_conflict(
+        &mut self,
+        id: usize,
+        add_del: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         self.conflicts.push(crate::output::Conflict::Zombie {
             path: self.path.to_string(),
             line: self.lines,
         });
-        self.output_conflict_marker(START_MARKER)
+        self.output_conflict_marker(START_MARKER, id, add_del)
     }
-    fn begin_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_cyclic_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
         self.conflicts.push(crate::output::Conflict::Cyclic {
             path: self.path.to_string(),
             line: self.lines,
         });
-        self.output_conflict_marker(START_MARKER)
+        self.output_conflict_marker(START_MARKER, id, &[])
     }
 }
 
@@ -185,37 +208,49 @@ impl<W: std::io::Write> VertexBuffer for Writer<W> {
         Ok(())
     }
 
-    fn output_conflict_marker(&mut self, s: &str) -> Result<(), std::io::Error> {
+    fn output_conflict_marker(
+        &mut self,
+        s: &str,
+        id: usize,
+        sides: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         debug!("output_conflict_marker {:?}", self.new_line);
         if !self.new_line {
-            self.w.write_all(s.as_bytes())?;
-        } else {
-            debug!("{:?}", &s.as_bytes()[1..]);
-            self.w.write_all(&s.as_bytes()[1..])?;
+            self.w.write_all(b"\n")?;
         }
+        write!(self.w, "{} {}", s, id)?;
+        for side in sides {
+            let h = side.to_base32();
+            write!(self.w, " [{}]", h.split_at(8).0)?;
+        }
+        self.w.write_all(b"\n")?;
         Ok(())
     }
 
-    fn begin_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(START_MARKER)
+    fn begin_conflict(&mut self, id: usize, side: &[&Hash]) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(START_MARKER, id, side)
     }
-    fn end_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn end_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
         self.is_zombie = false;
-        self.output_conflict_marker(END_MARKER)
+        self.output_conflict_marker(END_MARKER, id, &[])
     }
-    fn begin_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn begin_zombie_conflict(
+        &mut self,
+        id: usize,
+        add_del: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         if self.is_zombie {
             Ok(())
         } else {
             self.is_zombie = true;
-            self.begin_conflict()
+            self.output_conflict_marker(START_MARKER, id, add_del)
         }
     }
-    fn end_zombie_conflict(&mut self) -> Result<(), std::io::Error> {
+    fn end_zombie_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
         self.is_zombie = false;
-        self.output_conflict_marker(END_MARKER)
+        self.output_conflict_marker(END_MARKER, id, &[])
     }
-    fn begin_cyclic_conflict(&mut self) -> Result<(), std::io::Error> {
-        self.output_conflict_marker(START_MARKER)
+    fn begin_cyclic_conflict(&mut self, id: usize) -> Result<(), std::io::Error> {
+        self.output_conflict_marker(START_MARKER, id, &[])
     }
 }

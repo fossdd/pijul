@@ -31,6 +31,8 @@ lazy_static! {
     static ref CHANGELIST: Regex = Regex::new(r#"changelist\s+(\S+)\s+([0-9]+)(.*)\s+"#).unwrap();
     static ref CHANGELIST_PATHS: Regex = Regex::new(r#""(((\\")|[^"])+)""#).unwrap();
     static ref CHANGE: Regex = Regex::new(r#"((change)|(partial))\s+([^ ]*)\s+"#).unwrap();
+    static ref TAG: Regex = Regex::new(r#"^tag\s+(\S+)\s+"#).unwrap();
+    static ref TAGUP: Regex = Regex::new(r#"^tagup\s+(\S+)\s+(\S+)\s+([0-9]+)\s+"#).unwrap();
     static ref APPLY: Regex = Regex::new(r#"apply\s+(\S+)\s+([^ ]*) ([0-9]+)\s+"#).unwrap();
     static ref CHANNEL: Regex = Regex::new(r#"channel\s+(\S+)\s+"#).unwrap();
     static ref ARCHIVE: Regex =
@@ -76,7 +78,8 @@ impl Protocol {
                     None
                 };
                 if let Some(pos) = init {
-                    for x in txn.read().log(&*channel.read(), pos)? {
+                    let txn = txn.read();
+                    for x in txn.log(&*channel.read(), pos)? {
                         let (n, (_, m)) = x?;
                         match n.cmp(&pos) {
                             std::cmp::Ordering::Less => continue,
@@ -86,17 +89,36 @@ impl Protocol {
                             }
                             std::cmp::Ordering::Equal => {
                                 let m: libpijul::Merkle = m.into();
-                                writeln!(o, "{} {}", n, m.to_base32())?;
+                                let m2 = if let Some(x) = txn
+                                    .rev_iter_tags(txn.tags(&*channel.read()), Some(n))?
+                                    .next()
+                                {
+                                    x?.1.b.into()
+                                } else {
+                                    Merkle::zero()
+                                };
+                                writeln!(o, "{} {} {}", n, m.to_base32(), m2.to_base32())?;
                                 break;
                             }
                         }
                     }
-                } else if let Some(x) = txn.read().reverse_log(&*channel.read(), None)?.next() {
-                    let (n, (_, m)) = x?;
-                    let m: Merkle = m.into();
-                    writeln!(o, "{} {}", n, m.to_base32())?
                 } else {
-                    writeln!(o, "-")?;
+                    let txn = txn.read();
+                    if let Some(x) = txn.reverse_log(&*channel.read(), None)?.next() {
+                        let (n, (_, m)) = x?;
+                        let m: Merkle = m.into();
+                        let m2 = if let Some(x) = txn
+                            .rev_iter_tags(txn.tags(&*channel.read()), Some(n))?
+                            .next()
+                        {
+                            x?.1.b.into()
+                        } else {
+                            Merkle::zero()
+                        };
+                        writeln!(o, "{} {} {}", n, m.to_base32(), m2.to_base32())?
+                    } else {
+                        writeln!(o, "-")?;
+                    }
                 }
                 o.flush()?;
             } else if let Some(cap) = CHANGELIST.captures(&buf) {
@@ -125,6 +147,11 @@ impl Protocol {
                     }
                 }
                 debug!("paths = {:?}", paths);
+                let tags: Vec<u64> = txn
+                    .iter_tags(txn.tags(&*channel.read()), from)?
+                    .map(|k| (*k.unwrap().0).into())
+                    .collect();
+                let mut tagsi = 0;
                 for x in txn.log(&*channel.read(), from)? {
                     let (n, (h, m)) = x?;
                     let h_int = txn.get_internal(h)?.unwrap();
@@ -136,11 +163,68 @@ impl Protocol {
                     {
                         let h: Hash = h.into();
                         let m: Merkle = m.into();
-                        writeln!(o, "{}.{}.{}", n, h.to_base32(), m.to_base32())?
+                        if paths.is_empty() && tags.get(tagsi) == Some(&n) {
+                            writeln!(o, "{}.{}.{}.", n, h.to_base32(), m.to_base32())?;
+                            tagsi += 1;
+                        } else {
+                            writeln!(o, "{}.{}.{}", n, h.to_base32(), m.to_base32())?;
+                        }
                     }
                 }
                 writeln!(o)?;
                 o.flush()?;
+            } else if let Some(cap) = TAG.captures(&buf) {
+                if let Some(state) = Merkle::from_base32(cap[1].as_bytes()) {
+                    let mut tag_path = repo.changes_dir.clone();
+                    libpijul::changestore::filesystem::push_tag_filename(&mut tag_path, &state);
+                    let mut tag = libpijul::tag::OpenTagFile::open(&tag_path, &state)?;
+                    let mut buf = Vec::new();
+                    tag.short(&mut buf)?;
+                    o.write_u64::<BigEndian>(buf.len() as u64)?;
+                    o.write_all(&buf)?;
+                    o.flush()?;
+                }
+            } else if let Some(cap) = TAGUP.captures(&buf) {
+                if let Some(state) = Merkle::from_base32(cap[1].as_bytes()) {
+                    let channel = load_channel(&*txn.read(), &cap[2])?;
+                    let m = libpijul::pristine::current_state(&*txn.read(), &*channel.read())?;
+                    if m == state {
+                        let mut tag_path = repo.changes_dir.clone();
+                        libpijul::changestore::filesystem::push_tag_filename(&mut tag_path, &m);
+                        if std::fs::metadata(&tag_path).is_ok() {
+                            bail!("Tag for state {} already exists", m.to_base32());
+                        }
+
+                        let last_t = if let Some(n) =
+                            txn.read().reverse_log(&*channel.read(), None)?.next()
+                        {
+                            n?.0.into()
+                        } else {
+                            bail!("Channel {} is empty", &cap[2]);
+                        };
+                        if txn.read().is_tagged(&channel.read().tags, last_t)? {
+                            bail!("Current state is already tagged")
+                        }
+
+                        let size: usize = cap[3].parse().unwrap();
+                        let mut buf = vec![0; size];
+                        s.read_exact(&mut buf)?;
+
+                        let header = libpijul::tag::read_short(std::io::Cursor::new(&buf[..]), &m)?;
+
+                        let temp_path = tag_path.with_extension("tmp");
+
+                        std::fs::create_dir_all(temp_path.parent().unwrap())?;
+                        let mut w = std::fs::File::create(&temp_path)?;
+                        libpijul::tag::from_channel(&*txn.read(), &cap[2], &header, &mut w)?;
+
+                        std::fs::rename(&temp_path, &tag_path)?;
+                        txn.write()
+                            .put_tags(&mut channel.write().tags, last_t.into(), &m)?;
+                    } else {
+                        bail!("Wrong state, cannot tag")
+                    }
+                }
             } else if let Some(cap) = CHANGE.captures(&buf) {
                 let h_ = &cap[4];
                 let h = if let Some(h) = Hash::from_base32(h_.as_bytes()) {

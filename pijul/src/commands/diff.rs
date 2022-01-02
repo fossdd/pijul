@@ -25,10 +25,10 @@ pub struct Diff {
     #[clap(long = "tag")]
     pub tag: bool,
     /// Show a short version of the diff.
-    #[clap(long = "short")]
+    #[clap(short = 's', long = "short")]
     pub short: bool,
     /// Include the untracked files
-    #[clap(long = "untracked")]
+    #[clap(short = 'u', long = "untracked")]
     pub untracked: bool,
     /// Only diff those paths (files or directories). If missing, diff the entire repository.
     pub prefixes: Vec<PathBuf>,
@@ -67,6 +67,7 @@ impl Diff {
             state.record(
                 txn.clone(),
                 libpijul::Algorithm::default(),
+                self.short,
                 &libpijul::DEFAULT_SEPARATOR,
                 channel.clone(),
                 &repo.working_copy,
@@ -90,7 +91,7 @@ impl Diff {
         let rec = state.finish();
         if rec.actions.is_empty() {
             let txn = txn.read();
-            if self.short {
+            if self.short && self.untracked {
                 for path in untracked(&repo, &*txn)? {
                     writeln!(stdout, "U {}", path.to_str().unwrap())?;
                 }
@@ -221,8 +222,10 @@ impl Diff {
                 let (sp, _) = spaces.split_at(al - v.len());
                 writeln!(stdout, "{} {}", sp, k)?;
             }
-            for path in untracked(&repo, &*txn)? {
-                writeln!(stdout, "U {}", path.to_str().unwrap())?;
+            if self.untracked {
+                for path in untracked(&repo, &*txn)? {
+                    writeln!(stdout, "U {}", path.to_str().unwrap())?;
+                }
             }
         } else if self.untracked {
             for path in untracked(&repo, &*txn)? {

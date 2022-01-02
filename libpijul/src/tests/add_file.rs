@@ -566,7 +566,7 @@ fn move_back_test_(resolve_by_deleting: bool) -> Result<(), anyhow::Error> {
         )?;
         debug!("conflicts = {:?}", conflicts);
         assert_eq!(conflicts.len(), 1);
-        match conflicts[0] {
+        match conflicts.iter().next().unwrap() {
             Conflict::ZombieFile { ref path } => assert_eq!(path, "a"),
             ref c => panic!("unexpected conflict {:#?}", c),
         }
@@ -665,6 +665,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
     state.record(
         txn_alice.clone(),
         Algorithm::default(),
+        false,
         &crate::DEFAULT_SEPARATOR,
         channel.clone(),
         &repo_alice,
@@ -676,6 +677,7 @@ fn move_delete_test() -> Result<(), anyhow::Error> {
     state.record(
         txn_alice.clone(),
         Algorithm::default(),
+        false,
         &crate::DEFAULT_SEPARATOR,
         channel.clone(),
         &repo_alice,

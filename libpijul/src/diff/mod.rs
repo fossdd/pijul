@@ -58,19 +58,20 @@ impl<'a> PartialEq for Line<'a> {
 }
 impl<'a> Eq for Line<'a> {}
 
-#[derive(Debug, Error)]
-pub enum DiffError<P: std::error::Error + 'static, T: std::error::Error + 'static> {
+#[derive(Error)]
+pub enum DiffError<P: std::error::Error + 'static, T: GraphTxnT> {
     #[error(transparent)]
     Output(#[from] crate::output::FileError<P, T>),
     #[error(transparent)]
-    Txn(T),
+    Txn(#[from] TxnErr<T::GraphError>),
 }
 
-impl<T: std::error::Error + 'static, C: std::error::Error + 'static> std::convert::From<TxnErr<T>>
-    for DiffError<C, T>
-{
-    fn from(e: TxnErr<T>) -> Self {
-        DiffError::Txn(e.0)
+impl<P: std::error::Error, T: GraphTxnT> std::fmt::Debug for DiffError<P, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            DiffError::Output(e) => std::fmt::Debug::fmt(e, fmt),
+            DiffError::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+        }
     }
 }
 
@@ -131,6 +132,7 @@ impl Recorded {
         txn: &T,
         channel: &T::Channel,
         algorithm: Algorithm,
+        stop_early: bool,
         path: String,
         inode_: Inode,
         inode: Position<Option<ChangeId>>,
@@ -138,7 +140,7 @@ impl Recorded {
         b: &[u8],
         encoding: &Option<Encoding>,
         separator: &regex::bytes::Regex,
-    ) -> Result<(), DiffError<P::Error, T::GraphError>> {
+    ) -> Result<(), DiffError<P::Error, T>> {
         self.largest_file = self.largest_file.max(b.len() as u64);
         let mut d = vertex_buffer::Diff::new(inode, path.clone(), a);
         output_graph(changes, txn, channel, &mut d, a, &mut self.redundant)?;
@@ -164,7 +166,7 @@ impl Recorded {
                 trace!("b: {:?}", l)
             }
         }
-        let dd = diff::diff(&lines_a, &lines_b, algorithm);
+        let dd = diff::diff(&lines_a, &lines_b, algorithm, stop_early);
         let mut conflict_contexts = replace::ConflictContexts::new();
         for r in 0..dd.len() {
             if dd[r].old_len > 0 {

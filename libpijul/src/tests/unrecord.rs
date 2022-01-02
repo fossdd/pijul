@@ -271,7 +271,7 @@ fn zombie_(file: Option<&[u8]>) -> Result<(), anyhow::Error> {
         if conflicts.len() != 1 {
             panic!("conflicts = {:#?}", conflicts)
         }
-        match conflicts[0] {
+        match conflicts.iter().next().unwrap() {
             Conflict::ZombieFile { ref path } => assert_eq!(path, "file"),
             ref c => panic!("c = {:#?}", c),
         }
@@ -332,7 +332,9 @@ fn zombie_dir() -> Result<(), anyhow::Error> {
 
     let conflicts = output::output_repository_no_pending(
         &repo, &changes, &txn, &channel, "", true, None, 1, 0,
-    )?;
+    )?
+    .into_iter()
+    .collect::<Vec<_>>();
 
     match conflicts[0] {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "a/b"),
@@ -507,7 +509,7 @@ fn self_context() -> Result<(), anyhow::Error> {
     repo.read_file("file", &mut buf)?;
     debug!("buf = {:?}", std::str::from_utf8(&buf));
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::Order { .. } => {}
         ref c => panic!("c = {:?}", c),
     }
@@ -534,7 +536,7 @@ fn self_context() -> Result<(), anyhow::Error> {
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::Order { .. } => {}
         ref c => panic!("c = {:?}", c),
     }

@@ -108,7 +108,8 @@ impl Repository {
 
     pub fn init(
         path: Option<std::path::PathBuf>,
-        kind: Option<&String>,
+        kind: Option<&str>,
+        remote: Option<&str>,
     ) -> Result<Self, anyhow::Error> {
         let cur = if let Some(path) = path {
             path
@@ -124,6 +125,7 @@ impl Repository {
         if std::fs::metadata(&pristine_dir).is_err() {
             std::fs::create_dir_all(&pristine_dir)?;
             init_dot_ignore(cur.clone(), kind)?;
+            init_default_config(&cur, remote)?;
             let changes_dir = {
                 let mut base = cur.clone();
                 base.push(DOT_DIR);
@@ -147,12 +149,23 @@ impl Repository {
     }
 }
 
+fn init_default_config(path: &std::path::Path, remote: Option<&str>) -> Result<(), anyhow::Error> {
+    use std::io::Write;
+    let mut path = path.join(DOT_DIR);
+    path.push("config");
+    if std::fs::metadata(&path).is_err() {
+        let mut f = std::fs::File::create(&path)?;
+        if let Some(rem) = remote {
+            writeln!(f, "default_remote = {:?}", rem)?;
+        }
+        writeln!(f, "[hooks]\nrecord = []")?;
+    }
+    Ok(())
+}
+
 /// Create and populate an initial `.ignore` file for the repository.
 /// The default elements are defined in the constant [`DEFAULT_IGNORE`].
-fn init_dot_ignore(
-    base_path: std::path::PathBuf,
-    kind: Option<&String>,
-) -> Result<(), anyhow::Error> {
+fn init_dot_ignore(base_path: std::path::PathBuf, kind: Option<&str>) -> Result<(), anyhow::Error> {
     use std::io::Write;
     let dot_ignore_path = {
         let mut base = base_path.clone();
@@ -182,7 +195,7 @@ fn init_dot_ignore(
 /// .ignore entries to the default `.ignore` file.
 fn ignore_specific(
     dot_ignore: &mut std::fs::File,
-    kind: Option<&String>,
+    kind: Option<&str>,
 ) -> Result<(), anyhow::Error> {
     use std::io::Write;
     if let Some(kind) = kind {

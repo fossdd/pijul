@@ -21,6 +21,11 @@ pub struct AliveVertex {
     pub extra: Vec<(Option<SerializedEdge>, VertexId)>,
 }
 
+pub struct Redundant {
+    pub(crate) v: Vertex<ChangeId>,
+    pub(crate) e: SerializedEdge,
+}
+
 bitflags! {
     struct Flags: u8 {
         const ZOMBIE = 4;

@@ -3,13 +3,11 @@ use crate::changestore::*;
 use crate::pristine::*;
 use crate::small_string::*;
 
-pub fn undo_file_addition<
-    T: GraphMutTxnT + TreeMutTxnT<TreeError = <T as GraphTxnT>::GraphError>,
->(
+pub fn undo_file_addition<T: TreeMutTxnT>(
     txn: &mut T,
     change_id: ChangeId,
     new_vertex: &NewVertex<Option<Hash>>,
-) -> Result<(), TxnErr<T::GraphError>> {
+) -> Result<(), TreeErr<T::TreeError>> {
     if new_vertex.start == new_vertex.end {
         let pos = Position {
             change: change_id,
@@ -22,17 +20,14 @@ pub fn undo_file_addition<
     Ok(())
 }
 
-pub fn undo_file_deletion<
-    T: ChannelTxnT + TreeMutTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-    P: ChangeStore,
->(
+pub fn undo_file_deletion<T: ChannelTxnT + TreeMutTxnT + TreeTxnT, P: ChangeStore>(
     txn: &mut T,
     changes: &P,
     channel: &T::Channel,
     change_id: ChangeId,
     newedges: &EdgeMap<Option<Hash>>,
     salt: u64,
-) -> Result<(), super::UnrecordError<P::Error, T::TreeError>> {
+) -> Result<(), super::UnrecordError<P::Error, T>> {
     for e in newedges.edges.iter().rev() {
         assert!(!e.flag.contains(EdgeFlags::PARENT));
         let source =
@@ -45,17 +40,14 @@ pub fn undo_file_deletion<
     Ok(())
 }
 
-fn restore<
-    T: ChannelTxnT + TreeMutTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-    P: ChangeStore,
->(
+fn restore<T: ChannelTxnT + TreeMutTxnT + TreeTxnT, P: ChangeStore>(
     txn: &mut T,
     changes: &P,
     channel: &T::Channel,
     source: Vertex<ChangeId>,
     dest: Position<ChangeId>,
     salt: u64,
-) -> Result<(), super::UnrecordError<P::Error, T::TreeError>> {
+) -> Result<(), super::UnrecordError<P::Error, T>> {
     let mut stack = vec![(source, dest)];
     let mut return_value = Some(Inode::ROOT);
     while let Some((source, dest)) = stack.pop() {
@@ -101,17 +93,14 @@ fn restore<
     Ok(())
 }
 
-fn restore_inode<
-    T: TreeMutTxnT + GraphTxnT + TreeTxnT<TreeError = <T as GraphTxnT>::GraphError>,
-    P: ChangeStore,
->(
+fn restore_inode<T: TreeMutTxnT + GraphTxnT + TreeTxnT, P: ChangeStore>(
     txn: &mut T,
     changes: &P,
     source: Vertex<ChangeId>,
     dest: Position<ChangeId>,
     parent_inode: Inode,
     salt: u64,
-) -> Result<Option<Inode>, super::UnrecordError<P::Error, T::TreeError>> {
+) -> Result<Option<Inode>, super::UnrecordError<P::Error, T>> {
     let mut name = Vec::new();
     let FileMetadata {
         basename, metadata, ..
@@ -193,7 +182,7 @@ pub fn undo_file_reinsertion<
     txn: &mut T,
     change_id: ChangeId,
     newedges: &EdgeMap<Option<Hash>>,
-) -> Result<(), super::UnrecordError<P::Error, T::TreeError>> {
+) -> Result<(), super::UnrecordError<P::Error, T>> {
     for e in newedges.edges.iter() {
         assert!(!e.flag.contains(EdgeFlags::PARENT));
         if e.to.start_pos() == e.to.end_pos() {

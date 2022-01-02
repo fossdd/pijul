@@ -115,7 +115,7 @@ impl Key {
                 } else {
                     bail!("No such remote: {}", remote)
                 };
-                let key = super::load_key()?;
+                let (_, key) = super::load_key()?;
                 remote.prove(key).await?;
             }
             None => {}

@@ -6,10 +6,13 @@ use log::*;
 use parking_lot::RwLock;
 use serde_derive::*;
 use std::io::Read;
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+pub mod txn;
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct FileHeader {
     pub version: u64,
     pub header: u64,
@@ -20,7 +23,7 @@ pub struct FileHeader {
     pub state: Merkle,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct DbOffsets {
     pub internal: u64,
     pub external: u64,
@@ -46,12 +49,16 @@ pub enum TagError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Bincode(#[from] bincode::Error),
+    #[error("Tag file is corrupt")]
+    BincodeDe(bincode::Error),
     #[error(transparent)]
     Zstd(#[from] zstd_seekable::Error),
     #[error(transparent)]
     Txn(SanakirjaError),
     #[error("Synchronisation error")]
     Sync,
+    #[error("Wrong state, expected {}, got {}", expected.to_base32(), got.to_base32())]
+    WrongHash { expected: Merkle, got: Merkle },
 }
 
 impl From<TxnErr<SanakirjaError>> for TagError {
@@ -60,23 +67,80 @@ impl From<TxnErr<SanakirjaError>> for TagError {
     }
 }
 
+impl From<TxnErr<SanakirjaError>> for TxnErr<TagError> {
+    fn from(e: TxnErr<SanakirjaError>) -> Self {
+        TxnErr(TagError::Txn(e.0))
+    }
+}
+
 impl OpenTagFile {
-    pub fn open<P: AsRef<Path>>(p: P) -> Result<Self, TagError> {
+    pub fn open<P: AsRef<Path>>(p: P, expected: &Merkle) -> Result<Self, TagError> {
         let mut file = std::fs::File::open(p)?;
         let mut off = [0u8; std::mem::size_of::<FileHeader>() as usize];
         file.read_exact(&mut off)?;
-        let header = bincode::deserialize(&off)?;
-        Ok(OpenTagFile { header, file })
+        let header: FileHeader = bincode::deserialize(&off).map_err(TagError::BincodeDe)?;
+        if &header.state == expected {
+            Ok(OpenTagFile { header, file })
+        } else {
+            Err(TagError::WrongHash {
+                expected: *expected,
+                got: header.state,
+            })
+        }
     }
 
     pub fn header(&mut self) -> Result<crate::change::ChangeHeader, TagError> {
-        use std::io::{Seek, SeekFrom};
         self.file.seek(SeekFrom::Start(self.header.header))?;
-        Ok(bincode::deserialize_from(&mut self.file)?)
+        Ok(bincode::deserialize_from(&mut self.file).map_err(TagError::BincodeDe)?)
     }
 
     pub fn state(&self) -> Merkle {
         self.header.state.clone()
+    }
+
+    pub fn short<W: std::io::Write>(&mut self, mut w: W) -> Result<(), TagError> {
+        let mut header_buf = vec![0u8; (self.header.channel - self.header.header) as usize];
+
+        self.file.seek(SeekFrom::Start(self.header.header))?;
+        self.file.read_exact(&mut header_buf)?;
+        debug!("header_buf = {:?}", header_buf);
+        let mut off = FileHeader {
+            version: VERSION,
+            header: 0,
+            channel: 0,
+            unhashed: 0,
+            total: 0,
+            offsets: DbOffsets::default(),
+            state: self.header.state.clone(),
+        };
+        off.header = bincode::serialized_size(&off)?;
+        off.channel = off.header + header_buf.len() as u64;
+        off.total = off.channel;
+        let mut off_buf = Vec::with_capacity(off.header as usize);
+        bincode::serialize_into(&mut off_buf, &off)?;
+        w.write_all(&off_buf)?;
+        w.write_all(&header_buf)?;
+        Ok(())
+    }
+}
+
+pub fn read_short<R: std::io::Read + std::io::Seek>(
+    mut file: R,
+    expected: &Merkle,
+) -> Result<crate::change::ChangeHeader, TagError> {
+    let mut off = [0u8; std::mem::size_of::<FileHeader>() as usize];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut off)?;
+    let header: FileHeader = bincode::deserialize(&off).map_err(TagError::BincodeDe)?;
+    debug!("header = {:?}", header);
+    if &header.state == expected {
+        file.seek(SeekFrom::Start(header.header))?;
+        Ok(bincode::deserialize_from(file).map_err(TagError::BincodeDe)?)
+    } else {
+        Err(TagError::WrongHash {
+            expected: *expected,
+            got: header.state,
+        })
     }
 }
 
@@ -90,7 +154,6 @@ pub fn restore_channel(
     txn: &mut MutTxn<()>,
     name: &str,
 ) -> Result<ChannelRef<MutTxn<()>>, TagError> {
-    use std::io::{Seek, SeekFrom};
     tag.file.seek(SeekFrom::Start(tag.header.channel))?;
     let mut comp = vec![0; (tag.header.unhashed - tag.header.channel) as usize];
     debug!("tag header {:?}", tag.header);
@@ -206,7 +269,7 @@ pub fn restore_channel(
         &filetxn,
         txn,
         tag.header.offsets.tags,
-        |_, _, k: &L64, v: &SerializedHash| Ok((*k, *v)),
+        |_, _, k: &L64, v: &Pair<SerializedMerkle, SerializedMerkle>| Ok((*k, *v)),
     )?;
 
     let name = crate::small_string::SmallString::from_str(name);
@@ -330,7 +393,7 @@ pub fn from_channel<
     channel: &str,
     header: &crate::change::ChangeHeader,
     mut w: W,
-) -> Result<Hash, TagError> {
+) -> Result<Merkle, TagError> {
     let out = Vec::with_capacity(1 << 16);
     let (out, offsets, state) = compress_channel(txn, channel, out)?;
     debug!("{:?} {:?}", &out[..20], out.len());
@@ -345,25 +408,22 @@ pub fn from_channel<
         unhashed: 0,
         total: 0,
         offsets,
-        state,
+        state: state.clone(),
     };
     off.header = bincode::serialized_size(&off)?;
     off.channel = off.header + header_buf.len() as u64;
     off.unhashed = off.channel + out.len() as u64;
     off.total = off.unhashed;
-    let mut hasher = Hasher::default();
+
     let mut off_buf = Vec::with_capacity(off.header as usize);
     bincode::serialize_into(&mut off_buf, &off)?;
     debug!("off_buf = {:?}", off_buf.len());
     w.write_all(&off_buf)?;
-    hasher.update(&off_buf);
     debug!("header_buf = {:?}", header_buf.len());
     w.write_all(&header_buf)?;
-    hasher.update(&header_buf);
     debug!("out = {:?}", out.len());
     w.write_all(&out)?;
-    hasher.update(&out);
-    Ok(hasher.finish())
+    Ok(state)
 }
 
 const LEVEL: usize = 10;
@@ -460,13 +520,13 @@ fn compress_channel<
         &sender,
         &breceiver,
     )?;
-    let tags = copy::<L64, SerializedHash, UP<L64, SerializedHash>, _>(
-        &txn,
-        channel.states.db,
-        &mut new,
-        &sender,
-        &breceiver,
-    )?;
+    debug!("copying tags");
+    let tags = copy::<
+        L64,
+        Pair<SerializedMerkle, SerializedMerkle>,
+        P<L64, Pair<SerializedMerkle, SerializedMerkle>>,
+        _,
+    >(&txn, channel.tags.db, &mut new, &sender, &breceiver)?;
     std::mem::drop(sender);
     let (w, n) = t.join().unwrap()?;
     let state = crate::pristine::current_state(txn, &channel)?;

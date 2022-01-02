@@ -644,8 +644,10 @@ fn print_contents<W: WriteChangeLine>(
             writeln!(w, "\\")?;
         }
         Ok(())
-    } else {
+    } else if contents.len() <= 4096 {
         writeln!(w, "{}b{}", prefix, data_encoding::BASE64.encode(contents))
+    } else {
+        Ok(())
     }
 }
 

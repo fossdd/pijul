@@ -154,12 +154,21 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
         Ok(())
     }
 
-    fn output_conflict_marker(&mut self, s: &str) -> Result<(), std::io::Error> {
+    fn output_conflict_marker(
+        &mut self,
+        marker: &str,
+        id: usize,
+        sides: &[&Hash],
+    ) -> Result<(), std::io::Error> {
         if !self.new_line {
-            self.w.write_all(s.as_bytes())?;
-        } else {
-            self.w.write_all(&s.as_bytes()[1..])?;
+            self.w.write_all(b"\n")?;
         }
+        write!(self.w, "{} {}", marker, id)?;
+        for side in sides {
+            let h = side.to_base32();
+            write!(self.w, " [{}]", h.split_at(8).0)?;
+        }
+        self.w.write_all(b"\n")?;
         Ok(())
     }
 }

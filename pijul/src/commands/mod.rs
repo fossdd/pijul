@@ -77,6 +77,7 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
     builder.record(
         txn.clone(),
         libpijul::Algorithm::default(),
+        false,
         &libpijul::DEFAULT_SEPARATOR,
         channel.clone(),
         &repo.working_copy,
@@ -148,11 +149,13 @@ fn pager() -> bool {
     false
 }
 
+use crate::remote::CS;
+
 /// Make a "changelist", i.e. a list of patches that can be edited in
 /// a text editor.
 fn make_changelist<S: libpijul::changestore::ChangeStore>(
     changes: &S,
-    pullable: &[libpijul::Hash],
+    pullable: &[CS],
     verb: &str,
 ) -> Result<Vec<u8>, anyhow::Error> {
     use libpijul::Base32;
@@ -174,19 +177,27 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
             writeln!(v, "").unwrap();
         }
         first_p = false;
-        writeln!(v, "{}\n", p.to_base32()).unwrap();
-        let deps = changes.get_dependencies(&p)?;
-        if !deps.is_empty() {
-            write!(v, "  Dependencies:").unwrap();
-            for d in deps {
-                write!(v, " {}", d.to_base32()).unwrap();
+        let header = match p {
+            CS::Change(p) => {
+                writeln!(v, "{}\n", p.to_base32()).unwrap();
+                let deps = changes.get_dependencies(&p)?;
+                if !deps.is_empty() {
+                    write!(v, "  Dependencies:").unwrap();
+                    for d in deps {
+                        write!(v, " {}", d.to_base32()).unwrap();
+                    }
+                    writeln!(v).unwrap();
+                }
+                changes.get_header(&p)?
             }
-            writeln!(v).unwrap();
-        }
-        let change = changes.get_header(&p)?;
+            CS::State(p) => {
+                writeln!(v, "t{}\n", p.to_base32()).unwrap();
+                changes.get_tag_header(&p)?
+            }
+        };
         write!(v, "  Author: [").unwrap();
         let mut first = true;
-        for a in change.authors.iter() {
+        for a in header.authors.iter() {
             if !first {
                 write!(v, ", ").unwrap();
             }
@@ -198,11 +209,11 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
             }
         }
         writeln!(v, "]").unwrap();
-        writeln!(v, "  Date: {}\n", change.timestamp).unwrap();
-        for l in change.message.lines() {
+        writeln!(v, "  Date: {}\n", header.timestamp).unwrap();
+        for l in header.message.lines() {
             writeln!(v, "    {}", l).unwrap();
         }
-        if let Some(desc) = change.description {
+        if let Some(desc) = header.description {
             writeln!(v).unwrap();
             for l in desc.lines() {
                 writeln!(v, "    {}", l).unwrap();
@@ -215,11 +226,22 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
 /// Parses a list of hashes from a slice of bytes.
 /// Everything that is not a line consisting of a
 /// valid hash and nothing else will be ignored.
-fn parse_changelist(o: &[u8]) -> Vec<libpijul::Hash> {
+fn parse_changelist(o: &[u8]) -> Vec<crate::remote::CS> {
     use libpijul::Base32;
     if let Ok(o) = std::str::from_utf8(o) {
         o.lines()
-            .filter_map(|l| libpijul::Hash::from_base32(l.as_bytes()))
+            .filter_map(|l| {
+                ::log::debug!(
+                    "l = {:?} {:?}",
+                    l,
+                    libpijul::Merkle::from_base32(l.as_bytes())
+                );
+                if l.starts_with("t") {
+                    libpijul::Merkle::from_base32(&l.as_bytes()[1..]).map(crate::remote::CS::State)
+                } else {
+                    libpijul::Hash::from_base32(l.as_bytes()).map(crate::remote::CS::Change)
+                }
+            })
             .collect()
     } else {
         Vec::new()
@@ -238,10 +260,11 @@ pub struct Identity {
     pub origin: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(default)]
     pub last_modified: u64,
 }
 
-fn load_key() -> Result<libpijul::key::SKey, anyhow::Error> {
+fn load_key() -> Result<(libpijul::key::SecretKey, libpijul::key::SKey), anyhow::Error> {
     if let Some(mut dir) = crate::config::global_config_dir() {
         dir.push("secretkey.json");
         if let Ok(key) = std::fs::File::open(&dir) {
@@ -254,7 +277,8 @@ fn load_key() -> Result<libpijul::key::SKey, anyhow::Error> {
             } else {
                 None
             };
-            Ok(k.load(pass.as_deref())?)
+            let sk = k.load(pass.as_deref())?;
+            Ok((k, sk))
         } else {
             bail!("Secret key not found, please use `pijul key generate` and try again")
         }
@@ -263,8 +287,10 @@ fn load_key() -> Result<libpijul::key::SKey, anyhow::Error> {
     }
 }
 
-fn find_hash(path: &mut std::path::PathBuf, hash: &str) -> Result<libpijul::Hash, anyhow::Error> {
-    use libpijul::Base32;
+fn find_hash<B: libpijul::Base32>(
+    path: &mut std::path::PathBuf,
+    hash: &str,
+) -> Result<B, anyhow::Error> {
     if hash.len() < 2 {
         bail!("Ambiguous hash, need at least two characters")
     }
@@ -292,7 +318,7 @@ fn find_hash(path: &mut std::path::PathBuf, hash: &str) -> Result<libpijul::Hash
             r.truncate(i)
         }
         let f = format!("{}{}", a, r);
-        if let Some(h) = libpijul::Hash::from_base32(f.as_bytes()) {
+        if let Some(h) = B::from_base32(f.as_bytes()) {
             return Ok(h);
         }
     }

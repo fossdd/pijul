@@ -74,6 +74,7 @@ fn bin_diff_test() -> Result<(), anyhow::Error> {
             &*txn.read(),
             &*channel.read(),
             crate::record::Algorithm::Myers,
+            false,
             String::new(),
             Inode::ROOT,
             vertex.to_option(),

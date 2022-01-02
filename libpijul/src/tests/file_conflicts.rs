@@ -74,7 +74,7 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
         1,
         0,
     )?;
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::MultipleNames { .. } => {}
         ref c => panic!("{:#?}", c),
     }
@@ -121,7 +121,7 @@ fn same_file_(file: &str, alice: &str, bob: &str) -> Result<(), anyhow::Error> {
         1,
         0,
     )?;
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::MultipleNames { .. } => {}
         ref c => panic!("{:#?}", c),
     }
@@ -915,7 +915,9 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
         None,
         1,
         0,
-    )?;
+    )?
+    .into_iter()
+    .collect::<Vec<_>>();
     let files_alice = repo_alice.list_files();
     assert_eq!(files_alice, vec!["a", "a/b", "a/b/c", "a/b/c/file"]);
     let expected = [
@@ -961,9 +963,11 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
         None,
         1,
         0,
-    )?;
+    )?
+    .into_iter()
+    .collect::<Vec<_>>();
 
-    assert_eq!(conflicts, expected);
+    assert_eq!(&conflicts[..], &expected[..]);
 
     apply::apply_change_arc(&changes, &txn_bob, &channel_bob, &alice_solution)?;
     let conflicts = output::output_repository_no_pending(
@@ -995,8 +999,10 @@ fn double_zombie_file() -> Result<(), anyhow::Error> {
         None,
         1,
         0,
-    )?;
-    assert_eq!(conflicts, expected);
+    )?
+    .into_iter()
+    .collect::<Vec<_>>();
+    assert_eq!(&conflicts[..], &expected[..]);
     debug!("charlie applies Alice's solution");
     apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &alice_solution)?;
     let conflicts = output::output_repository_no_pending(
@@ -1079,7 +1085,7 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "a/b/c/alice"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1164,7 +1170,7 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
         0,
     )?;
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "a/b/c/alice"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1184,7 +1190,7 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
         0,
     )?;
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert!(path == "a/b/c/file" || path == "a/b/c/alice"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1204,7 +1210,7 @@ fn zombie_file_post_resolve() -> Result<(), anyhow::Error> {
         0,
     )?;
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert!(path == "a/b/c/file" || path == "a/b/c/alice"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1276,7 +1282,7 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "alice/file"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1320,7 +1326,7 @@ fn move_vs_delete_test() -> Result<(), anyhow::Error> {
         0,
     )?;
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "alice/file"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1510,7 +1516,7 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
     )?;
     debug!("conflicts = {:#?}", conflicts);
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "dir"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }
@@ -1548,7 +1554,7 @@ fn move_into_deleted_test() -> Result<(), anyhow::Error> {
         0,
     )?;
     assert_eq!(conflicts.len(), 1);
-    match conflicts[0] {
+    match conflicts.iter().next().unwrap() {
         Conflict::ZombieFile { ref path } => assert_eq!(path, "dir"),
         ref c => panic!("unexpected conflict {:#?}", c),
     }

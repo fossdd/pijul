@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::repository::*;
 use anyhow::bail;
 use clap::Parser;
-use libpijul::MutTxnT;
+use libpijul::{ChannelMutTxnT, MutTxnT};
 use log::debug;
 
 #[derive(Parser, Debug)]
@@ -72,7 +72,15 @@ impl Clone {
         })
         .unwrap_or(());
 
-        let mut repo = Repository::init(Some(path), None)?;
+        let remote_normalised: std::borrow::Cow<str> = match remote {
+            crate::remote::RemoteRepo::Local(_) => std::fs::canonicalize(&self.remote)?
+                .to_str()
+                .unwrap()
+                .to_string()
+                .into(),
+            _ => self.remote.as_str().into(),
+        };
+        let mut repo = Repository::init(Some(path), None, Some(&remote_normalised))?;
         let txn = repo.pristine.arc_txn_begin()?;
         let mut channel = txn.write().open_or_create_channel(&self.channel)?;
         if let Some(ref change) = self.change {
@@ -109,6 +117,14 @@ impl Clone {
         )?;
         remote.finish().await?;
         txn.write().set_current_channel(&self.channel)?;
+
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u64;
+        txn.write()
+            .touch_channel(&mut *channel.write(), Some(time * 1000 + 1));
+
         txn.commit()?;
         std::mem::forget(repo_path);
         Ok(())

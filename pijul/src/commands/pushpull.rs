@@ -14,7 +14,7 @@ use regex::Regex;
 
 use crate::config::Direction;
 use crate::progress::PROGRESS;
-use crate::remote::{PushDelta, RemoteDelta, RemoteRepo};
+use crate::remote::{PushDelta, RemoteDelta, RemoteRepo, CS};
 use crate::repository::Repository;
 
 #[derive(Parser, Debug)]
@@ -91,6 +91,9 @@ pub struct Push {
     /// Push to this remote channel instead of the remote's default channel
     #[clap(long = "to-channel")]
     to_channel: Option<String>,
+    /// Push tags instead of regular changes.
+    #[clap(long = "tag")]
+    is_tag: bool,
     /// Push only these changes
     #[clap(last = true)]
     changes: Vec<String>,
@@ -125,6 +128,9 @@ pub struct Pull {
     /// Pull from this remote channel
     #[clap(long = "from-channel")]
     from_channel: Option<String>,
+    /// Pull tags instead of regular changes.
+    #[clap(long = "tag")]
+    is_tag: bool,
     /// Pull changes from the local repository, not necessarily from a channel
     #[clap(last = true)]
     changes: Vec<String>, // For local changes only, can't be symmetric.
@@ -144,6 +150,7 @@ impl Push {
         channel: &mut ChannelRef<MutTxn<()>>,
         repo: &Repository,
         remote: &mut RemoteRepo,
+        is_tag: bool,
     ) -> Result<PushDelta, anyhow::Error> {
         let remote_delta = remote
             .update_changelist_pushpull(
@@ -153,6 +160,7 @@ impl Push {
                 Some(self.force_cache),
                 repo,
                 self.changes.as_slice(),
+                is_tag,
             )
             .await?;
         if let RemoteRepo::LocalChannel(ref remote_channel) = remote {
@@ -223,7 +231,13 @@ impl Push {
             unknown_changes,
             ..
         } = self
-            .to_upload(&mut *txn.write(), &mut channel, &repo, &mut remote)
+            .to_upload(
+                &mut *txn.write(),
+                &mut channel,
+                &repo,
+                &mut remote,
+                self.is_tag,
+            )
             .await?;
 
         debug!("to_upload = {:?}", to_upload);
@@ -238,14 +252,14 @@ impl Push {
         notify_unknown_changes(unknown_changes.as_slice());
 
         let to_upload = if !self.changes.is_empty() {
-            let mut u: Vec<libpijul::Hash> = Vec::new();
+            let mut u: Vec<CS> = Vec::new();
             let mut not_found = Vec::new();
             let txn = txn.read();
             for change in self.changes.iter() {
                 match txn.hash_from_prefix(change) {
                     Ok((hash, _)) => {
-                        if to_upload.contains(&hash) {
-                            u.push(hash);
+                        if to_upload.contains(&CS::Change(hash)) {
+                            u.push(CS::Change(hash));
                         }
                     }
                     Err(_) => {
@@ -256,10 +270,24 @@ impl Push {
                 }
             }
 
-            u.sort_by(|a, b| {
-                let na = txn.get_revchanges(&channel, a).unwrap().unwrap();
-                let nb = txn.get_revchanges(&channel, b).unwrap().unwrap();
-                na.cmp(&nb)
+            u.sort_by(|a, b| match (a, b) {
+                (CS::Change(a), CS::Change(b)) => {
+                    let na = txn.get_revchanges(&channel, a).unwrap().unwrap();
+                    let nb = txn.get_revchanges(&channel, b).unwrap().unwrap();
+                    na.cmp(&nb)
+                }
+                (CS::State(a), CS::State(b)) => {
+                    let na = txn
+                        .channel_has_state(txn.states(&*channel.read()), &a.into())
+                        .unwrap()
+                        .unwrap();
+                    let nb = txn
+                        .channel_has_state(txn.states(&*channel.read()), &b.into())
+                        .unwrap()
+                        .unwrap();
+                    na.cmp(&nb)
+                }
+                _ => unreachable!(),
             });
 
             if !not_found.is_empty() {
@@ -313,6 +341,7 @@ impl Pull {
         channel: &mut ChannelRef<MutTxn<()>>,
         repo: &mut Repository,
         remote: &mut RemoteRepo,
+        is_tag: bool,
     ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
         let force_cache = if self.force_cache {
             Some(self.force_cache)
@@ -327,6 +356,7 @@ impl Pull {
                 force_cache,
                 repo,
                 self.changes.as_slice(),
+                is_tag,
             )
             .await?;
         let to_download = remote
@@ -393,7 +423,13 @@ impl Pull {
             remote_unrecs,
             ..
         } = self
-            .to_download(&mut *txn.write(), &mut channel, &mut repo, &mut remote)
+            .to_download(
+                &mut *txn.write(),
+                &mut channel,
+                &mut repo,
+                &mut remote,
+                self.is_tag,
+            )
             .await?;
 
         let hash = super::pending(txn.clone(), &mut channel, &mut repo)?;
@@ -440,7 +476,22 @@ impl Pull {
             let mut channel = channel.write();
             let mut txn = txn.write();
             for h in to_download.iter() {
-                txn.apply_change_rec_ws(&repo.changes, &mut channel, h, &mut ws)?;
+                match h {
+                    CS::Change(h) => {
+                        txn.apply_change_rec_ws(&repo.changes, &mut channel, h, &mut ws)?;
+                    }
+                    CS::State(s) => {
+                        if let Some(n) = txn.channel_has_state(&channel.states, &s.into())? {
+                            txn.put_tags(&mut channel.tags, n.into(), s)?;
+                        } else {
+                            bail!(
+                                "Cannot add tag {}: channel {:?} does not have that state",
+                                s.to_base32(),
+                                channel.name
+                            )
+                        }
+                    }
+                }
                 PROGRESS.borrow_mut().unwrap()[n].incr()
             }
         }
@@ -456,21 +507,29 @@ impl Pull {
         let mut touched = HashSet::new();
         let txn_ = txn.read();
         for d in to_download.iter() {
-            if let Some(int) = txn_.get_internal(&d.into())? {
-                for inode in txn_.iter_rev_touched(int)? {
-                    let (int_, inode) = inode?;
-                    if int_ < int {
-                        continue;
-                    } else if int_ > int {
-                        break;
+            match d {
+                CS::Change(d) => {
+                    if let Some(int) = txn_.get_internal(&d.into())? {
+                        for inode in txn_.iter_rev_touched(int)? {
+                            let (int_, inode) = inode?;
+                            if int_ < int {
+                                continue;
+                            } else if int_ > int {
+                                break;
+                            }
+                            let ext = libpijul::pristine::Position {
+                                change: txn_.get_external(&inode.change)?.unwrap().into(),
+                                pos: inode.pos,
+                            };
+                            if inodes.is_empty() || inodes.contains(&ext) {
+                                touched.insert(*inode);
+                            }
+                        }
                     }
-                    let ext = libpijul::pristine::Position {
-                        change: txn_.get_external(&inode.change)?.unwrap().into(),
-                        pos: inode.pos,
-                    };
-                    if inodes.is_empty() || inodes.contains(&ext) {
-                        touched.insert(*inode);
-                    }
+                }
+                CS::State(_) => {
+                    // No need to do anything for now here, we don't
+                    // output after downloading a tag.
                 }
             }
         }
@@ -490,7 +549,7 @@ impl Pull {
                     }
                 }
             }
-            if touched_paths.is_empty() {
+            if touched_paths.is_empty() && !self.is_tag {
                 touched_paths.insert(String::from(""));
             }
             let mut last = None;
@@ -540,9 +599,9 @@ impl Pull {
 
 fn complete_deps<C: ChangeStore>(
     c: &C,
-    original: &[libpijul::Hash],
-    now: &[libpijul::Hash],
-) -> Result<Vec<libpijul::Hash>, anyhow::Error> {
+    original: &[CS],
+    now: &[CS],
+) -> Result<Vec<CS>, anyhow::Error> {
     let original: HashSet<_> = original.iter().collect();
     let mut now_ = HashSet::with_capacity(original.len());
     let mut result = Vec::with_capacity(original.len());
@@ -550,10 +609,17 @@ fn complete_deps<C: ChangeStore>(
     while let Some(h) = stack.pop() {
         stack.push(h);
         let l0 = stack.len();
-        for d in c.get_dependencies(&h)? {
-            if original.get(&d).is_some() && now_.get(&d).is_none() {
+        let hh = if let CS::Change(h) = h {
+            h
+        } else {
+            stack.pop();
+            result.push(h);
+            continue;
+        };
+        for d in c.get_dependencies(&hh)? {
+            if original.get(&CS::Change(d)).is_some() && now_.get(&CS::Change(d)).is_none() {
                 // The user missed a dep.
-                stack.push(d);
+                stack.push(CS::Change(d));
             }
         }
         if stack.len() == l0 {
@@ -567,17 +633,14 @@ fn complete_deps<C: ChangeStore>(
     Ok(result)
 }
 
-fn check_deps<C: ChangeStore>(
-    c: &C,
-    original: &[libpijul::Hash],
-    now: &[libpijul::Hash],
-) -> Result<(), anyhow::Error> {
+fn check_deps<C: ChangeStore>(c: &C, original: &[CS], now: &[CS]) -> Result<(), anyhow::Error> {
     let original_: HashSet<_> = original.iter().collect();
     let now_: HashSet<_> = now.iter().collect();
     for n in now {
         // check that all of `now`'s deps are in now or not in original
+        let n = if let CS::Change(n) = n { n } else { continue };
         for d in c.get_dependencies(n)? {
-            if original_.get(&d).is_some() && now_.get(&d).is_none() {
+            if original_.get(&CS::Change(d)).is_some() && now_.get(&CS::Change(d)).is_none() {
                 bail!("Missing dependency: {:?}", n)
             }
         }
@@ -585,7 +648,7 @@ fn check_deps<C: ChangeStore>(
     Ok(())
 }
 
-fn notify_remote_unrecords(repo: &Repository, remote_unrecs: &[(u64, Hash)]) {
+fn notify_remote_unrecords(repo: &Repository, remote_unrecs: &[(u64, crate::remote::CS)]) {
     use std::fmt::Write;
     if !remote_unrecs.is_empty() {
         let mut s = format!(
@@ -594,11 +657,21 @@ fn notify_remote_unrecords(repo: &Repository, remote_unrecs: &[(u64, Hash)]) {
             # your push will continue when it is closed.\n"
         );
         for (_, hash) in remote_unrecs {
-            let header = &repo.changes.get_change(hash).unwrap().header;
+            let header = match hash {
+                CS::Change(hash) => repo.changes.get_header(hash).unwrap(),
+                CS::State(hash) => repo.changes.get_tag_header(hash).unwrap(),
+            };
             s.push_str("#\n");
-            writeln!(&mut s, "#    {}", header.message).expect("Infallible write to String");
-            writeln!(&mut s, "#    {}", header.timestamp).expect("Infallible write to String");
-            writeln!(&mut s, "#    {}", hash.to_base32()).expect("Infallible write to String");
+            writeln!(&mut s, "#    {}", header.message).unwrap();
+            writeln!(&mut s, "#    {}", header.timestamp).unwrap();
+            match hash {
+                CS::Change(hash) => {
+                    writeln!(&mut s, "#    {}", hash.to_base32()).unwrap();
+                }
+                CS::State(hash) => {
+                    writeln!(&mut s, "#    {}", hash.to_base32()).unwrap();
+                }
+            }
         }
         if let Err(e) = edit::edit(s.as_str()) {
             log::error!(
@@ -609,7 +682,7 @@ fn notify_remote_unrecords(repo: &Repository, remote_unrecs: &[(u64, Hash)]) {
     }
 }
 
-fn notify_unknown_changes(unknown_changes: &[Hash]) {
+fn notify_unknown_changes(unknown_changes: &[crate::remote::CS]) {
     use std::fmt::Write;
     if unknown_changes.is_empty() {
         return;
@@ -619,7 +692,11 @@ fn notify_unknown_changes(unknown_changes: &[Hash]) {
         );
         let rest_len = unknown_changes.len().saturating_sub(5);
         for hash in unknown_changes.iter().take(5) {
-            writeln!(&mut s, "#     {}", hash.to_base32()).expect("Infallible write to String");
+            let hash = match hash {
+                CS::Change(hash) => hash.to_base32(),
+                CS::State(hash) => hash.to_base32(),
+            };
+            writeln!(&mut s, "#     {}", hash).expect("Infallible write to String");
         }
         if rest_len > 0 {
             let plural = if rest_len == 1 { "" } else { "s" };

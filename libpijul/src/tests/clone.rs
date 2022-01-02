@@ -32,9 +32,8 @@ fn clone_simple() -> Result<(), anyhow::Error> {
     let mut channel_changes = Vec::new();
     {
         let txn = env.txn_begin()?;
-        for channel in txn.iter_channels("").unwrap() {
-            let channel = channel.unwrap();
-            for x in txn.log(&channel.1.read(), 0).unwrap() {
+        for channel in txn.channels("")? {
+            for x in txn.log(&channel.read(), 0).unwrap() {
                 let (_, (i, _)) = x.unwrap();
                 channel_changes.push(i.into())
             }

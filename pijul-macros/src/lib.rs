@@ -55,14 +55,20 @@ pub fn sanakirja_table_get(input: proc_macro::TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
     proc_macro::TokenStream::from(quote! {
-        fn #name_get <'txn> (&'txn self, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, TxnErr<Self::#error>> {
+        fn #name_get <'txn> (&'txn self, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, #txnerr<Self::#error>> {
             match ::sanakirja::btree::get(&self.txn, &self.#name, key, value) {
                 Ok(Some((k, v))) if k == key => Ok(Some(v)),
                 Ok(_) => Ok(None),
                 Err(e) => {
                     error!("{:?}", e);
-                    Err(TxnErr(SanakirjaError::PristineCorrupt))
+                    Err(#txnerr(SanakirjaError::PristineCorrupt))
                 }
             }
         }
@@ -87,15 +93,21 @@ pub fn sanakirja_get(input: proc_macro::TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
     assert!(input_iter.next().is_none());
     proc_macro::TokenStream::from(quote! {
-        fn #name_get<'txn>(&'txn self, db: &Self::#name_capital, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, TxnErr<Self::#error>> {
+        fn #name_get<'txn>(&'txn self, db: &Self::#name_capital, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, #txnerr<Self::#error>> {
             match ::sanakirja::btree::get(&self.txn, db, key, value) {
                 Ok(Some((k, v))) if k == key => Ok(Some(v)),
                 Ok(_) => Ok(None),
                 Err(e) => {
                     error!("{:?}", e);
-                    Err(TxnErr(SanakirjaError::PristineCorrupt))
+                    Err(#txnerr(SanakirjaError::PristineCorrupt))
                 }
             }
         }
@@ -119,9 +131,15 @@ pub fn table_get(input: proc_macro::TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
     assert!(input_iter.next().is_none());
     proc_macro::TokenStream::from(quote! {
-        fn #name_get<'txn>(&'txn self, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, TxnErr<Self::#error>>;
+        fn #name_get<'txn>(&'txn self, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, #txnerr<Self::#error>>;
     })
 }
 
@@ -143,9 +161,15 @@ pub fn get(input: proc_macro::TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
     assert!(input_iter.next().is_none());
     proc_macro::TokenStream::from(quote! {
-        fn #name_get<'txn>(&'txn self, db: &Self::#name_capital, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, TxnErr<Self::#error>>;
+        fn #name_get<'txn>(&'txn self, db: &Self::#name_capital, key: &#key, value: Option<&#value>) -> Result<Option<&'txn #value>, #txnerr<Self::#error>>;
     })
 }
 
@@ -232,14 +256,20 @@ fn cursor_(input: proc_macro::TokenStream, rev: bool, iter: bool, borrow: bool) 
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
 
     let cursor_type = if rev {
         quote! {
-            Result<crate::pristine::RevCursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, TxnErr<Self::#error>>
+            Result<crate::pristine::RevCursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, #txnerr<Self::#error>>
         }
     } else {
         quote! {
-            Result<crate::pristine::Cursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, TxnErr<Self::#error>>
+            Result<crate::pristine::Cursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, #txnerr<Self::#error>>
         }
     };
     let def = if rev {
@@ -250,11 +280,11 @@ fn cursor_(input: proc_macro::TokenStream, rev: bool, iter: bool, borrow: bool) 
             fn #name_next <'txn> (
                 &'txn self,
                 cursor: &mut Self::#cursor_name,
-            ) -> Result<Option<(&'txn #key, &'txn #value)>, TxnErr<Self::#error>>;
+            ) -> Result<Option<(&'txn #key, &'txn #value)>, #txnerr<Self::#error>>;
             fn #name_prev <'txn> (
                 &'txn self,
                 cursor: &mut Self::#cursor_name,
-            ) -> Result<Option<(&'txn #key, &'txn #value)>, TxnErr<Self::#error>>;
+            ) -> Result<Option<(&'txn #key, &'txn #value)>, #txnerr<Self::#error>>;
         }
     };
     let borrow = if borrow {
@@ -263,7 +293,7 @@ fn cursor_(input: proc_macro::TokenStream, rev: bool, iter: bool, borrow: bool) 
             txn: RT,
             db: &Self::#name_capital,
             pos: Option<(&#key, Option<&#value>)>,
-        ) -> Result<crate::pristine::Cursor<Self, RT, Self::#cursor_name, #key, #value>, TxnErr<Self::#error>>;
+        ) -> Result<crate::pristine::Cursor<Self, RT, Self::#cursor_name, #key, #value>, #txnerr<Self::#error>>;
         }
     } else {
         quote! {}
@@ -349,13 +379,20 @@ fn sanakirja_cursor_(
     let key = proc_macro2::TokenStream::from_iter(next(&mut input_iter).into_iter());
     let value = proc_macro2::TokenStream::from_iter(next(&mut input_iter).into_iter());
 
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
+
     let iter = if iter {
         quote! {
             fn #name_iter <'txn> (
                 &'txn self,
                 k: &#key,
                 v: Option<&#value>
-            ) -> Result<Cursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, TxnErr<SanakirjaError>> {
+            ) -> Result<Cursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, #txnerr<SanakirjaError>> {
                 self.#name_cursor(&self.#name, Some((k, v)))
             }
         }
@@ -369,7 +406,7 @@ fn sanakirja_cursor_(
                 txn: RT,
                 db: &Self::#name_capital,
                 pos: Option<(&#key, Option<&#value>)>,
-            ) -> Result<Cursor<Self, RT, Self::#cursor_name, #key, #value>, TxnErr<SanakirjaError>> {
+            ) -> Result<Cursor<Self, RT, Self::#cursor_name, #key, #value>, #txnerr<SanakirjaError>> {
                 let mut cursor = ::sanakirja::btree::cursor::Cursor::new(&txn.txn, &db)?;
                 if let Some((k, v)) = pos {
                     cursor.set(&txn.txn, k, v)?;
@@ -393,7 +430,7 @@ fn sanakirja_cursor_(
                 &'txn self,
                 db: &Self::#name_capital,
                 pos: Option<(&#key, Option<&#value>)>,
-            ) -> Result<super::RevCursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, TxnErr<SanakirjaError>> {
+            ) -> Result<super::RevCursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, #txnerr<SanakirjaError>> {
                 let mut cursor = ::sanakirja::btree::cursor::Cursor::new(&self.txn, &db)?;
                 if let Some((k, v)) = pos {
                     cursor.set(&self.txn, k, v)?;
@@ -415,7 +452,7 @@ fn sanakirja_cursor_(
                 &'txn self,
                 db: &Self::#name_capital,
                 pos: Option<(&#key, Option<&#value>)>,
-            ) -> Result<Cursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, TxnErr<SanakirjaError>> {
+            ) -> Result<Cursor<Self, &'txn Self, Self::#cursor_name, #key, #value>, #txnerr<SanakirjaError>> {
                 let mut cursor = ::sanakirja::btree::cursor::Cursor::new(&self.txn, &db)?;
                 if let Some((k, v)) = pos {
                     cursor.set(&self.txn, k, v)?;
@@ -432,22 +469,22 @@ fn sanakirja_cursor_(
             fn #name_next <'txn> (
                 &'txn self,
                 cursor: &mut Self::#cursor_name,
-            ) -> Result<Option<(&'txn #key, &'txn #value)>, TxnErr<SanakirjaError>> {
+            ) -> Result<Option<(&'txn #key, &'txn #value)>, #txnerr<SanakirjaError>> {
                 let x = if let Ok(x) = cursor.next(&self.txn) {
                     x
                 } else {
-                    return Err(TxnErr(SanakirjaError::PristineCorrupt))
+                    return Err(#txnerr(SanakirjaError::PristineCorrupt))
                 };
                 Ok(x)
             }
             fn #name_prev <'txn> (
                 &'txn self,
                 cursor: &mut Self::#cursor_name,
-            ) -> Result<Option<(&'txn #key, &'txn #value)>, TxnErr<SanakirjaError>> {
-                let x = if let Ok(x) = cursor.next(&self.txn) {
+            ) -> Result<Option<(&'txn #key, &'txn #value)>, #txnerr<SanakirjaError>> {
+                let x = if let Ok(x) = cursor.prev(&self.txn) {
                     x
                 } else {
-                    return Err(TxnErr(SanakirjaError::PristineCorrupt))
+                    return Err(#txnerr(SanakirjaError::PristineCorrupt))
                 };
                 Ok(x)
             }
@@ -496,12 +533,19 @@ fn initialized_cursor_(input: proc_macro::TokenStream, rev: bool) -> TokenStream
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
 
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
+
     assert!(input_iter.next().is_none());
     if rev {
         proc_macro::TokenStream::from(quote! {
             impl<'a, T: #txnt> Iterator for crate::pristine::RevCursor<T, &'a T, T::#cursor_name, #key, #value>
             {
-                type Item = Result<(&'a #key, &'a #value), TxnErr<T::#error>>;
+                type Item = Result<(&'a #key, &'a #value), #txnerr<T::#error>>;
                 fn next(&mut self) -> Option<Self::Item> {
                     match self.txn.#name_prev(&mut self.cursor) {
                         Ok(Some(x)) => Some(Ok(x)),
@@ -516,7 +560,7 @@ fn initialized_cursor_(input: proc_macro::TokenStream, rev: bool) -> TokenStream
             impl<'a, T: #txnt>
                 crate::pristine::Cursor<T, &'a T, T::#cursor_name, #key, #value>
             {
-                pub fn prev(&mut self) -> Option<Result<(&'a #key, &'a #value), TxnErr<T::#error>>> {
+                pub fn prev(&mut self) -> Option<Result<(&'a #key, &'a #value), #txnerr<T::#error>>> {
                     match self.txn.#name_prev(&mut self.cursor) {
                         Ok(Some(x)) => Some(Ok(x)),
                         Ok(None) => None,
@@ -526,7 +570,7 @@ fn initialized_cursor_(input: proc_macro::TokenStream, rev: bool) -> TokenStream
             }
             impl<'a, T: #txnt> Iterator for crate::pristine::Cursor<T, &'a T, T::#cursor_name, #key, #value>
             {
-                type Item = Result<(&'a #key, &'a #value), TxnErr<T::#error>>;
+                type Item = Result<(&'a #key, &'a #value), #txnerr<T::#error>>;
                 fn next(&mut self) -> Option<Self::Item> {
                     match self.txn.#name_next(&mut self.cursor) {
                         Ok(Some(x)) => Some(Ok(x)),
@@ -559,18 +603,25 @@ pub fn put_del(input: proc_macro::TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
     assert!(input_iter.next().is_none());
     proc_macro::TokenStream::from(quote! {
         fn #put(
             &mut self,
             k: &#key,
             e: &#value,
-        ) -> Result<bool, TxnErr<Self::#error>>;
+        ) -> Result<bool, #txnerr<Self::#error>>;
         fn #del(
             &mut self,
             k: &#key,
             e: Option<&#value>,
-        ) -> Result<bool, TxnErr<Self::#error>>;
+        ) -> Result<bool, #txnerr<Self::#error>>;
     })
 }
 
@@ -595,21 +646,28 @@ pub fn sanakirja_put_del(input: proc_macro::TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::from_iter(error.into_iter())
     };
+
+    let txnerr = next(&mut input_iter);
+    let txnerr = if txnerr.is_empty() {
+        quote! { TxnErr }
+    } else {
+        proc_macro2::TokenStream::from_iter(txnerr.into_iter())
+    };
     assert!(input_iter.next().is_none());
     proc_macro::TokenStream::from(quote! {
         fn #put(
             &mut self,
             k: &#key,
             v: &#value,
-        ) -> Result<bool, TxnErr<Self::#error>> {
-            Ok(::sanakirja::btree::put(&mut self.txn, &mut self.#name, k, v).map_err(TxnErr)?)
+        ) -> Result<bool, #txnerr<Self::#error>> {
+            Ok(::sanakirja::btree::put(&mut self.txn, &mut self.#name, k, v).map_err(#txnerr)?)
         }
         fn #del(
             &mut self,
             k: &#key,
             v: Option<&#value>,
-        ) -> Result<bool, TxnErr<Self::#error>> {
-            Ok(::sanakirja::btree::del(&mut self.txn, &mut self.#name, k, v).map_err(TxnErr)?)
+        ) -> Result<bool, #txnerr<Self::#error>> {
+            Ok(::sanakirja::btree::del(&mut self.txn, &mut self.#name, k, v).map_err(#txnerr)?)
         }
     })
 }

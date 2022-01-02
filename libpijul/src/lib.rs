@@ -108,7 +108,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         rng: R,
     ) -> Result<
         Option<(pristine::Hash, u64, pristine::Merkle)>,
-        crate::apply::ApplyError<C::Error, Self::GraphError>,
+        crate::apply::ApplyError<C::Error, Self>,
     > {
         crate::apply::apply_root_change(self, channel, changes, rng)
     }
@@ -119,7 +119,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         channel: &mut Self::Channel,
         hash: &crate::pristine::Hash,
         workspace: &mut ApplyWorkspace,
-    ) -> Result<(u64, pristine::Merkle), crate::apply::ApplyError<C::Error, Self::GraphError>> {
+    ) -> Result<(u64, pristine::Merkle), crate::apply::ApplyError<C::Error, Self>> {
         crate::apply::apply_change_ws(changes, self, channel, hash, workspace)
     }
 
@@ -129,7 +129,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         channel: &mut Self::Channel,
         hash: &crate::pristine::Hash,
         workspace: &mut ApplyWorkspace,
-    ) -> Result<(), crate::apply::ApplyError<C::Error, Self::GraphError>> {
+    ) -> Result<(), crate::apply::ApplyError<C::Error, Self>> {
         crate::apply::apply_change_rec_ws(changes, self, channel, hash, workspace, false)
     }
 
@@ -138,7 +138,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         changes: &C,
         channel: &mut Self::Channel,
         hash: &pristine::Hash,
-    ) -> Result<(u64, pristine::Merkle), crate::apply::ApplyError<C::Error, Self::GraphError>> {
+    ) -> Result<(u64, pristine::Merkle), crate::apply::ApplyError<C::Error, Self>> {
         crate::apply::apply_change(changes, self, channel, hash)
     }
 
@@ -147,7 +147,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         changes: &C,
         channel: &mut Self::Channel,
         hash: &pristine::Hash,
-    ) -> Result<(), crate::apply::ApplyError<C::Error, Self::GraphError>> {
+    ) -> Result<(), crate::apply::ApplyError<C::Error, Self>> {
         crate::apply::apply_change_rec(changes, self, channel, hash, false)
     }
 
@@ -156,7 +156,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         changes: &C,
         channel: &mut Self::Channel,
         hash: &pristine::Hash,
-    ) -> Result<(), crate::apply::ApplyError<C::Error, Self::GraphError>> {
+    ) -> Result<(), crate::apply::ApplyError<C::Error, Self>> {
         crate::apply::apply_change_rec(changes, self, channel, hash, true)
     }
 
@@ -167,7 +167,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         hash: &pristine::Hash,
         inode_updates: &HashMap<usize, InodeUpdate>,
         workspace: &mut ApplyWorkspace,
-    ) -> Result<(u64, pristine::Merkle), crate::apply::LocalApplyError<Self::GraphError>> {
+    ) -> Result<(u64, pristine::Merkle), crate::apply::LocalApplyError<Self>> {
         crate::apply::apply_local_change_ws(self, channel, change, hash, inode_updates, workspace)
     }
 
@@ -177,7 +177,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         change: &crate::change::Change,
         hash: &pristine::Hash,
         inode_updates: &HashMap<usize, InodeUpdate>,
-    ) -> Result<(u64, pristine::Merkle), crate::apply::LocalApplyError<Self::GraphError>> {
+    ) -> Result<(u64, pristine::Merkle), crate::apply::LocalApplyError<Self>> {
         crate::apply::apply_local_change(self, channel, change, hash, inode_updates)
     }
 
@@ -186,7 +186,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         channel: &mut pristine::ChannelRef<Self>,
         recorded: record::Recorded,
         changestore: &C,
-    ) -> Result<pristine::Hash, crate::apply::ApplyError<C::Error, Self::GraphError>> {
+    ) -> Result<pristine::Hash, crate::apply::ApplyError<C::Error, Self>> {
         let contents_hash = {
             let mut hasher = pristine::Hasher::default();
             hasher.update(&recorded.contents.lock()[..]);
@@ -215,7 +215,8 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         let hash = changestore
             .save_change(&mut change, |_, _| Ok(()))
             .map_err(apply::ApplyError::Changestore)?;
-        apply::apply_local_change(self, channel, &change, &hash, &recorded.updatables)?;
+        apply::apply_local_change(self, channel, &change, &hash, &recorded.updatables)
+            .map_err(ApplyError::LocalChange)?;
         Ok(hash)
     }
 
@@ -225,14 +226,14 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         channel: &pristine::ChannelRef<Self>,
         hash: &pristine::Hash,
         salt: u64,
-    ) -> Result<bool, unrecord::UnrecordError<C::Error, Self::GraphError>> {
+    ) -> Result<bool, unrecord::UnrecordError<C::Error, Self>> {
         unrecord::unrecord(self, channel, changes, hash, salt)
     }
 
     /// Register a file in the working copy, where the file is given by
     /// its path from the root of the repository, where the components of
     /// the path are separated by `/` (example path: `a/b/c`).
-    fn add_file(&mut self, path: &str, salt: u64) -> Result<Inode, fs::FsError<Self::GraphError>> {
+    fn add_file(&mut self, path: &str, salt: u64) -> Result<Inode, fs::FsError<Self>> {
         fs::add_inode(self, None, path, false, salt)
     }
 
@@ -240,32 +241,22 @@ pub trait MutTxnTExt: pristine::MutTxnT {
     /// given by its path from the root of the repository, where the
     /// components of the path are separated by `/` (example path:
     /// `a/b/c`).
-    fn add_dir(&mut self, path: &str, salt: u64) -> Result<Inode, fs::FsError<Self::GraphError>> {
+    fn add_dir(&mut self, path: &str, salt: u64) -> Result<Inode, fs::FsError<Self>> {
         fs::add_inode(self, None, path, true, salt)
     }
 
     /// Register a file or directory in the working copy, given by its
     /// path from the root of the repository, where the components of the
     /// path are separated by `/` (example path: `a/b/c`).
-    fn add(
-        &mut self,
-        path: &str,
-        is_dir: bool,
-        salt: u64,
-    ) -> Result<Inode, fs::FsError<Self::GraphError>> {
+    fn add(&mut self, path: &str, is_dir: bool, salt: u64) -> Result<Inode, fs::FsError<Self>> {
         fs::add_inode(self, None, path, is_dir, salt)
     }
 
-    fn move_file(
-        &mut self,
-        a: &str,
-        b: &str,
-        salt: u64,
-    ) -> Result<(), fs::FsError<Self::GraphError>> {
+    fn move_file(&mut self, a: &str, b: &str, salt: u64) -> Result<(), fs::FsError<Self>> {
         fs::move_file(self, a, b, salt)
     }
 
-    fn remove_file(&mut self, a: &str) -> Result<(), fs::FsError<Self::GraphError>> {
+    fn remove_file(&mut self, a: &str) -> Result<(), fs::FsError<Self>> {
         fs::remove_file(self, a)
     }
 
@@ -277,8 +268,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         extra: &[pristine::Hash],
         arch: &mut A,
         salt: u64,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, Self::GraphError, A::Error>>
-    {
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, Self, A::Error>> {
         self.archive_prefix_with_state(
             changes,
             channel,
@@ -307,8 +297,7 @@ pub trait MutTxnTExt: pristine::MutTxnT {
         prefix: &mut I,
         arch: &mut A,
         salt: u64,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, Self::GraphError, A::Error>>
-    {
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, Self, A::Error>> {
         let mut unrecord = Vec::new();
         let mut found = false;
         for x in pristine::changeid_rev_log(self, &channel.read(), None)? {
@@ -502,7 +491,7 @@ pub trait TxnTExt: pristine::TxnT {
         changes: &C,
         channel: &pristine::ChannelRef<Self>,
         position: &pristine::Position<pristine::Hash>,
-    ) -> Result<Option<(String, bool)>, output::FileError<C::Error, Self::GraphError>> {
+    ) -> Result<Option<(String, bool)>, output::FileError<C::Error, Self>> {
         let position = pristine::Position {
             change: *pristine::GraphTxnT::get_internal(self, &position.change.into())?.unwrap(),
             pos: position.pos,
@@ -515,7 +504,7 @@ pub trait TxnTExt: pristine::TxnT {
         changes: &C,
         channel: &pristine::ChannelRef<Self>,
         position: pristine::Position<pristine::Hash>,
-    ) -> Result<Option<(String, bool)>, output::FileError<C::Error, Self::GraphError>> {
+    ) -> Result<Option<(String, bool)>, output::FileError<C::Error, Self>> {
         let position = pristine::Position {
             change: *pristine::GraphTxnT::get_internal(self, &position.change.into())?.unwrap(),
             pos: position.pos,
@@ -528,10 +517,7 @@ pub trait TxnTExt: pristine::TxnT {
         changes: &C,
         channel: &pristine::ChannelRef<Self>,
         path: &str,
-    ) -> Result<
-        (pristine::Position<pristine::ChangeId>, bool),
-        fs::FsErrorC<C::Error, Self::GraphError>,
-    > {
+    ) -> Result<(pristine::Position<pristine::ChangeId>, bool), fs::FsErrorC<C::Error, Self>> {
         fs::follow_oldest_path(changes, self, &channel.read(), path)
     }
 
@@ -540,8 +526,7 @@ pub trait TxnTExt: pristine::TxnT {
         changes: &C,
         channel: &pristine::ChannelRef<Self>,
         arch: &mut A,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, Self::GraphError, A::Error>>
-    {
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, Self, A::Error>> {
         output::archive(changes, self, channel, &mut std::iter::empty(), arch)
     }
 
@@ -551,8 +536,7 @@ pub trait TxnTExt: pristine::TxnT {
         channel: &pristine::ChannelRef<Self>,
         prefix: &mut I,
         arch: &mut A,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, Self::GraphError, A::Error>>
-    {
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, Self, A::Error>> {
         output::archive(changes, self, channel, prefix, arch)
     }
 

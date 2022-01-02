@@ -8,72 +8,122 @@ pub use output::*;
 mod archive;
 pub use archive::*;
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum OutputError<
     ChangestoreError: std::error::Error + 'static,
-    Txn: std::error::Error + 'static,
+    T: GraphTxnT + TreeTxnT,
     W: std::error::Error + Send + 'static,
 > {
-    #[error("Working copy error: {0}")]
     WorkingCopy(W),
-    #[error(transparent)]
-    Pristine(#[from] PristineOutputError<ChangestoreError, Txn>),
+    Pristine(#[from] PristineOutputError<ChangestoreError, T>),
 }
 
-#[derive(Debug, Error)]
-pub enum PristineOutputError<ChangestoreError: std::error::Error, Txn: std::error::Error + 'static>
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT, W: std::error::Error + Send> std::fmt::Debug
+    for OutputError<C, T, W>
 {
-    #[error(transparent)]
-    Txn(Txn),
-    #[error("Changestore error: {0}")]
-    Changestore(ChangestoreError),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Fs(#[from] crate::fs::FsError<Txn>),
-}
-
-impl<C: std::error::Error, T: std::error::Error + 'static> From<TxnErr<T>>
-    for PristineOutputError<C, T>
-{
-    fn from(e: TxnErr<T>) -> Self {
-        PristineOutputError::Txn(e.0)
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            OutputError::WorkingCopy(e) => std::fmt::Debug::fmt(e, fmt),
+            OutputError::Pristine(e) => std::fmt::Debug::fmt(e, fmt),
+        }
     }
 }
 
-impl<C: std::error::Error, T: std::error::Error + 'static, W: std::error::Error + Send>
-    From<TxnErr<T>> for OutputError<C, T, W>
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT, W: std::error::Error + Send> std::fmt::Display
+    for OutputError<C, T, W>
 {
-    fn from(e: TxnErr<T>) -> Self {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            OutputError::WorkingCopy(e) => std::fmt::Display::fmt(e, fmt),
+            OutputError::Pristine(e) => std::fmt::Display::fmt(e, fmt),
+        }
+    }
+}
+
+#[derive(Error)]
+pub enum PristineOutputError<ChangestoreError: std::error::Error, T: GraphTxnT + TreeTxnT> {
+    Channel(#[from] TxnErr<T::GraphError>),
+    Tree(#[from] TreeErr<T::TreeError>),
+    Changestore(ChangestoreError),
+    Io(#[from] std::io::Error),
+    Fs(#[from] crate::fs::FsError<T>),
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> std::fmt::Debug for PristineOutputError<C, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PristineOutputError::Channel(e) => std::fmt::Debug::fmt(e, fmt),
+            PristineOutputError::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+            PristineOutputError::Changestore(e) => std::fmt::Debug::fmt(e, fmt),
+            PristineOutputError::Io(e) => std::fmt::Debug::fmt(e, fmt),
+            PristineOutputError::Fs(e) => std::fmt::Debug::fmt(e, fmt),
+        }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> std::fmt::Display
+    for PristineOutputError<C, T>
+{
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PristineOutputError::Channel(e) => std::fmt::Display::fmt(e, fmt),
+            PristineOutputError::Tree(e) => std::fmt::Display::fmt(e, fmt),
+            PristineOutputError::Changestore(e) => std::fmt::Display::fmt(e, fmt),
+            PristineOutputError::Io(e) => std::fmt::Display::fmt(e, fmt),
+            PristineOutputError::Fs(e) => std::fmt::Display::fmt(e, fmt),
+        }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT, W: std::error::Error + Send>
+    From<TxnErr<T::GraphError>> for OutputError<C, T, W>
+{
+    fn from(e: TxnErr<T::GraphError>) -> Self {
         OutputError::Pristine(e.into())
     }
 }
 
-#[derive(Debug, Error)]
-pub enum FileError<ChangestoreError: std::error::Error + 'static, T: std::error::Error + 'static> {
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT, W: std::error::Error + Send>
+    From<TreeErr<T::TreeError>> for OutputError<C, T, W>
+{
+    fn from(e: TreeErr<T::TreeError>) -> Self {
+        OutputError::Pristine(e.into())
+    }
+}
+
+#[derive(Error)]
+pub enum FileError<ChangestoreError: std::error::Error + std::fmt::Debug + 'static, T: GraphTxnT> {
     #[error(transparent)]
     Changestore(ChangestoreError),
     #[error(transparent)]
-    Txn(T),
+    Txn(#[from] TxnErr<T::GraphError>),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
-impl<C: std::error::Error, T: std::error::Error + 'static> From<FileError<C, T>>
+// Why can't I just derive Debug for `FileError`? The following is
+// what I expect the derived impl would be.
+impl<ChangestoreError: std::error::Error + std::fmt::Debug + 'static, T: GraphTxnT> std::fmt::Debug
+    for FileError<ChangestoreError, T>
+{
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            FileError::Changestore(ref c) => std::fmt::Debug::fmt(c, fmt),
+            FileError::Txn(ref c) => std::fmt::Debug::fmt(c, fmt),
+            FileError::Io(ref c) => std::fmt::Debug::fmt(c, fmt),
+        }
+    }
+}
+
+impl<C: std::error::Error, T: GraphTxnT + TreeTxnT> From<FileError<C, T>>
     for PristineOutputError<C, T>
 {
     fn from(e: FileError<C, T>) -> Self {
         match e {
             FileError::Changestore(e) => PristineOutputError::Changestore(e),
             FileError::Io(e) => PristineOutputError::Io(e),
-            FileError::Txn(t) => PristineOutputError::Txn(t),
+            FileError::Txn(t) => PristineOutputError::Channel(t),
         }
-    }
-}
-
-impl<C: std::error::Error, T: std::error::Error + 'static> From<TxnErr<T>> for FileError<C, T> {
-    fn from(e: TxnErr<T>) -> Self {
-        FileError::Txn(e.0)
     }
 }
 
@@ -87,7 +137,7 @@ struct OutputItem {
     is_zombie: bool,
 }
 
-fn collect_children<T: GraphTxnT, P: ChangeStore>(
+fn collect_children<T: GraphTxnT + TreeTxnT, P: ChangeStore>(
     txn: &T,
     changes: &P,
     channel: &T::Graph,
@@ -97,7 +147,7 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
     tmp: Option<&str>,
     prefix_basename: Option<&str>,
     files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
-) -> Result<(), PristineOutputError<P::Error, T::GraphError>> {
+) -> Result<(), PristineOutputError<P::Error, T>> {
     debug!("path = {:?}, inode_pos = {:?}", path, inode_pos);
     debug!("prefix_basename = {:?}", prefix_basename);
     for e in iter_adjacent(
@@ -161,7 +211,7 @@ fn collect_children<T: GraphTxnT, P: ChangeStore>(
     Ok(())
 }
 
-fn collect<T: GraphTxnT, P: ChangeStore>(
+fn collect<T: GraphTxnT + TreeTxnT, P: ChangeStore>(
     txn: &T,
     changes: &P,
     channel: &T::Graph,
@@ -171,7 +221,7 @@ fn collect<T: GraphTxnT, P: ChangeStore>(
     prefix_basename: Option<&str>,
     files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
     name_vertex: &Vertex<ChangeId>,
-) -> Result<(), PristineOutputError<P::Error, T::GraphError>> {
+) -> Result<(), PristineOutputError<P::Error, T>> {
     // First, get the basename of the path we're outputting.
     let mut name_buf = Vec::new();
     let FileMetadata {
@@ -267,7 +317,7 @@ pub fn output_file<
     channel: &T::Channel,
     v0: Position<ChangeId>,
     out: &mut V,
-) -> Result<(), FileError<C::Error, T::GraphError>> {
+) -> Result<(), FileError<C::Error, T>> {
     let mut forward = Vec::new();
     let mut graph = crate::alive::retrieve(&*txn, txn.graph(&*channel), v0)?;
     crate::alive::output_graph(changes, &*txn, &*channel, out, &mut graph, &mut forward)?;

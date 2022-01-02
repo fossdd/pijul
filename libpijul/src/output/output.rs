@@ -2,6 +2,7 @@
 //! changes (file additions, deletions and renames) in the process.
 use super::{collect_children, OutputError, OutputItem, PristineOutputError};
 use crate::alive::retrieve;
+use crate::alive::Redundant;
 use crate::changestore::ChangeStore;
 use crate::fs::{create_new_inode, inode_filename};
 use crate::pristine::*;
@@ -46,7 +47,7 @@ pub enum Conflict {
 /// **WARNING:** This overwrites the working copy, cancelling any
 /// unrecorded change.
 pub fn output_repository_no_pending<
-    T: MutTxnT + Send + Sync + 'static,
+    T: ChannelMutTxnT + TreeMutTxnT<TreeError = T::GraphError> + Send + Sync + 'static,
     R: WorkingCopy + Send + Clone + Sync + 'static,
     P: ChangeStore + Send + Clone + 'static,
 >(
@@ -59,12 +60,12 @@ pub fn output_repository_no_pending<
     if_modified_since: Option<std::time::SystemTime>,
     n_workers: usize,
     salt: u64,
-) -> Result<BTreeSet<Conflict>, OutputError<P::Error, T::GraphError, R::Error>>
+) -> Result<BTreeSet<Conflict>, OutputError<P::Error, T, R::Error>>
 where
     T::Channel: Send + Sync + 'static,
 {
     debug!("output_repository_no_pending: {:?}", prefix);
-    output_repository(
+    let (c, f) = output_repository(
         repo,
         changes,
         txn.clone(),
@@ -75,11 +76,52 @@ where
         if_modified_since,
         n_workers,
         salt,
-    )
+    )?;
+    del_redundant(txn.clone(), channel.clone(), &f)?;
+    Ok(c)
+}
+
+/// Output updates the working copy after applying changes, including
+/// the graph-file correspondence.
+///
+/// **WARNING:** This overwrites the working copy, cancelling any
+/// unrecorded change.
+pub fn output_repository_no_pending_<
+    T: ChannelTxnT + TreeMutTxnT + Send + Sync + 'static,
+    R: WorkingCopy + Send + Clone + Sync + 'static,
+    P: ChangeStore + Send + Clone + 'static,
+>(
+    repo: &R,
+    changes: &P,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
+    prefix: &str,
+    output_name_conflicts: bool,
+    if_modified_since: Option<std::time::SystemTime>,
+    n_workers: usize,
+    salt: u64,
+) -> Result<BTreeSet<Conflict>, OutputError<P::Error, T, R::Error>>
+where
+    T::Channel: Send + Sync + 'static,
+{
+    debug!("output_repository_no_pending: {:?}", prefix);
+    let (c, _) = output_repository(
+        repo,
+        changes,
+        txn.clone(),
+        channel.clone(),
+        ChangeId::ROOT,
+        &mut crate::path::components(prefix),
+        output_name_conflicts,
+        if_modified_since,
+        n_workers,
+        salt,
+    )?;
+    Ok(c)
 }
 
 fn output_loop<
-    T: TreeMutTxnT + ChannelMutTxnT + GraphMutTxnT<GraphError = <T as TreeTxnT>::TreeError>,
+    T: TreeMutTxnT + ChannelTxnT + GraphTxnT,
     R: WorkingCopy + Clone + 'static,
     P: ChangeStore + Clone + Send,
 >(
@@ -90,11 +132,12 @@ fn output_loop<
     work: Arc<crossbeam_deque::Injector<(OutputItem, Inode, String, Option<String>)>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     t: usize,
-) -> Result<Vec<Conflict>, OutputError<P::Error, T::GraphError, R::Error>> {
+) -> Result<(Vec<Conflict>, Vec<Redundant>), OutputError<P::Error, T, R::Error>> {
     use crossbeam_deque::*;
     // let backoff = crossbeam_utils::Backoff::new();
     // let w: Worker<(OutputItem, String)> = Worker::new_fifo();
     let mut conflicts = Vec::new();
+    let mut forward = Vec::new();
     loop {
         match work.steal() {
             Steal::Success((item, inode, path, tmp)) => {
@@ -109,6 +152,7 @@ fn output_loop<
                     &repo,
                     inode,
                     path,
+                    &mut forward,
                 )?;
                 debug!("setting permissions for {:?}", path);
                 repo.set_permissions(path, item.meta.permissions())
@@ -123,17 +167,12 @@ fn output_loop<
             }
         }
     }
-    Ok(conflicts)
+    Ok((conflicts, forward))
 }
 
 fn output_repository<
     'a,
-    T: TreeMutTxnT
-        + ChannelMutTxnT
-        + GraphMutTxnT<GraphError = <T as TreeTxnT>::TreeError>
-        + Send
-        + Sync
-        + 'static,
+    T: TreeMutTxnT + ChannelTxnT + GraphTxnT + Send + Sync + 'static,
     R: WorkingCopy + Clone + Send + Sync + 'static,
     P: ChangeStore + Send + Clone + 'static,
     I: Iterator<Item = &'a str>,
@@ -148,7 +187,7 @@ fn output_repository<
     if_modified_after: Option<std::time::SystemTime>,
     n_workers: usize,
     salt: u64,
-) -> Result<BTreeSet<Conflict>, OutputError<P::Error, T::TreeError, R::Error>>
+) -> Result<(BTreeSet<Conflict>, Vec<Redundant>), OutputError<P::Error, T, R::Error>>
 where
     T::Channel: Send + Sync + 'static,
 {
@@ -179,6 +218,7 @@ where
         next_prefix_basename: prefix.next(),
         is_following_prefix: true,
         pending_change_id,
+        redundant: Vec::new(),
     };
 
     let mut files = HashMap::default();
@@ -215,17 +255,25 @@ where
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let o = output_loop(repo, changes, txn, channel, work, stop, 0);
     for t in threads {
-        for x in t.join().unwrap()?.into_iter() {
+        let (a, b) = t.join().unwrap()?;
+        for x in a.into_iter() {
             state.conflicts.insert(x);
         }
+        for x in b.into_iter() {
+            state.redundant.push(x);
+        }
     }
-    for x in o?.into_iter() {
+    let (a, b) = o?;
+    for x in a.into_iter() {
         state.conflicts.insert(x);
+    }
+    for x in b.into_iter() {
+        state.redundant.push(x);
     }
     for (a, b) in state.actual_moves.iter() {
         repo.rename(a, b).map_err(OutputError::WorkingCopy)?
     }
-    Ok(state.conflicts)
+    Ok((state.conflicts, state.redundant))
 }
 
 fn sort_conflicting_names<T: ChannelTxnT + Send + Sync + 'static>(
@@ -258,16 +306,12 @@ struct OutputState<'a> {
     next_prefix_basename: Option<&'a str>,
     is_following_prefix: bool,
     pending_change_id: ChangeId,
+    redundant: Vec<Redundant>,
 }
 
 impl<'a> OutputState<'a> {
     fn kill_dead_files<
-        T: TreeMutTxnT
-            + ChannelMutTxnT
-            + GraphMutTxnT<GraphError = <T as TreeTxnT>::TreeError>
-            + Send
-            + Sync
-            + 'static,
+        T: TreeMutTxnT + ChannelTxnT + GraphTxnT + Send + Sync + 'static,
         R: WorkingCopy + Clone + Send + Sync + 'static,
         P: ChangeStore + Clone + 'static,
     >(
@@ -275,13 +319,13 @@ impl<'a> OutputState<'a> {
         repo: &R,
         txn: &ArcTxn<T>,
         channel: &ChannelRef<T>,
-    ) -> Result<(), OutputError<P::Error, T::TreeError, R::Error>> {
+    ) -> Result<(), OutputError<P::Error, T, R::Error>> {
         if self.next_prefix_basename.is_none() && self.is_following_prefix {
             let dead = {
                 let txn_ = txn.read();
                 let channel = channel.read();
                 let graph = txn_.graph(&*channel);
-                collect_dead_files(&*txn_, graph, self.pending_change_id, Inode::ROOT)?
+                collect_dead_files::<_, R, P>(&*txn_, graph, self.pending_change_id, Inode::ROOT)?
             };
             debug!("dead (line {}) = {:?}", line!(), dead);
             if !dead.is_empty() {
@@ -348,12 +392,7 @@ impl<'a> OutputState<'a> {
     }
 
     fn output_name<
-        T: TreeMutTxnT
-            + ChannelMutTxnT
-            + GraphMutTxnT<GraphError = <T as TreeTxnT>::TreeError>
-            + Send
-            + Sync
-            + 'static,
+        T: TreeMutTxnT + ChannelTxnT + GraphTxnT + Send + Sync + 'static,
         R: WorkingCopy + Clone + Send + Sync + 'static,
         P: ChangeStore + Send + Clone + 'static,
     >(
@@ -365,7 +404,7 @@ impl<'a> OutputState<'a> {
         next_files: &mut HashMap<String, Vec<(Vertex<ChangeId>, OutputItem)>>,
         a: String,
         b: Vec<(Vertex<ChangeId>, OutputItem)>,
-    ) -> Result<(), OutputError<P::Error, T::TreeError, R::Error>> {
+    ) -> Result<(), OutputError<P::Error, T, R::Error>> {
         let mut is_first_name = true;
         for (name_key, mut output_item) in b {
             debug!("name_key = {:?} {:?}", name_key, output_item);
@@ -476,7 +515,7 @@ fn needs_output<R: WorkingCopy>(
     true
 }
 
-fn move_or_create<T: TreeMutTxnT, R: WorkingCopy, C: ChangeStore>(
+fn move_or_create<T: GraphTxnT + TreeMutTxnT, R: WorkingCopy, C: ChangeStore>(
     txn: ArcTxn<T>,
     repo: &R,
     output_item: &OutputItem,
@@ -486,7 +525,7 @@ fn move_or_create<T: TreeMutTxnT, R: WorkingCopy, C: ChangeStore>(
     file_name: &str,
     actual_moves: &mut Vec<(String, String)>,
     salt: u64,
-) -> Result<Inode, OutputError<C::Error, T::TreeError, R::Error>> {
+) -> Result<Inode, OutputError<C::Error, T, R::Error>> {
     let file_id = OwnedPathId {
         parent_inode: output_item.parent,
         basename: SmallString::from_str(&file_name),
@@ -587,7 +626,7 @@ fn move_or_create<T: TreeMutTxnT, R: WorkingCopy, C: ChangeStore>(
     }
 }
 
-fn output_item<T: ChannelMutTxnT + GraphMutTxnT, P: ChangeStore, W: WorkingCopy>(
+fn output_item<T: ChannelTxnT + TreeTxnT, P: ChangeStore, W: WorkingCopy>(
     txn: ArcTxn<T>,
     channel: ChannelRef<T>,
     changes: &P,
@@ -596,37 +635,43 @@ fn output_item<T: ChannelMutTxnT + GraphMutTxnT, P: ChangeStore, W: WorkingCopy>
     repo: &W,
     inode: Inode,
     path: &str,
-) -> Result<(), OutputError<P::Error, T::GraphError, W::Error>> {
-    let mut forward = Vec::new();
-    {
-        let txn = txn.read();
-        let channel = channel.read();
-        let mut l = retrieve(&*txn, txn.graph(&*channel), output_item.pos)?;
-        let w = repo
-            .write_file(&path, inode)
-            .map_err(OutputError::WorkingCopy)?;
-        let mut f = vertex_buffer::ConflictsWriter::new(w, &path, conflicts);
-        alive::output_graph(changes, &*txn, &*channel, &mut f, &mut l, &mut forward)
-            .map_err(PristineOutputError::from)?;
-        use std::io::Write;
-        f.w.flush().unwrap_or(())
-    }
+    forward: &mut Vec<Redundant>,
+) -> Result<(), OutputError<P::Error, T, W::Error>> {
+    let txn = txn.read();
+    let channel = channel.read();
+    let mut l = retrieve(&*txn, txn.graph(&*channel), output_item.pos)?;
+    let w = repo
+        .write_file(&path, inode)
+        .map_err(OutputError::WorkingCopy)?;
+    let mut f = vertex_buffer::ConflictsWriter::new(w, &path, conflicts);
+    alive::output_graph(changes, &*txn, &*channel, &mut f, &mut l, forward)
+        .map_err(PristineOutputError::from)?;
+    use std::io::Write;
+    f.w.flush().unwrap_or(());
+    Ok(())
+}
+
+fn del_redundant<T: ChannelMutTxnT + GraphMutTxnT>(
+    txn: ArcTxn<T>,
+    channel: ChannelRef<T>,
+    forward: &[Redundant],
+) -> Result<(), TxnErr<T::GraphError>> {
     if forward.is_empty() {
         return Ok(());
     }
     let mut txn = txn.write();
     let mut channel = channel.write();
-    for &(vertex, edge) in forward.iter() {
+    for ve in forward.iter() {
         // Unwrap ok since `edge` is in the channel.
-        let dest = *txn.find_block(txn.graph(&*channel), edge.dest()).unwrap();
-        debug!("deleting forward edge {:?} {:?} {:?}", vertex, dest, edge);
+        let dest = *txn.find_block(txn.graph(&*channel), ve.e.dest()).unwrap();
+        debug!("deleting forward edge {:?} {:?} {:?}", ve.v, dest, ve.e);
         del_graph_with_rev(
             &mut *txn,
             T::graph_mut(&mut *channel),
-            edge.flag(),
-            vertex,
+            ve.e.flag(),
+            ve.v,
             dest,
-            edge.introduced_by(),
+            ve.e.introduced_by(),
         )?;
     }
     Ok(())
@@ -658,12 +703,12 @@ fn is_alive_or_zombie<T: GraphTxnT>(
     Ok(false)
 }
 
-fn collect_dead_files<T: TreeTxnT + GraphTxnT<GraphError = <T as TreeTxnT>::TreeError>>(
+fn collect_dead_files<T: TreeTxnT + GraphTxnT, W: WorkingCopy + Clone, C: ChangeStore>(
     txn: &T,
     channel: &T::Graph,
     pending_change_id: ChangeId,
     inode: Inode,
-) -> Result<HashMap<OwnedPathId, (Inode, Option<String>)>, TxnErr<T::GraphError>> {
+) -> Result<HashMap<OwnedPathId, (Inode, Option<String>)>, OutputError<C::Error, T, W::Error>> {
     let mut inodes = vec![(inode, false)];
     let mut next_inodes = Vec::new();
     let mut dead = HashMap::default();
@@ -703,16 +748,12 @@ fn collect_dead_files<T: TreeTxnT + GraphTxnT<GraphError = <T as TreeTxnT>::Tree
     Ok(dead)
 }
 
-fn kill_dead_files<
-    T: ChannelTxnT<GraphError = T::TreeError> + TreeMutTxnT,
-    W: WorkingCopy + Clone,
-    C: ChangeStore,
->(
+fn kill_dead_files<T: ChannelTxnT + TreeMutTxnT, W: WorkingCopy + Clone, C: ChangeStore>(
     txn: &mut T,
     channel: &ChannelRef<T>,
     repo: &W,
     dead: &HashMap<OwnedPathId, (Inode, Option<String>)>,
-) -> Result<(), OutputError<C::Error, T::TreeError, W::Error>> {
+) -> Result<(), OutputError<C::Error, T, W::Error>> {
     let channel = channel.read();
     for (fileid, (inode, ref name)) in dead.iter() {
         debug!("killing {:?} {:?} {:?}", fileid, inode, name);

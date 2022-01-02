@@ -1,5 +1,5 @@
 use super::*;
-use crate::pristine::{ArcTxn, InodeMetadata};
+use crate::pristine::{ArcTxn, GraphTxnT, InodeMetadata, TreeErr, TreeTxnT, TxnErr};
 use canonical_path::{CanonicalPath, CanonicalPathBuf};
 use ignore::WalkBuilder;
 use std::borrow::Cow;
@@ -62,8 +62,10 @@ pub fn get_prefix(
             match c {
                 Component::Prefix(_) => p.push(c.as_os_str()),
                 Component::RootDir => p.push(c.as_os_str()),
-                Component::CurDir => {},
-                Component::ParentDir => { p.pop(); },
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    p.pop();
+                }
                 Component::Normal(x) => p.push(x),
             }
         }
@@ -82,8 +84,8 @@ pub fn get_prefix(
     Ok((prefix_, p))
 }
 
-#[derive(Debug, Error)]
-pub enum AddError<T: std::error::Error + 'static> {
+#[derive(Error)]
+pub enum AddError<T: GraphTxnT + TreeTxnT> {
     #[error(transparent)]
     Ignore(#[from] ignore::Error),
     #[error(transparent)]
@@ -92,14 +94,37 @@ pub enum AddError<T: std::error::Error + 'static> {
     Fs(#[from] crate::fs::FsError<T>),
 }
 
-#[derive(Debug, Error)]
-pub enum Error<C: std::error::Error + 'static, T: std::error::Error + 'static> {
+impl<T: GraphTxnT + TreeTxnT> std::fmt::Debug for AddError<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AddError::Ignore(e) => std::fmt::Debug::fmt(e, fmt),
+            AddError::Io(e) => std::fmt::Debug::fmt(e, fmt),
+            AddError::Fs(e) => std::fmt::Debug::fmt(e, fmt),
+        }
+    }
+}
+
+#[derive(Error)]
+pub enum Error<C: std::error::Error + 'static, T: GraphTxnT + TreeTxnT> {
     #[error(transparent)]
     Add(#[from] AddError<T>),
     #[error(transparent)]
     Record(#[from] crate::record::RecordError<C, std::io::Error, T>),
     #[error(transparent)]
-    Txn(#[from] T),
+    Txn(#[from] TxnErr<T::GraphError>),
+    #[error(transparent)]
+    Tree(#[from] TreeErr<T::TreeError>),
+}
+
+impl<C: std::error::Error + 'static, T: GraphTxnT + TreeTxnT> std::fmt::Debug for Error<C, T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Error::Add(e) => std::fmt::Debug::fmt(e, fmt),
+            Error::Record(e) => std::fmt::Debug::fmt(e, fmt),
+            Error::Txn(e) => std::fmt::Debug::fmt(e, fmt),
+            Error::Tree(e) => std::fmt::Debug::fmt(e, fmt),
+        }
+    }
 }
 
 pub struct Untracked {
@@ -142,7 +167,7 @@ impl FileSystem {
         prefixes: &[P],
         threads: usize,
         salt: u64,
-    ) -> Result<(), Error<C::Error, T::GraphError>>
+    ) -> Result<(), Error<C::Error, T>>
     where
         T::Channel: Send + Sync,
     {
@@ -180,7 +205,7 @@ impl FileSystem {
         full: CanonicalPathBuf,
         threads: usize,
         salt: u64,
-    ) -> Result<(), AddError<T::GraphError>> {
+    ) -> Result<(), AddError<T>> {
         let mut txn = txn.write();
         for p in self.iterate_prefix_rec(repo_path.clone(), full.clone(), threads)? {
             let (path, is_dir) = p?;
@@ -287,7 +312,7 @@ impl FileSystem {
         prefix: &Path,
         threads: usize,
         salt: u64,
-    ) -> Result<(), Error<C::Error, T::GraphError>>
+    ) -> Result<(), Error<C::Error, T>>
     where
         T::Channel: Send + Sync,
     {
@@ -296,7 +321,7 @@ impl FileSystem {
             if let Ok(path) = full.as_path().strip_prefix(&repo_path.as_path()) {
                 use path_slash::PathExt;
                 let path_str = path.to_slash_lossy();
-                if !txn.read().is_tracked(&path_str)? {
+                if !crate::fs::is_tracked(&*txn.read(), &path_str)? {
                     self.add_prefix_rec(&txn, repo_path, full, threads, salt)?;
                 }
             }
@@ -305,6 +330,7 @@ impl FileSystem {
         state.record(
             txn.clone(),
             crate::Algorithm::default(),
+            false,
             &crate::diff::DEFAULT_SEPARATOR,
             channel,
             self,
@@ -352,8 +378,10 @@ impl WorkingCopyRead for FileSystem {
         debug!("modified_time {:?}", file);
         use std::os::unix::fs::MetadataExt;
         let attr = std::fs::metadata(&self.path(file))?;
-        let ctime =
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(attr.ctime() as u64);
+        let ctime = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_millis(
+                attr.ctime() as u64 * 1000 + attr.ctime_nsec() as u64 / 1_000_000,
+            );
         Ok(attr.modified()?.min(ctime))
     }
 }
