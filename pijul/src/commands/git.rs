@@ -743,6 +743,7 @@ fn record_apply<
             &mut state,
             repo_path.clone(),
             p,
+            false,
             num_cpus,
             0,
         ) {
@@ -764,6 +765,7 @@ fn record_apply<
             &mut state,
             repo_path.clone(),
             Path::new(""),
+            false,
             num_cpus,
             0,
         ) {

@@ -10,6 +10,7 @@ pub struct FileSystem {
     root: PathBuf,
 }
 
+/// Returns whether `path` is a child of `root_` (or `root_` itself).
 pub fn filter_ignore(root_: &CanonicalPath, path: &CanonicalPath, is_dir: bool) -> bool {
     debug!("path = {:?} root = {:?}", path, root_);
     if let Ok(suffix) = path.as_path().strip_prefix(root_.as_path()) {
@@ -165,6 +166,7 @@ impl FileSystem {
         state: &mut crate::RecordBuilder,
         repo_path: CanonicalPathBuf,
         prefixes: &[P],
+        force: bool,
         threads: usize,
         salt: u64,
     ) -> Result<(), Error<C::Error, T>>
@@ -179,6 +181,7 @@ impl FileSystem {
                 state,
                 repo_path.clone(),
                 prefix.as_ref(),
+                force,
                 threads,
                 salt,
             )?
@@ -191,6 +194,7 @@ impl FileSystem {
                 state,
                 repo_path.clone(),
                 Path::new(""),
+                force,
                 threads,
                 salt,
             )?
@@ -203,11 +207,12 @@ impl FileSystem {
         txn: &ArcTxn<T>,
         repo_path: CanonicalPathBuf,
         full: CanonicalPathBuf,
+        force: bool,
         threads: usize,
         salt: u64,
     ) -> Result<(), AddError<T>> {
         let mut txn = txn.write();
-        for p in self.iterate_prefix_rec(repo_path.clone(), full.clone(), threads)? {
+        for p in self.iterate_prefix_rec(repo_path.clone(), full.clone(), force, threads)? {
             let (path, is_dir) = p?;
             info!("Adding {:?}", path);
             use path_slash::PathExt;
@@ -228,6 +233,7 @@ impl FileSystem {
         &self,
         repo_path: CanonicalPathBuf,
         full: CanonicalPathBuf,
+        force: bool,
         threads: usize,
     ) -> Result<Untracked, std::io::Error> {
         debug!("full = {:?}", full);
@@ -236,21 +242,24 @@ impl FileSystem {
         let (sender, receiver) = std::sync::mpsc::sync_channel(100);
 
         debug!("{:?}", full.as_path().strip_prefix(repo_path.as_path()));
-        if !filter_ignore(
-            &repo_path.as_canonical_path(),
-            &full.as_canonical_path(),
-            meta.is_dir(),
-        ) {
-            return Ok(Untracked {
-                join: None,
-                receiver,
-            });
+        debug!("force = {:?}", force);
+        if !force {
+            if !filter_ignore(
+                &repo_path.as_canonical_path(),
+                &full.as_canonical_path(),
+                meta.is_dir(),
+            ) {
+                return Ok(Untracked {
+                    join: None,
+                    receiver,
+                });
+            }
         }
         let t = std::thread::spawn(move || -> Result<(), std::io::Error> {
             if meta.is_dir() {
                 let mut walk = WalkBuilder::new(&full);
-                walk.ignore(true)
-                    .git_ignore(true)
+                walk.ignore(!force)
+                    .git_ignore(!force)
                     .hidden(false)
                     .filter_entry(|p| {
                         debug!("p.file_name = {:?}", p.file_name());
@@ -310,6 +319,7 @@ impl FileSystem {
         state: &mut crate::RecordBuilder,
         repo_path: CanonicalPathBuf,
         prefix: &Path,
+        force: bool,
         threads: usize,
         salt: u64,
     ) -> Result<(), Error<C::Error, T>>
@@ -322,7 +332,7 @@ impl FileSystem {
                 use path_slash::PathExt;
                 let path_str = path.to_slash_lossy();
                 if !crate::fs::is_tracked(&*txn.read(), &path_str)? {
-                    self.add_prefix_rec(&txn, repo_path, full, threads, salt)?;
+                    self.add_prefix_rec(&txn, repo_path, full, force, threads, salt)?;
                 }
             }
         }

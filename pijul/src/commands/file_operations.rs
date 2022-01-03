@@ -145,6 +145,7 @@ impl Add {
                     &txn,
                     repo_path.clone(),
                     full.clone(),
+                    self.force,
                     threads,
                     self.salt.unwrap_or(0),
                 )?

@@ -338,6 +338,7 @@ impl Record {
                 &mut state,
                 repo_path,
                 &self.prefixes,
+                false,
                 1, // num_cpus::get(),
                 self.timestamp.unwrap_or(0) as u64,
             )?;

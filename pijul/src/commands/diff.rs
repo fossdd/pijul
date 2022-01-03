@@ -84,6 +84,7 @@ impl Diff {
                 &mut state,
                 CanonicalPathBuf::canonicalize(&repo.path)?,
                 &self.prefixes,
+                false,
                 num_cpus::get(),
                 0,
             )?;
@@ -356,7 +357,7 @@ fn untracked<'a, T: TxnTExt>(
     let threads = num_cpus::get();
     Ok(repo
         .working_copy
-        .iterate_prefix_rec(repo_path.clone(), repo_path.clone(), threads)?
+        .iterate_prefix_rec(repo_path.clone(), repo_path.clone(), false, threads)?
         .filter_map(move |x| {
             let (path, _) = x.unwrap();
             use path_slash::PathExt;
