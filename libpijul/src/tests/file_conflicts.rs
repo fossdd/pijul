@@ -382,6 +382,12 @@ fn file_conflicts_same_name_and_two_names() -> Result<(), anyhow::Error> {
 
     apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &bob_h)?;
     apply::apply_change_arc(&changes, &txn_charlie, &channel_charlie, &alice_h)?;
+
+    {
+        let txn_ = txn_charlie.write();
+        let mut f = std::fs::File::create("/tmp/charlie0")?;
+        crate::pristine::debug(&*txn_, &txn_.graph(&*channel_charlie.read()), &mut f)?;
+    }
     output::output_repository_no_pending(
         &repo_charlie,
         &changes,
@@ -407,6 +413,13 @@ fn file_conflicts_same_name_and_two_names() -> Result<(), anyhow::Error> {
         .move_file(&files_charlie[1], "file3", 0)?;
     let _charlie_solution =
         record_all(&repo_charlie, &changes, &txn_charlie, &channel_charlie, "").unwrap();
+
+    {
+        let txn_ = txn_charlie.write();
+        let mut f = std::fs::File::create("/tmp/charlie1")?;
+        crate::pristine::debug(&*txn_, &txn_.graph(&*channel_charlie.read()), &mut f)?;
+    }
+
     output::output_repository_no_pending(
         &repo_charlie,
         &changes,

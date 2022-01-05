@@ -29,7 +29,10 @@ fn add_non_utf8_file_test() -> Result<(), anyhow::Error> {
         .filter(|l| l.starts_with("+"))
         .collect();
     assert_eq!(
-        vec!["+ French / Français (Windows CP 1252)", "+ €‚ƒ„…†‡, Salut"],
+        vec![
+            "+ French / Français (Windows CP 1252)",
+            "+ € abcde ‚ xys ƒ uvw „ !bla …... † XA>TH ‡, Salut"
+        ],
         lines
     );
 

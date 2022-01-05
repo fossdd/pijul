@@ -543,19 +543,15 @@ fn self_context() -> Result<(), anyhow::Error> {
 
     let mut buf = Vec::new();
     repo.read_file("file", &mut buf)?;
-    let mut conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
+
+    let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
+
+    let mut conflict: Vec<_> = std::str::from_utf8(&buf_)?.lines().collect();
     conflict.sort();
     assert_eq!(
         conflict,
-        vec![
-            "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
-            "================================",
-            ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
-            "a",
-            "b",
-            "x",
-            "y"
-        ]
+        vec!["<<<<<<< 1", "======= 1", ">>>>>>> 1", "a", "b", "x", "y"]
     );
     txn.commit()?;
 
@@ -823,6 +819,8 @@ fn double_file() -> Result<(), anyhow::Error> {
 
     let txn = txn.read();
     let mut inodes = txn.iter_inodes().unwrap();
+    let (x, _) = inodes.next().unwrap().unwrap();
+    assert!(x.is_root());
     assert!(inodes.next().is_some());
     assert!(inodes.next().is_none());
     Ok(())

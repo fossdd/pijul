@@ -50,7 +50,7 @@ fn quadratic_pseudo_edges() -> Result<(), anyhow::Error> {
         while let Some(Ok(_)) = txn.read().next_graph(&*graph, &mut cursor) {
             m += 1
         }
-        let m0 = n * 8 + 6;
+        let m0 = n * 8 + 10;
         if m > m0 {
             panic!("{} > {}", m, m0)
         }

@@ -103,19 +103,20 @@ impl Diff {
             }
             return Ok(());
         }
-        let txn = txn.write();
-        let actions = rec
+        let mut txn_ = txn.write();
+        let actions: Vec<_> = rec
             .actions
             .into_iter()
-            .map(|rec| rec.globalize(&*txn).unwrap())
+            .map(|rec| rec.globalize(&*txn_).unwrap())
             .collect();
+        let actions_is_empty = actions.is_empty();
         let contents = if let Ok(cont) = std::sync::Arc::try_unwrap(rec.contents) {
             cont.into_inner()
         } else {
             unreachable!()
         };
         let mut change = LocalChange::make_change(
-            &*txn,
+            &*txn_,
             &channel,
             actions,
             contents,
@@ -124,9 +125,9 @@ impl Diff {
         )?;
 
         let (dependencies, extra_known) = if self.tag {
-            full_dependencies(&*txn, &channel)?
+            full_dependencies(&*txn_, &channel)?
         } else {
-            dependencies(&*txn, &*channel.read(), change.changes.iter())?
+            dependencies(&*txn_, &*channel.read(), change.changes.iter())?
         };
         change.dependencies = dependencies;
         change.extra_known = extra_known;
@@ -224,12 +225,12 @@ impl Diff {
                 writeln!(stdout, "{} {}", sp, k)?;
             }
             if self.untracked {
-                for path in untracked(&repo, &*txn)? {
+                for path in untracked(&repo, &*txn_)? {
                     writeln!(stdout, "U {}", path.to_str().unwrap())?;
                 }
             }
         } else if self.untracked {
-            for path in untracked(&repo, &*txn)? {
+            for path in untracked(&repo, &*txn_)? {
                 writeln!(stdout, "{}", path.to_str().unwrap())?;
             }
         } else {
@@ -247,6 +248,12 @@ impl Diff {
                     if e.kind() == std::io::ErrorKind::BrokenPipe => {}
                 Err(e) => return Err(e.into()),
             }
+        }
+        if actions_is_empty && self.prefixes.is_empty() {
+            use libpijul::ChannelMutTxnT;
+            txn_.touch_channel(&mut *channel.write(), None);
+            std::mem::drop(txn_);
+            txn.commit()?;
         }
         Ok(())
     }

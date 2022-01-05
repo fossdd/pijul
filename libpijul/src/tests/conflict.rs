@@ -86,7 +86,9 @@ fn solve_order_conflict() -> Result<(), anyhow::Error> {
     repo_alice.read_file("file", &mut buf)?;
 
     let check_conflict = |buf: &[u8]| -> Result<(), anyhow::Error> {
-        let conflict: Vec<_> = std::str::from_utf8(buf)?.lines().collect();
+        let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+        let buf_ = re.replace_all(&buf, &[][..]);
+        let conflict: Vec<_> = std::str::from_utf8(&buf_)?.lines().collect();
         debug!("{:?}", conflict);
         {
             let mut conflict = conflict.clone();
@@ -95,15 +97,15 @@ fn solve_order_conflict() -> Result<(), anyhow::Error> {
                 conflict,
                 vec![
                     "a",
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
-                    "================================",
+                    ">>>>>>> 1",
+                    "======= 1",
                     "u",
                     "v",
                     "w",
                     "x",
                     "y",
                     "z",
-                    "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                    "<<<<<<< 1",
                     "b"
                 ]
             );
@@ -304,7 +306,10 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
     repo_alice.read_file("file", &mut buf)?;
 
     let check_conflict = |buf: &[u8]| -> Result<(), anyhow::Error> {
-        let conflict: Vec<_> = std::str::from_utf8(buf)?.lines().collect();
+        let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+        let buf_ = re.replace_all(&buf, &[][..]);
+
+        let conflict: Vec<_> = std::str::from_utf8(&buf_)?.lines().collect();
         debug!("{:?}", conflict);
         {
             let mut conflict = conflict.clone();
@@ -313,13 +318,13 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
                 conflict,
                 vec![
                     "a",
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
-                    "================================",
-                    "================================",
+                    ">>>>>>> 1",
+                    "======= 1",
+                    "======= 1",
                     "x",
                     "y",
                     "z",
-                    "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                    "<<<<<<< 1",
                     "b"
                 ]
             );
@@ -392,18 +397,20 @@ fn order_conflict_simple() -> Result<(), anyhow::Error> {
     buf.clear();
     repo_bob.read_file("file", &mut buf)?;
     {
-        let mut conflict: Vec<_> = std::str::from_utf8(&buf)?.lines().collect();
+        let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+        let buf_ = re.replace_all(&buf, &[][..]);
+        let mut conflict: Vec<_> = std::str::from_utf8(&buf_)?.lines().collect();
         (&mut conflict[2..6]).sort_unstable();
         assert_eq!(
             conflict,
             vec![
                 "a",
-                ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
-                "================================",
+                ">>>>>>> 1",
+                "======= 1",
                 "x",
                 "y",
                 "z",
-                "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                "<<<<<<< 1",
                 "b"
             ]
         )
@@ -694,7 +701,11 @@ fn edit_conflict_sides() -> Result<(), anyhow::Error> {
     let mut buf2 = Vec::new();
     repo.read_file("file", &mut buf2)?;
     info!("{:?}", std::str::from_utf8(&buf2).unwrap());
-    assert_eq!(std::str::from_utf8(&buf), std::str::from_utf8(&buf2));
+    let re = regex::bytes::Regex::new(r#"\[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
+    let buf2_ = re.replace_all(&buf2, &[][..]);
+
+    assert_eq!(std::str::from_utf8(&buf_), std::str::from_utf8(&buf2_));
 
     // Bob applies
     apply::apply_change_arc(&changes, &txn, &channel_bob, &alice_h)?;
@@ -816,7 +827,10 @@ fn edit_after_conflict() -> Result<(), anyhow::Error> {
     let mut buf2 = Vec::new();
     repo.read_file("file", &mut buf2)?;
     info!("{:?}", std::str::from_utf8(&buf2).unwrap());
-    assert_eq!(std::str::from_utf8(&buf), std::str::from_utf8(&buf2));
+    let re = regex::bytes::Regex::new(r#"\[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
+    let buf2_ = re.replace_all(&buf2, &[][..]);
+    assert_eq!(std::str::from_utf8(&buf_), std::str::from_utf8(&buf2_));
 
     apply::apply_change_arc(&changes, &txn, &channel_bob, &alice_h)?;
     apply::apply_change_arc(&changes, &txn, &channel_bob, &resolution)?;
@@ -985,7 +999,7 @@ fn delete_before_marker() -> Result<(), anyhow::Error> {
     lines.sort_unstable();
     let mut lines2: Vec<_> = std::str::from_utf8(&buf2).unwrap().lines().collect();
     lines2.sort_unstable();
-    assert_eq!(lines, lines2);
+    assert_eq!(&lines[3..], &lines2[3..]);
 
     Ok(())
 }
@@ -1066,18 +1080,9 @@ fn conflict_last_line() -> Result<(), anyhow::Error> {
         debug!("{:?}", conflict);
         {
             let mut conflict = conflict.clone();
-            (&mut conflict[2..5]).sort_unstable();
-            assert_eq!(
-                conflict,
-                vec![
-                    "a",
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
-                    "================================",
-                    "x",
-                    "y",
-                    "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
-                ]
-            );
+            conflict.sort_unstable();
+            assert_eq!(&conflict[3..], ["a", "x", "y",]);
+            assert_eq!(conflict[0], "<<<<<<< 1",);
         }
         Ok(())
     };
@@ -1203,15 +1208,10 @@ fn zombie_last_line() -> Result<(), anyhow::Error> {
     repo_alice.read_file("file", &mut buf)?;
 
     let check_conflict = |buf: &[u8]| -> Result<(), anyhow::Error> {
-        let conflict: Vec<_> = std::str::from_utf8(buf)?.lines().collect();
-        assert_eq!(
-            conflict,
-            vec![
-                ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
-                "x",
-                "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
-            ]
-        );
+        let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+        let buf_ = re.replace_all(&buf, &[][..]);
+        let conflict: Vec<_> = std::str::from_utf8(&buf_)?.lines().collect();
+        assert_eq!(conflict, vec![">>>>>>> 0", "x", "<<<<<<< 0"]);
         Ok(())
     };
 
@@ -1284,32 +1284,34 @@ fn zombie_last_line() -> Result<(), anyhow::Error> {
 fn edit_post_conflict() -> Result<(), anyhow::Error> {
     edit_post_conflict_(
         |buf| {
-            let buf: Vec<_> = std::str::from_utf8(&buf).unwrap().lines().collect();
+            let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+            let buf_ = re.replace_all(&buf, &[][..]);
+            let buf: Vec<_> = std::str::from_utf8(&buf_).unwrap().lines().collect();
             assert!(
                 buf == [
                     "a",
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
+                    ">>>>>>> 1",
                     "0",
                     "1",
                     "2",
-                    "================================",
+                    "======= 1",
                     "3",
                     "4",
                     "5",
-                    "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                    "<<<<<<< 1",
                     "b",
                 ] || buf
                     == [
                         "a",
-                        ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
+                        ">>>>>>> 1",
                         "3",
                         "4",
                         "5",
-                        "================================",
+                        "======= 1",
                         "0",
                         "1",
                         "2",
-                        "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                        "<<<<<<< 1",
                         "b",
                     ]
             )
@@ -1332,32 +1334,34 @@ fn edit_post_conflict() -> Result<(), anyhow::Error> {
 fn edit_around_conflict() -> Result<(), anyhow::Error> {
     edit_post_conflict_(
         |buf| {
-            let buf: Vec<_> = std::str::from_utf8(&buf).unwrap().lines().collect();
+            let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+            let buf_ = re.replace_all(&buf, &[][..]);
+            let buf: Vec<_> = std::str::from_utf8(&buf_).unwrap().lines().collect();
             assert!(
                 buf == [
                     "a",
-                    ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
+                    ">>>>>>> 1",
                     "0",
                     "1",
                     "2",
-                    "================================",
+                    "======= 1",
                     "3",
                     "4",
                     "5",
-                    "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                    "<<<<<<< 1",
                     "b",
                 ] || buf
                     == [
                         "a",
-                        ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
+                        ">>>>>>> 1",
                         "3",
                         "4",
                         "5",
-                        "================================",
+                        "======= 1",
                         "0",
                         "1",
                         "2",
-                        "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+                        "<<<<<<< 1",
                         "b",
                     ]
             )
@@ -1499,9 +1503,14 @@ fn edit_post_conflict_<
     repo_bob.read_file("file", &mut buf2)?;
     buf.clear();
     repo_alice.read_file("file", &mut buf)?;
-    let mut lines: Vec<_> = std::str::from_utf8(&buf).unwrap().lines().collect();
+
+    let re = regex::bytes::Regex::new(r#"\[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
+    let buf2_ = re.replace_all(&buf2, &[][..]);
+
+    let mut lines: Vec<_> = std::str::from_utf8(&buf_).unwrap().lines().collect();
     lines.sort_unstable();
-    let mut lines2: Vec<_> = std::str::from_utf8(&buf2).unwrap().lines().collect();
+    let mut lines2: Vec<_> = std::str::from_utf8(&buf2_).unwrap().lines().collect();
     lines2.sort_unstable();
     assert_eq!(lines, lines2);
 
@@ -1652,9 +1661,13 @@ fn nested_conflict() -> Result<(), anyhow::Error> {
     let mut buf2 = Vec::new();
     repo_bob.read_file("file", &mut buf2)?;
 
-    let mut lines: Vec<_> = std::str::from_utf8(&buf).unwrap().lines().collect();
+    let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
+    let buf2_ = re.replace_all(&buf2, &[][..]);
+
+    let mut lines: Vec<_> = std::str::from_utf8(&buf_).unwrap().lines().collect();
     lines.sort_unstable();
-    let mut lines2: Vec<_> = std::str::from_utf8(&buf2).unwrap().lines().collect();
+    let mut lines2: Vec<_> = std::str::from_utf8(&buf2_).unwrap().lines().collect();
     lines2.sort_unstable();
     assert_eq!(lines, lines2);
 
@@ -1737,10 +1750,10 @@ fn zombie_context_resolution() -> Result<(), anyhow::Error> {
     let mut buf = Vec::new();
     repo_bob.read_file("file", &mut buf)?;
     debug!("file = {:?}", std::str::from_utf8(&buf));
-    assert_eq!(
-        std::str::from_utf8(&buf),
-        Ok(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n")
-    );
+    let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
+
+    assert_eq!(std::str::from_utf8(&buf_), Ok(">>>>>>> 0\nx\n<<<<<<< 0\n"));
 
     repo_bob
         .write_file("file", Inode::ROOT)
@@ -1778,10 +1791,9 @@ fn zombie_context_resolution() -> Result<(), anyhow::Error> {
     )?;
     let mut buf2 = Vec::new();
     repo_alice.read_file("file", &mut buf2)?;
-    assert_eq!(
-        std::str::from_utf8(&buf2),
-        Ok(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n")
-    );
+    let buf2_ = re.replace_all(&buf2, &[][..]);
+
+    assert_eq!(std::str::from_utf8(&buf2_), Ok(">>>>>>> 0\nx\n<<<<<<< 0\n"));
     apply::apply_change_arc(&changes, &txn_alice, &channel_alice, &resolution).unwrap();
     output::output_repository_no_pending(
         &repo_alice,
@@ -1871,9 +1883,11 @@ fn zombie_half_survivor() -> Result<(), anyhow::Error> {
     )?;
     let mut buf = Vec::new();
     repo_bob.read_file("file", &mut buf)?;
+    let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
     assert_eq!(
-        std::str::from_utf8(&buf),
-        Ok(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\ny\nz\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n")
+        std::str::from_utf8(&buf_),
+        Ok(">>>>>>> 0\nx\ny\nz\n<<<<<<< 0\n")
     );
 
     repo_bob

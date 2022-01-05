@@ -862,6 +862,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
     let flag1 = flag0 | EdgeFlags::BLOCK | EdgeFlags::PSEUDO;
     let mut name_buf = Vec::new();
     let mut ambiguous = false;
+    let mut seen = HashSet::new();
     for c in crate::path::components(path) {
         'outer: loop {
             let mut next = None;
@@ -910,11 +911,14 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                 }
             }
             if let Some((next, _)) = next {
-                current = iter_adjacent(txn, txn.graph(channel), *next, flag0, flag1)?
+                let current_ = iter_adjacent(txn, txn.graph(channel), *next, flag0, flag1)?
                     .next()
                     .unwrap()?
                     .dest();
-                break;
+                if seen.insert(current_) {
+                    current = current_;
+                    break;
+                }
             } else {
                 return Err(FsErrorC::NotFound(FsNotFound(path.to_string())));
             }
@@ -933,10 +937,12 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
     debug!("oldest_path = {:?}", v);
     let mut path = Vec::new();
     let mut name_buf = Vec::new();
+    let mut seen = HashSet::new();
     let flag0 = EdgeFlags::FOLDER | EdgeFlags::PARENT;
     let flag1 = EdgeFlags::all();
     let mut all_alive = true;
     'outer: while !v.change.is_root() {
+        debug!("path = {:?}", path);
         let mut next_v = None;
         let mut alive = false;
         let inode_vertex = match txn.find_block_end(txn.graph(channel), v) {
@@ -964,6 +970,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
             if !name.flag().contains(EdgeFlags::PARENT) {
                 continue;
             }
+
             debug!("oldest_path, name = {:?}", name);
             let age = txn
                 .get_changeset(txn.changes(&channel), &name.dest().change)?
@@ -992,6 +999,9 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
                     if (age > p_age) ^ youngest {
                         continue;
                     }
+                }
+                if !seen.insert(next.dest()) {
+                    continue;
                 }
                 next_v = Some((name_dest, age, next.dest()));
             }

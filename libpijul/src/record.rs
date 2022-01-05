@@ -1407,7 +1407,9 @@ where
                             introduced_by: Some(parent.introduced_by()),
                         })
                     }
-                    moved.need_new_name = false
+                    moved.need_new_name = false;
+                    // We've found an alive parent, delete the others.
+                    is_first_parent = false;
                 } else {
                     // Clean up the extra deleted edges.
                     debug!("cleanup");
@@ -1428,7 +1430,12 @@ where
                     to: parent_dest.to_option(),
                     introduced_by: Some(grandparent.introduced_by()),
                 });
-                // The following is really important in missing context detection:
+                // The following extra edge is meant to allow
+                // detection of missing contexts in folders: indeed,
+                // if we didn't have it, we couldn't tell the
+                // difference between a convergent renaming or
+                // deletion and a conflict between a renaming and a
+                // deletion.
                 if !parent_was_resurrected && !parent.flag().contains(EdgeFlags::PSEUDO) {
                     moved.alive.push(NewEdge {
                         previous: parent.flag() - EdgeFlags::PARENT,
@@ -1444,9 +1451,8 @@ where
                     .entry((grandparent.dest(), *parent_dest))
                     .or_insert_with(Vec::new);
                 v.push(Some(grandparent.introduced_by()));
-                moved.need_new_name = false
-            }
-            if !grandparent.flag().contains(EdgeFlags::DELETED) {
+                moved.need_new_name = false;
+                // We've found an alive parent, delete the others.
                 is_first_parent = false;
             }
         }

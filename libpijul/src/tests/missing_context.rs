@@ -107,20 +107,17 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
     let mut buf = Vec::new();
     repo_alice.read_file("file", &mut buf)?;
 
+    let re = regex::bytes::Regex::new(r#" \[[^\]]*\]"#).unwrap();
+    let buf_ = re.replace_all(&buf, &[][..]);
     if alice.is_some() {
         assert_eq!(
-            std::str::from_utf8(&buf),
-            Ok(
-                &"a\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\ny\nz\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\nf\n"
-                    [..]
-            )
+            std::str::from_utf8(&buf_),
+            Ok(&"a\n>>>>>>> 0\nx\ny\nz\n<<<<<<< 0\nf\n"[..])
         );
     } else {
         assert_eq!(
-            std::str::from_utf8(&buf),
-            Ok(
-                &">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\ny\nz\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n"[..]
-            )
+            std::str::from_utf8(&buf_),
+            Ok(&">>>>>>> 0\nx\ny\nz\n<<<<<<< 0\n"[..])
         );
     }
 
@@ -167,17 +164,15 @@ fn missing_context_newnodes(alice: Option<&str>) -> Result<(), anyhow::Error> {
 
     repo_bob.read_file("file", &mut buf)?;
     if alice.is_some() {
+        let buf_ = re.replace_all(&buf, &[][..]);
         assert_eq!(
-            std::str::from_utf8(&buf),
-            Ok(
-                &"a\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\ny\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nz\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\nf\n"
-                    [..]
-            )
+            std::str::from_utf8(&buf_),
+            Ok(&"a\n>>>>>>> 0\nx\n<<<<<<< 0\ny\n>>>>>>> 1\nz\n<<<<<<< 1\nf\n"[..])
         );
     } else {
         assert_eq!(
-            std::str::from_utf8(&buf),
-            Ok(&">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nx\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\ny\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\nz\n<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n"[..])
+            std::str::from_utf8(&buf_),
+            Ok(&">>>>>>> 0\nx\ny\nz\n<<<<<<< 0\n"[..])
         );
     }
 

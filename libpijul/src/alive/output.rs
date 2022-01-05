@@ -11,6 +11,7 @@ struct ConflictStackElt {
     conflict: Vec<Path>,
     side: usize,
     idx: usize,
+    id: usize,
 }
 
 fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
@@ -26,12 +27,12 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
         conflict: vec![conflict],
         side: 0,
         idx: 0,
+        id: 0,
     }];
     let mut is_zombie = None;
     let mut id = 0;
     while let Some(mut elt) = stack.pop() {
         let n_sides = elt.conflict.len();
-        let id0 = id;
         if n_sides > 1 && elt.side == 0 && elt.idx == 0 {
             elt.conflict.sort_by(|a, b| {
                 let a_ = a
@@ -58,7 +59,6 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
                     line_buf.begin_conflict(id, &[])?;
                 }
             }
-            id += 1;
         }
 
         let mut next = None;
@@ -71,10 +71,10 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
                     PathElement::Scc { scc } => {
                         let vid = sccs[scc][0];
                         let ext = txn.get_external(&graph[vid].vertex.change)?.unwrap();
-                        line_buf.conflict_next(id0, &[&ext.into()])?;
+                        line_buf.conflict_next(elt.id, &[&ext.into()])?;
                     }
                     _ => {
-                        line_buf.conflict_next(id0, &[])?;
+                        line_buf.conflict_next(elt.id, &[])?;
                     }
                 }
             }
@@ -95,10 +95,12 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
                     PathElement::Conflict { ref mut sides } => {
                         let sides = std::mem::replace(sides, Vec::new());
                         elt.idx += 1;
+                        id += 1;
                         next = Some(ConflictStackElt {
                             side: 0,
                             idx: 0,
                             conflict: sides,
+                            id,
                         });
                         break 'outer;
                     }
@@ -113,7 +115,7 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
                 if let Some(id) = is_zombie.take() {
                     line_buf.end_zombie_conflict(id)?;
                 }
-                line_buf.end_conflict(id0)?;
+                line_buf.end_conflict(elt.id)?;
             }
         } else {
             if let Some(id) = is_zombie.take() {

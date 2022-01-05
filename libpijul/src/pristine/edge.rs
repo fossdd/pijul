@@ -27,6 +27,11 @@ impl EdgeFlags {
     }
 
     #[inline]
+    pub(crate) fn df() -> Self {
+        Self::DELETED | Self::FOLDER
+    }
+
+    #[inline]
     pub(crate) fn bp() -> Self {
         Self::BLOCK | Self::PARENT
     }

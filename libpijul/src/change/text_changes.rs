@@ -1111,9 +1111,13 @@ pub fn get_deleted_names<C: ChangeStore>(
     del: &Atom<Option<Hash>>,
 ) -> Result<Vec<String>, TextSerError<C::Error>> {
     let mut res = Vec::new();
+    let mut h = HashSet::new();
     if let Atom::EdgeMap(ref e) = del {
         let mut tmp = Vec::new();
         for d in e.edges.iter() {
+            if !h.insert(d.to) {
+                continue;
+            }
             tmp.clear();
             changes
                 .get_contents_ext(d.to, &mut tmp)

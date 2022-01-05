@@ -36,7 +36,22 @@ where
     let mut zombies = Vec::new();
 
     loop {
-        if !n.flag.contains(EdgeFlags::DELETED) {
+        if (n.flag & EdgeFlags::df()).is_empty() {
+            // Inside a file, nondeleted zombies occur when we are
+            // re-introducing an alive edge (for example to solve a
+            // zombie conflict), and another, unknown patch deleted
+            // the context in parallel.
+            //
+            // For folder edges, children or parents are either on the
+            // same level as this edge (i.e. to/from a basename
+            // vertex), in which case the zombie nature of the file
+            // will be detected at output and record time.
+            //
+            // Or the children or parents are at different levels,
+            // which isn't a zombie conflict, since it is normal
+            // commutation between folder operations.
+            //
+            // This justifies the EdgeFlags::df() exclusion above.
             collect_nondeleted_zombies::<_, _>(
                 txn,
                 graph,
@@ -68,6 +83,7 @@ where
         if apply_check(source, target) {
             put_graph_with_rev(txn, graph, n.flag, source, target, change)?;
             for intro in zombies.drain(..) {
+                assert!(!n.flag.contains(EdgeFlags::FOLDER));
                 put_graph_with_rev(txn, graph, EdgeFlags::DELETED, source, target, intro)?;
             }
         }
@@ -107,6 +123,8 @@ where
     T: GraphMutTxnT + TreeTxnT,
     K: FnMut(&Hash) -> bool,
 {
+    // Iter through deleted parents of the edge's source. Any unknown
+    // edge points towards a zombie.
     for v in iter_deleted_parents(txn, graph, source)? {
         let v = v?;
         let intro = v.introduced_by();
@@ -114,6 +132,8 @@ where
             zombies.push(intro)
         }
     }
+    // Iter through the children of the non-deleted target. Any deleted
+    // parent of a child makes the child a zombie.
     for v in iter_adjacent(txn, graph, target, EdgeFlags::empty(), EdgeFlags::all())? {
         let v = v?;
         if v.flag().contains(EdgeFlags::PARENT) {
