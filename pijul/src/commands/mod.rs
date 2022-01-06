@@ -173,6 +173,8 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
     .unwrap();
     let mut first_p = true;
     for p in pullable {
+        use ::log::*;
+        debug!("make_changelist {:?}", p);
         if !first_p {
             writeln!(v, "").unwrap();
         }
@@ -191,7 +193,7 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
                 changes.get_header(&p)?
             }
             CS::State(p) => {
-                writeln!(v, "t{}\n", p.to_base32()).unwrap();
+                writeln!(v, "{}\n", p.to_base32()).unwrap();
                 changes.get_tag_header(&p)?
             }
         };
@@ -226,8 +228,9 @@ fn make_changelist<S: libpijul::changestore::ChangeStore>(
 /// Parses a list of hashes from a slice of bytes.
 /// Everything that is not a line consisting of a
 /// valid hash and nothing else will be ignored.
-fn parse_changelist(o: &[u8]) -> Vec<crate::remote::CS> {
+fn parse_changelist(o: &[u8], states: &[CS]) -> Vec<crate::remote::CS> {
     use libpijul::Base32;
+    let states: std::collections::HashSet<&CS> = states.iter().collect();
     if let Ok(o) = std::str::from_utf8(o) {
         o.lines()
             .filter_map(|l| {
@@ -236,11 +239,13 @@ fn parse_changelist(o: &[u8]) -> Vec<crate::remote::CS> {
                     l,
                     libpijul::Merkle::from_base32(l.as_bytes())
                 );
-                if l.starts_with("t") {
-                    libpijul::Merkle::from_base32(&l.as_bytes()[1..]).map(crate::remote::CS::State)
-                } else {
-                    libpijul::Hash::from_base32(l.as_bytes()).map(crate::remote::CS::Change)
+                let h_ = libpijul::Hash::from_base32(l.as_bytes()).map(crate::remote::CS::Change);
+                if let Some(h) = h_ {
+                    if states.contains(&h) {
+                        return h_;
+                    }
                 }
+                libpijul::Merkle::from_base32(&l.as_bytes()[..]).map(crate::remote::CS::State)
             })
             .collect()
     } else {

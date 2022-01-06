@@ -1082,14 +1082,19 @@ impl RemoteRepo {
         let mut change_path_ = repo.changes_dir.clone();
         let mut to_download = HashSet::with_capacity(to_apply.len());
         for h in to_apply {
-            if let CS::Change(h) = h {
-                libpijul::changestore::filesystem::push_filename(&mut change_path_, h);
-                if std::fs::metadata(&change_path_).is_err() {
-                    hash_send.send(CS::Change(*h))?;
-                    to_download.insert(CS::Change(*h));
+            match h {
+                CS::Change(h) => {
+                    libpijul::changestore::filesystem::push_filename(&mut change_path_, h);
                 }
-                libpijul::changestore::filesystem::pop_filename(&mut change_path_);
+                CS::State(h) => {
+                    libpijul::changestore::filesystem::push_tag_filename(&mut change_path_, h);
+                }
             }
+            if std::fs::metadata(&change_path_).is_err() {
+                hash_send.send(*h)?;
+                to_download.insert(*h);
+            }
+            libpijul::changestore::filesystem::pop_filename(&mut change_path_);
         }
         std::mem::drop(hash_send);
 
@@ -1300,11 +1305,7 @@ impl RemoteRepo {
         });
 
         for c in changes {
-            let c = if let CS::Change(c) = c {
-                c
-            } else {
-                unreachable!()
-            };
+            let c = if let CS::Change(c) = c { c } else { continue };
             let sc = c.into();
             if repo
                 .changes

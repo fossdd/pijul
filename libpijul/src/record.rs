@@ -1474,6 +1474,8 @@ where
         }
     }
 
+    debug!("alive = {:#?}", alive);
+
     for ((from, to), intro) in alive {
         if intro.len() > 1 || !moved.resurrect.is_empty() {
             for introduced_by in intro {

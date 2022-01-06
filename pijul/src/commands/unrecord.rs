@@ -75,7 +75,7 @@ impl Unrecord {
                 .take(number_of_changes)
                 .collect::<Vec<_>>();
             let o = make_changelist(&repo.changes, &hashes_, "unrecord")?;
-            for h in parse_changelist(&edit::edit_bytes(&o[..])?).iter() {
+            for h in parse_changelist(&edit::edit_bytes(&o[..])?, &hashes_).iter() {
                 if let CS::Change(h) = h {
                     hashes.push((*h, *txn.get_internal(&h.into())?.unwrap()))
                 }

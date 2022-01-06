@@ -198,23 +198,29 @@ impl Local {
         mut path: &mut PathBuf,
     ) -> Result<(), anyhow::Error> {
         while let Some(c) = hashes.recv().await {
-            if let CS::Change(c) = c {
-                libpijul::changestore::filesystem::push_filename(&mut self.changes_dir, &c);
-                libpijul::changestore::filesystem::push_filename(&mut path, &c);
-                super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
-                if std::fs::metadata(&path).is_ok() {
-                    debug!("metadata {:?} ok", path);
-                    libpijul::changestore::filesystem::pop_filename(&mut path);
-                    continue;
+            match c {
+                CS::Change(c) => {
+                    libpijul::changestore::filesystem::push_filename(&mut self.changes_dir, &c);
+                    libpijul::changestore::filesystem::push_filename(&mut path, &c);
                 }
-                std::fs::create_dir_all(&path.parent().unwrap())?;
-                if std::fs::hard_link(&self.changes_dir, &path).is_err() {
-                    std::fs::copy(&self.changes_dir, &path)?;
+                CS::State(c) => {
+                    libpijul::changestore::filesystem::push_tag_filename(&mut self.changes_dir, &c);
+                    libpijul::changestore::filesystem::push_tag_filename(&mut path, &c);
                 }
-                debug!("hard link done");
-                libpijul::changestore::filesystem::pop_filename(&mut self.changes_dir);
-                libpijul::changestore::filesystem::pop_filename(&mut path);
             }
+            super::PROGRESS.borrow_mut().unwrap()[pro_n].incr();
+            if std::fs::metadata(&path).is_ok() {
+                debug!("metadata {:?} ok", path);
+                libpijul::changestore::filesystem::pop_filename(&mut path);
+                continue;
+            }
+            std::fs::create_dir_all(&path.parent().unwrap())?;
+            if std::fs::hard_link(&self.changes_dir, &path).is_err() {
+                std::fs::copy(&self.changes_dir, &path)?;
+            }
+            debug!("hard link done");
+            libpijul::changestore::filesystem::pop_filename(&mut self.changes_dir);
+            libpijul::changestore::filesystem::pop_filename(&mut path);
             debug!("sent");
             send.send(c).await?;
         }

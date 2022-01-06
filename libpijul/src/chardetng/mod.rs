@@ -3004,6 +3004,7 @@ impl EncodingDetector {
         }
         for (i, candidate) in self.candidates.iter().enumerate().skip(Self::FIRST_NORMAL) {
             if let Some(score) = candidate.score(i, tld_type, expectation_is_valid) {
+                debug!("score = {:?} {:?}", i, score);
                 if score > max {
                     max = score;
                     encoding = candidate.encoding();

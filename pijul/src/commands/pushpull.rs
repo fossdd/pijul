@@ -301,7 +301,7 @@ impl Push {
         } else {
             let mut o = make_changelist(&repo.changes, &to_upload, "push")?;
             loop {
-                let d = parse_changelist(&edit::edit_bytes(&o[..])?);
+                let d = parse_changelist(&edit::edit_bytes(&o[..])?, &to_upload);
                 let comp = complete_deps(&repo.changes, &to_upload, &d)?;
                 if comp.len() == d.len() {
                     break comp;
@@ -453,7 +453,7 @@ impl Pull {
         if !self.all {
             let mut o = make_changelist(&repo.changes, &to_download, "pull")?;
             to_download = loop {
-                let d = parse_changelist(&edit::edit_bytes(&o[..])?);
+                let d = parse_changelist(&edit::edit_bytes(&o[..])?, &to_download);
                 let comp = complete_deps(&repo.changes, &to_download, &d)?;
                 if comp.len() == d.len() {
                     break comp;
