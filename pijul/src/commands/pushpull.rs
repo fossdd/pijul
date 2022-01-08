@@ -91,9 +91,6 @@ pub struct Push {
     /// Push to this remote channel instead of the remote's default channel
     #[clap(long = "to-channel")]
     to_channel: Option<String>,
-    /// Push tags instead of regular changes.
-    #[clap(long = "tag")]
-    is_tag: bool,
     /// Push only these changes
     #[clap(last = true)]
     changes: Vec<String>,
@@ -150,7 +147,6 @@ impl Push {
         channel: &mut ChannelRef<MutTxn<()>>,
         repo: &Repository,
         remote: &mut RemoteRepo,
-        is_tag: bool,
     ) -> Result<PushDelta, anyhow::Error> {
         let remote_delta = remote
             .update_changelist_pushpull(
@@ -160,7 +156,7 @@ impl Push {
                 Some(self.force_cache),
                 repo,
                 self.changes.as_slice(),
-                is_tag,
+                false,
             )
             .await?;
         if let RemoteRepo::LocalChannel(ref remote_channel) = remote {
@@ -231,13 +227,7 @@ impl Push {
             unknown_changes,
             ..
         } = self
-            .to_upload(
-                &mut *txn.write(),
-                &mut channel,
-                &repo,
-                &mut remote,
-                self.is_tag,
-            )
+            .to_upload(&mut *txn.write(), &mut channel, &repo, &mut remote)
             .await?;
 
         debug!("to_upload = {:?}", to_upload);
@@ -341,7 +331,6 @@ impl Pull {
         channel: &mut ChannelRef<MutTxn<()>>,
         repo: &mut Repository,
         remote: &mut RemoteRepo,
-        is_tag: bool,
     ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
         let force_cache = if self.force_cache {
             Some(self.force_cache)
@@ -356,7 +345,7 @@ impl Pull {
                 force_cache,
                 repo,
                 self.changes.as_slice(),
-                is_tag,
+                true,
             )
             .await?;
         let to_download = remote
@@ -423,13 +412,7 @@ impl Pull {
             remote_unrecs,
             ..
         } = self
-            .to_download(
-                &mut *txn.write(),
-                &mut channel,
-                &mut repo,
-                &mut remote,
-                self.is_tag,
-            )
+            .to_download(&mut *txn.write(), &mut channel, &mut repo, &mut remote)
             .await?;
 
         let hash = super::pending(txn.clone(), &mut channel, &mut repo)?;
@@ -549,7 +532,7 @@ impl Pull {
                     }
                 }
             }
-            if touched_paths.is_empty() && !self.is_tag {
+            if touched_paths.is_empty() {
                 touched_paths.insert(String::from(""));
             }
             let mut last = None;

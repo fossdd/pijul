@@ -360,12 +360,16 @@ impl Txn {
 
             let rev: UDb<SerializedHash, L64> = UDb::from_page(tup.rev.into());
             let states: UDb<SerializedMerkle, L64> = UDb::from_page(tup.states.into());
+            let tags: UDb<L64, Pair<SerializedMerkle, SerializedMerkle>> =
+                UDb::from_page(tup.tags.into());
             debug!("check: remote 0x{:x}", remote.db);
             remote.add_refs(&self.txn, refs).unwrap();
             debug!("check: rev 0x{:x}", rev.db);
             rev.add_refs(&self.txn, refs).unwrap();
             debug!("check: states 0x{:x}", states.db);
             states.add_refs(&self.txn, refs).unwrap();
+            debug!("check: tags 0x{:x}", tags.db);
+            tags.add_refs(&self.txn, refs).unwrap();
         }
         ::sanakirja::debug::add_free_refs(&self.txn, refs).unwrap();
         ::sanakirja::debug::check_free(&self.txn, &refs);
@@ -1248,7 +1252,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
 
     fn state_from_prefix(
         &self,
-        channel: &Self::Channel,
+        channel: &Self::States,
         s: &str,
     ) -> Result<(Merkle, L64), super::HashPrefixError<Self::GraphError>> {
         let h: SerializedMerkle = if let Some(ref h) = Merkle::from_prefix(s) {
@@ -1258,7 +1262,7 @@ impl<T: ::sanakirja::LoadPage<Error = ::sanakirja::Error> + ::sanakirja::RootPag
         };
         let mut result = None;
         debug!("h = {:?}", h);
-        for x in btree::iter(&self.txn, &channel.states, Some((&h, None)))
+        for x in btree::iter(&self.txn, &channel, Some((&h, None)))
             .map_err(|e| super::HashPrefixError::Txn(e.into()))?
         {
             let (e, i) = x.map_err(|e| super::HashPrefixError::Txn(e.into()))?;

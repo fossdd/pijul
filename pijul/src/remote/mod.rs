@@ -599,7 +599,7 @@ impl RemoteRepo {
         force_cache: Option<bool>,
         repo: &Repository,
         specific_changes: &[String],
-        is_tag: bool,
+        is_pull: bool,
     ) -> Result<RemoteDelta<MutTxn<()>>, anyhow::Error> {
         debug!("update_changelist_pushpull");
         if let RemoteRepo::LocalChannel(c) = self {
@@ -694,12 +694,19 @@ impl RemoteRepo {
             let to_download = specific_changes
                 .iter()
                 .map(|h| {
-                    if is_tag {
-                        Ok(CS::State(
-                            txn.state_from_prefix(&*current_channel.read(), h)?.0,
-                        ))
+                    if is_pull {
+                        {
+                            if let Ok(t) = txn.state_from_prefix(&remote_ref.lock().states, h) {
+                                return Ok(CS::State(t.0));
+                            }
+                        }
+                        Ok(CS::Change(txn.hash_from_prefix_remote(&remote_ref, h)?))
                     } else {
-                        Ok(CS::Change(txn.hash_from_prefix(h)?.0))
+                        if let Ok(t) = txn.state_from_prefix(&current_channel.read().states, h) {
+                            Ok(CS::State(t.0))
+                        } else {
+                            Ok(CS::Change(txn.hash_from_prefix(h)?.0))
+                        }
                     }
                 })
                 .collect::<Result<Vec<_>, anyhow::Error>>();

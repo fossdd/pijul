@@ -29,6 +29,11 @@ pub enum ChangeError {
     VersionMismatch { got: u64 },
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("while retrieving {:?}: {}", hash, err)]
+    IoHash {
+        err: std::io::Error,
+        hash: crate::pristine::Hash,
+    },
     #[error(transparent)]
     Bincode(#[from] bincode::Error),
     #[error(transparent)]
@@ -1520,7 +1525,13 @@ impl Change {
     #[cfg(feature = "zstd")]
     pub fn deserialize(file: &str, hash: Option<&Hash>) -> Result<Self, ChangeError> {
         use std::io::Read;
-        let mut r = std::fs::File::open(file)?;
+        let mut r = std::fs::File::open(file).map_err(|err| {
+            if let Some(h) = hash {
+                ChangeError::IoHash { err, hash: *h }
+            } else {
+                ChangeError::Io(err)
+            }
+        })?;
         let mut buf = vec![0u8; Self::OFFSETS_SIZE as usize];
         r.read_exact(&mut buf)?;
         let offsets: Offsets = bincode::deserialize(&buf)?;

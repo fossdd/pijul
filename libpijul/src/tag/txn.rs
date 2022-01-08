@@ -1,9 +1,7 @@
 use super::*;
 use crate::small_string::SmallStr;
+use std::collections::HashMap;
 use std::sync::Mutex;
-
-/// Size of the LRU cache.
-const CACHE_SIZE: usize = 1024;
 
 struct WithOffset<R> {
     off: u64,
@@ -31,7 +29,7 @@ impl<R: Seek> Seek for WithOffset<R> {
 pub struct TagTxn {
     pub(crate) header: FileHeader,
     s: Mutex<zstd_seekable::Seekable<'static, WithOffset<std::fs::File>>>,
-    loaded: Mutex<lru_cache::LruCache<u64, Box<[u8; crate::tag::BLOCK_SIZE]>>>,
+    loaded: Mutex<HashMap<u64, Box<[u8; crate::tag::BLOCK_SIZE]>>>,
 }
 
 impl std::convert::From<BlockError<::zstd_seekable::Error>> for BlockError<TagError> {
@@ -70,13 +68,21 @@ impl TagTxn {
         }))?;
         Ok(TagTxn {
             header: ch.header,
-            loaded: Mutex::new(lru_cache::LruCache::new(CACHE_SIZE)),
+            loaded: Mutex::new(HashMap::new()),
             s: Mutex::new(s),
         })
     }
 
     pub fn channel(&self) -> ChannelRef<Self> {
         ChannelRef::new(self.header.offsets.clone())
+    }
+
+    /// Clear the cache, freeing memory.
+    pub fn clear(&mut self) {
+        // This function is only safe because it takes a mutable
+        // borrow, and all references returned by the methods on
+        // `TagTxn` return immutable borrows of `self`.
+        self.loaded.lock().unwrap().clear()
     }
 }
 

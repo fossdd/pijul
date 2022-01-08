@@ -38,7 +38,7 @@ impl ChangeFile {
     /// Open a change file from a path.
     pub fn open(hash: Hash, path: &str) -> Result<Self, ChangeError> {
         use std::io::Read;
-        let mut r = std::fs::File::open(path)?;
+        let mut r = std::fs::File::open(path).map_err(|err| ChangeError::IoHash { err, hash })?;
         let mut buf = Vec::new();
         buf.resize(Change::OFFSETS_SIZE as usize, 0);
         r.read_exact(&mut buf)?;

@@ -661,7 +661,7 @@ pub trait TxnT:
 
     fn state_from_prefix(
         &self,
-        channel: &Self::Channel,
+        channel: &Self::States,
         s: &str,
     ) -> Result<(Merkle, L64), HashPrefixError<Self::GraphError>>;
 
