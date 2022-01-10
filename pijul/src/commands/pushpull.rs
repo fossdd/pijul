@@ -125,9 +125,6 @@ pub struct Pull {
     /// Pull from this remote channel
     #[clap(long = "from-channel")]
     from_channel: Option<String>,
-    /// Pull tags instead of regular changes.
-    #[clap(long = "tag")]
-    is_tag: bool,
     /// Pull changes from the local repository, not necessarily from a channel
     #[clap(last = true)]
     changes: Vec<String>, // For local changes only, can't be symmetric.
