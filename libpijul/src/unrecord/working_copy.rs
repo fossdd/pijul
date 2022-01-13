@@ -101,7 +101,7 @@ fn restore_inode<T: TreeMutTxnT + GraphTxnT + TreeTxnT, P: ChangeStore>(
     parent_inode: Inode,
     salt: u64,
 ) -> Result<Option<Inode>, super::UnrecordError<P::Error, T>> {
-    let mut name = Vec::new();
+    let mut name = vec![0; source.end - source.start];
     let FileMetadata {
         basename, metadata, ..
     } = changes

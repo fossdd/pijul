@@ -1954,31 +1954,8 @@ pub(crate) fn del_graph_with_rev<T: GraphMutTxnT>(
     debug!("del_graph_with_rev {:?} {:?} {:?}", flag, k0, k1);
     let v0 = SerializedEdge::new(flag, k1.change, k1.start, introduced_by);
     let a = txn.del_graph(graph, &k0, Some(&v0))?;
-    {
-        if let Some(&ee) = txn.get_graph(graph, &k0, Some(&v0))? {
-            if ee == v0 {
-                txn.debug(graph, ".3");
-                panic!("Not deleted: {:?} {:?}", k0, v0);
-            }
-        }
-    }
     let v1 = SerializedEdge::new(flag | EdgeFlags::PARENT, k0.change, k0.end, introduced_by);
     let b = txn.del_graph(graph, &k1, Some(&v1))?;
-    {
-        if let Some(&ee) = txn.get_graph(graph, &k1, Some(&v1))? {
-            if ee == v1 {
-                txn.debug(graph, ".3");
-                panic!("Not deleted: {:?} {:?}", k1, v1);
-            }
-        }
-    }
-    if a != b {
-        txn.debug(graph, ".2");
-        panic!(
-            "Failed: {:?} {:?} for {:?} {:?} {:?} {:?}",
-            a, b, flag, k0, k1, introduced_by
-        )
-    }
     Ok(a && b)
 }
 
@@ -1998,26 +1975,6 @@ pub(crate) fn put_graph_with_rev<T: GraphMutTxnT>(
         assert!(flag.contains(EdgeFlags::PSEUDO));
     }
 
-    let gaeul = ChangeId::from_base32(b"GAEULYDRSLJSC").unwrap();
-    let has_gaeul1 = {
-        let v = Vertex {
-            change: gaeul,
-            start: ChangePosition(L64(1677892)),
-            end: ChangePosition(L64(1677893)),
-        };
-        let e = SerializedEdge::new(
-            EdgeFlags::PSEUDO | EdgeFlags::PARENT,
-            gaeul,
-            ChangePosition(L64(1677837)),
-            ChangeId::ROOT,
-        );
-        if let Some(&ee) = txn.get_graph(graph, &v, Some(&e))? {
-            ee == e
-        } else {
-            false
-        }
-    };
-
     debug!("put_graph_with_rev {:?} {:?} {:?}", k0, k1, flag);
     let a = txn.put_graph(
         graph,
@@ -2029,31 +1986,7 @@ pub(crate) fn put_graph_with_rev<T: GraphMutTxnT>(
         &k1,
         &SerializedEdge::new(flag | EdgeFlags::PARENT, k0.change, k0.end, introduced_by),
     )?;
-    assert!((a && b) || (!a && !b));
-
-    let has_gaeul1_ = {
-        let v = Vertex {
-            change: gaeul,
-            start: ChangePosition(L64(1677892)),
-            end: ChangePosition(L64(1677893)),
-        };
-        let e = SerializedEdge::new(
-            EdgeFlags::PSEUDO | EdgeFlags::PARENT,
-            gaeul,
-            ChangePosition(L64(1677837)),
-            ChangeId::ROOT,
-        );
-        if let Some(&ee) = txn.get_graph(graph, &v, Some(&e))? {
-            ee == e
-        } else {
-            false
-        }
-    };
-
-    if has_gaeul1 && !has_gaeul1_ {
-        txn.debug(graph, ".GAEUL");
-        panic!("GAEULT");
-    }
+    assert!(!(a^b));
 
     Ok(a && b)
 }

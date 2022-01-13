@@ -48,36 +48,34 @@ impl ChangeStore for Memory {
         &self,
         hash: F,
         key: Vertex<ChangeId>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, Self::Error> {
-        buf.resize(key.end.us() - key.start.us(), 0);
         if key.end <= key.start {
             return Ok(0);
         }
+        assert_eq!(buf.len(), key.end - key.start);
         let changes = self.changes.read().unwrap();
         let p = changes.get(&hash(key.change).unwrap()).unwrap();
         let start = key.start.us();
         let end = key.end.us();
-        buf.clear();
-        buf.extend(&p.contents[start..end]);
+        buf.clone_from_slice(&p.contents[start..end]);
         Ok(end - start)
     }
     fn get_contents_ext(
         &self,
         key: Vertex<Option<Hash>>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, Self::Error> {
         if let Some(change) = key.change {
-            buf.resize(key.end.us() - key.start.us(), 0);
             if key.end <= key.start {
                 return Ok(0);
             }
+            assert_eq!(key.end.us() - key.start.us(), buf.len());
             let changes = self.changes.read().unwrap();
             let p = changes.get(&change).unwrap();
             let start = key.start.us();
             let end = key.end.us();
-            buf.clear();
-            buf.extend(&p.contents[start..end]);
+            buf.clone_from_slice(&p.contents[start..end]);
             Ok(end - start)
         } else {
             Ok(0)

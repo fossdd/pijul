@@ -3,7 +3,9 @@ use crate::change::*;
 use crate::find_alive::*;
 use crate::pristine::*;
 use crate::{HashMap, HashSet};
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
+use std::rc::Rc;
 
 #[derive(Debug, Error)]
 pub enum MissingError<TxnError: std::error::Error + 'static> {
@@ -72,7 +74,16 @@ pub(crate) fn repair_missing_up_context<
     d: I,
 ) -> Result<(), MissingError<T::GraphError>> {
     let now = std::time::Instant::now();
-    let mut alive = find_alive_up(txn, channel, &mut ws.files, c, change_id)?;
+    let alive = find_alive_up(
+        txn,
+        channel,
+        &mut ws.files,
+        c,
+        change_id,
+        &mut ws.alive_up_cache,
+    )?;
+    let mut alive = alive.borrow().clone();
+    debug!("files = {:?}", ws.files);
     crate::TIMERS.lock().unwrap().find_alive += now.elapsed();
     ws.load_graph(txn, channel, inode)?;
 
@@ -100,7 +111,7 @@ fn repair_regular_up<T: GraphMutTxnT>(
     flag: EdgeFlags,
 ) -> Result<(), TxnErr<T::GraphError>> {
     for &ancestor in alive.iter() {
-        debug!("put_graph_with_rev {:?} -> {:?}", ancestor, d);
+        debug!("repair_regular_up {:?} → {:?}", ancestor, d);
         if ancestor == d {
             info!(
                 "repair_missing_up_context, alive: {:?} == {:?}",
@@ -108,7 +119,6 @@ fn repair_regular_up<T: GraphMutTxnT>(
             );
             continue;
         }
-        debug!("repair_missing_up {:?} {:?}", ancestor, d);
         put_graph_with_rev(txn, channel, flag, ancestor, d, ChangeId::ROOT)?;
     }
     Ok(())
@@ -126,8 +136,11 @@ pub(crate) fn repair_missing_down_context<
     c: Vertex<ChangeId>,
     d: I,
 ) -> Result<(), MissingError<T::GraphError>> {
+    debug!("repair_missing_down_context {:?}", c);
     let now = std::time::Instant::now();
-    let mut alive = find_alive_down(txn, channel, c)?;
+    let alive = find_alive_down(txn, channel, c, &mut ws.alive_down_cache)?;
+    let mut alive = alive.borrow().clone();
+    debug!("alive = {:?}", alive);
     crate::TIMERS.lock().unwrap().find_alive += now.elapsed();
     ws.load_graph(txn, channel, inode)?;
     if let Some((graph, vids)) = ws.graphs.0.get(&inode) {
@@ -355,6 +368,14 @@ pub struct Workspace {
     pub(crate) graphs: Graphs,
     pub(crate) covered_parents: HashSet<(Vertex<ChangeId>, Vertex<ChangeId>)>,
     pub(crate) files: HashSet<Vertex<ChangeId>>,
+    alive_down_cache: HashMap<Vertex<ChangeId>, Rc<RefCell<HashSet<Vertex<ChangeId>>>>>,
+    alive_up_cache: HashMap<
+        Vertex<ChangeId>,
+        (
+            Rc<RefCell<HashSet<Vertex<ChangeId>>>>,
+            Rc<RefCell<HashSet<Vertex<ChangeId>>>>,
+        ),
+    >,
 }
 
 #[derive(Debug, Default)]
@@ -400,6 +421,8 @@ impl Workspace {
         self.graphs.0.clear();
         self.repaired.clear();
         self.covered_parents.clear();
+        self.alive_up_cache.clear();
+        self.alive_down_cache.clear();
     }
     pub fn assert_empty(&self) {
         assert!(self.unknown.is_empty());
@@ -409,6 +432,8 @@ impl Workspace {
         assert!(self.graphs.0.is_empty());
         assert!(self.repaired.is_empty());
         assert!(self.covered_parents.is_empty());
+        assert!(self.alive_up_cache.is_empty());
+        assert!(self.alive_down_cache.is_empty());
     }
 }
 
@@ -494,8 +519,16 @@ where
         if is_alive(txn, channel, &p)? {
             repair_missing_up_context(txn, channel, ws, change_id, inode, dest_vertex, &[p])?;
         } else {
-            let alive = find_alive_down(txn, channel, p)?;
-            repair_missing_up_context(txn, channel, ws, change_id, inode, dest_vertex, &alive)?;
+            let alive = find_alive_down(txn, channel, p, &mut ws.alive_down_cache)?;
+            repair_missing_up_context(
+                txn,
+                channel,
+                ws,
+                change_id,
+                inode,
+                dest_vertex,
+                &*alive.borrow(),
+            )?;
         }
     }
     ws.unknown = unknown;

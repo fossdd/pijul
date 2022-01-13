@@ -212,7 +212,7 @@ fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
 
         let vertex = graph[v].vertex;
 
-        let get_contents = |buf: &mut Vec<u8>| {
+        let get_contents = |buf: &mut [u8]| {
             let now = std::time::Instant::now();
             let result = changes
                 .get_contents(

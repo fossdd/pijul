@@ -3,7 +3,6 @@ use crate::vertex_buffer;
 use crate::{HashMap, HashSet};
 
 pub(super) struct Diff {
-    pub buf: Vec<u8>,
     pub inode: Position<Option<ChangeId>>,
     pub path: String,
     pub contents_a: Vec<u8>,
@@ -62,7 +61,6 @@ impl Diff {
         Diff {
             inode,
             path,
-            buf: Vec::with_capacity(graph.len_bytes()),
             pos_a: Vec::with_capacity(2 * graph.len_vertices()),
             contents_a: Vec::with_capacity(graph.len_bytes()),
             missing_eol: HashSet::default(),
@@ -137,20 +135,20 @@ impl vertex_buffer::VertexBuffer for Diff {
     fn output_line<E, C>(&mut self, v: crate::pristine::Vertex<ChangeId>, c: C) -> Result<(), E>
     where
         E: From<std::io::Error>,
-        C: FnOnce(&mut Vec<u8>) -> Result<(), E>,
+        C: FnOnce(&mut [u8]) -> Result<(), E>,
     {
         if v == crate::pristine::Vertex::BOTTOM {
             return Ok(());
         }
-        self.buf.clear();
-        c(&mut self.buf)?;
+        let len = self.contents_a.len();
+        self.contents_a.resize(len + (v.end - v.start), 0);
+        c(&mut self.contents_a[len..])?;
         self.pos_a.push(Vertex {
-            pos: self.contents_a.len(),
+            pos: len,
             vertex: v,
             before_conflict: false,
             conflict: self.conflict_stack.last().unwrap().counter,
         });
-        self.contents_a.extend(&self.buf);
         Ok(())
     }
 
@@ -281,7 +279,12 @@ impl Diff {
             },
             Err(i) => {
                 assert!(i > 0);
-                i - 1
+                let len = self.pos_a[i-1].vertex.end - self.pos_a[i-1].vertex.start;
+                if pos < self.pos_a[i-1].pos + len || len == 0 {
+                    i - 1
+                } else {
+                    i
+                }
             }
         }
     }

@@ -173,14 +173,14 @@ impl ChangeStore for FileSystem {
         &self,
         hash: F,
         key: Vertex<ChangeId>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, Self::Error> {
         debug!("get_contents {:?}", key);
-        buf.resize(key.end.us() - key.start.us(), 0);
         if key.end <= key.start || key.is_root() {
             debug!("return 0");
             return Ok(0);
         }
+        assert_eq!(key.end - key.start, buf.len());
         let mut cache = self.load(hash, key.change)?;
         let p = cache.get_mut(&key.change).unwrap();
         let n = p.read_contents(key.start.into(), buf)?;
@@ -190,10 +190,10 @@ impl ChangeStore for FileSystem {
     fn get_contents_ext(
         &self,
         key: Vertex<Option<Hash>>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, Self::Error> {
         if let Some(change) = key.change {
-            buf.resize(key.end.us() - key.start.us(), 0);
+            assert_eq!(key.end.us() - key.start.us(), buf.len());
             if key.end <= key.start {
                 return Ok(0);
             }

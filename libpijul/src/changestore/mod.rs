@@ -31,7 +31,7 @@ pub trait ChangeStore {
         &self,
         hash: F,
         key: Vertex<ChangeId>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, Self::Error>;
     fn get_header(&self, h: &Hash) -> Result<ChangeHeader, Self::Error> {
         Ok(self.get_change(h)?.hashed.header)
@@ -40,7 +40,7 @@ pub trait ChangeStore {
     fn get_contents_ext(
         &self,
         key: Vertex<Option<Hash>>,
-        buf: &mut Vec<u8>,
+        buf: &mut [u8],
     ) -> Result<usize, Self::Error>;
     fn get_dependencies(&self, hash: &Hash) -> Result<Vec<Hash>, Self::Error> {
         Ok(self.get_change(hash)?.hashed.dependencies)
@@ -87,9 +87,8 @@ pub trait ChangeStore {
         &self,
         hash: F,
         vertex: Vertex<ChangeId>,
-        buf: &'a mut Vec<u8>,
+        buf: &'a mut [u8],
     ) -> Result<FileMetadata<'a>, Self::Error> {
-        buf.clear();
         self.get_contents(hash, vertex, buf)?;
         Ok(FileMetadata::read(buf))
     }

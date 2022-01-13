@@ -581,7 +581,7 @@ impl Builder {
                         true
                     };
                 if needs_deletion {
-                    let mut name = Vec::new();
+                    let mut name = vec![0; child.end - child.start];
                     changes
                         .get_contents(
                             |p| txn.get_external(&p).unwrap().map(From::from),
@@ -1207,7 +1207,7 @@ where
         let name_dest = txn
             .find_block_end(txn.graph(channel), name_.dest())
             .unwrap();
-        let mut meta = Vec::new();
+        let mut meta = vec![0; name_dest.end - name_dest.start];
         let FileMetadata {
             basename,
             metadata,
@@ -1323,8 +1323,8 @@ where
             }
         }
         debug!("parent_was_resurrected: {:?}", parent_was_resurrected);
-        previous_name.clear();
         let parent_dest = txn.find_block_end(channel, parent.dest()).unwrap();
+        previous_name.resize(parent_dest.end - parent_dest.start, 0);
         let FileMetadata {
             metadata: parent_meta,
             basename: parent_name,
@@ -1638,6 +1638,7 @@ impl Recorded {
             assert!(parent.flag().contains(EdgeFlags::FOLDER));
             let parent_dest = txn.find_block_end(channel, parent.dest()).unwrap();
             if enc.is_none() {
+                previous_name.resize(parent_dest.end - parent_dest.start, 0);
                 let FileMetadata { encoding, .. } = changes
                     .get_file_meta(
                         |p| txn.get_external(&p).unwrap().map(From::from),

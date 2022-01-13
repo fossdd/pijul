@@ -637,6 +637,7 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
         debug!("dest = {:?}", dest);
 
         let mut buf = std::mem::replace(&mut self.buf, Vec::new());
+        buf.resize(dest.end - dest.start, 0);
         let FileMetadata {
             basename,
             metadata: perms,
@@ -735,6 +736,7 @@ impl<'txn, 'changes, T: GraphTxnT, P: ChangeStore + 'changes> Iterator
                 return None;
             }
             let mut buf = std::mem::replace(&mut self.buf, Vec::new());
+            buf.resize(dest.end - dest.start, 0);
             let FileMetadata {
                 basename,
                 metadata: perms,
@@ -884,7 +886,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
                         .dest();
                     continue 'outer;
                 }
-                name_buf.clear();
+                name_buf.resize(name_dest.end - name_dest.start, 0);
                 debug!("getting contents {:?}", name);
                 changes
                     .get_contents(
@@ -1013,7 +1015,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
             break;
         }
         if alive {
-            name_buf.clear();
+            name_buf.resize(name.end - name.start, 0);
             debug!("getting contents {:?}", name);
 
             let FileMetadata { basename, .. } = changes

@@ -223,7 +223,7 @@ fn collect<T: GraphTxnT + TreeTxnT, P: ChangeStore>(
     name_vertex: &Vertex<ChangeId>,
 ) -> Result<(), PristineOutputError<P::Error, T>> {
     // First, get the basename of the path we're outputting.
-    let mut name_buf = Vec::new();
+    let mut name_buf = vec![0; name_vertex.end - name_vertex.start];
     let FileMetadata {
         basename,
         metadata: perms,

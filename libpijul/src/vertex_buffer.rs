@@ -14,7 +14,7 @@ pub trait VertexBuffer {
     fn output_line<E, F>(&mut self, key: Vertex<ChangeId>, contents: F) -> Result<(), E>
     where
         E: From<std::io::Error>,
-        F: FnOnce(&mut Vec<u8>) -> Result<(), E>;
+        F: FnOnce(&mut [u8]) -> Result<(), E>;
 
     fn output_conflict_marker(
         &mut self,
@@ -88,9 +88,9 @@ impl<'a, 'b, W: std::io::Write> VertexBuffer for ConflictsWriter<'a, 'b, W> {
     fn output_line<E, C>(&mut self, v: Vertex<ChangeId>, c: C) -> Result<(), E>
     where
         E: From<std::io::Error>,
-        C: FnOnce(&mut Vec<u8>) -> Result<(), E>,
+        C: FnOnce(&mut [u8]) -> Result<(), E>,
     {
-        self.buf.clear();
+        self.buf.resize(v.end - v.start, 0);
         c(&mut self.buf)?;
         debug!("vbuf {:?} {:?}", v, std::str::from_utf8(&self.buf));
         let ends_with_newline = self.buf.ends_with(b"\n");
@@ -193,9 +193,9 @@ impl<W: std::io::Write> VertexBuffer for Writer<W> {
     fn output_line<E, C>(&mut self, v: Vertex<ChangeId>, c: C) -> Result<(), E>
     where
         E: From<std::io::Error>,
-        C: FnOnce(&mut Vec<u8>) -> Result<(), E>,
+        C: FnOnce(&mut [u8]) -> Result<(), E>,
     {
-        self.buf.clear();
+        self.buf.resize(v.end - v.start, 0);
         c(&mut self.buf)?;
         debug!("vbuf {:?} {:?}", v, std::str::from_utf8(&self.buf));
         let ends_with_newline = self.buf.ends_with(b"\n");

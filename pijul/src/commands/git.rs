@@ -643,7 +643,6 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
     let signature = commit.author();
     // Record+Apply
     debug!("recording on channel {:?}", txn_.name(&channel.read()));
-    let record_time = std::time::Instant::now();
 
     let prefix_vec: Vec<_> = prefixes.into_iter().collect();
     if let Some(msg) = commit.message() {
@@ -688,6 +687,7 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
                 chrono::Utc,
             ),
         },
+        stats,
     );
     {
         let mut txn = txn.write();
@@ -703,7 +703,6 @@ fn import_commit<T: TxnTExt + MutTxnTExt + GraphIter + Send + Sync + 'static>(
         }
         Err(e) => return Err(e.into()),
     };
-    stats.record_time = record_time.elapsed();
 
     if repo.check > 0 && repo.n % repo.check == 0 {
         check_alive_debug(&repo.repo.changes, &*txn, &channel.read(), line!())?;
@@ -730,8 +729,10 @@ fn record_apply<
     repo_path: &CanonicalPathBuf,
     prefixes: &[PathBuf],
     header: libpijul::change::ChangeHeader,
+    stats: &mut Stats,
 ) -> Result<(usize, Option<libpijul::Hash>, libpijul::Merkle), libpijul::LocalApplyError<T>> {
     debug!("record_apply {:?}", prefixes);
+    let record_time = std::time::Instant::now();
     let mut state = libpijul::RecordBuilder::new();
     let num_cpus = num_cpus::get();
     for p in prefixes.iter() {
@@ -805,8 +806,11 @@ fn record_apply<
     let hash = changes
         .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))
         .unwrap();
+    stats.record_time = record_time.elapsed();
     debug!("saved");
+    let apply_time = std::time::Instant::now();
     let (_, m) = txn.apply_local_change(&channel, &change, &hash, &rec.updatables)?;
+    stats.apply_time = apply_time.elapsed();
     Ok((n, Some(hash), m))
 }
 
@@ -818,6 +822,7 @@ struct Stats {
     reset_time: std::time::Duration,
     git_diff_time: std::time::Duration,
     record_time: std::time::Duration,
+    apply_time: std::time::Duration,
     n_actions: usize,
     n_files: usize,
     n_dirs: usize,
@@ -838,6 +843,7 @@ impl Stats {
             reset_time: z,
             git_diff_time: z,
             record_time: z,
+            apply_time: z,
             n_actions: 0,
             n_files: 0,
             n_dirs: 0,
@@ -885,7 +891,7 @@ impl Stats {
         }
         let timers = libpijul::get_timers();
         writeln!(
-            f, "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}",
+            f, "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}",
             self.child,
             n,
             self.parent_application_time.as_secs_f64(),
@@ -903,6 +909,7 @@ impl Stats {
             self.reset_time.as_secs_f64(),
             self.git_diff_time.as_secs_f64(),
             self.record_time.as_secs_f64(),
+            self.apply_time.as_secs_f64(),
             self.n_actions,
             self.n_files,
             self.n_dirs,

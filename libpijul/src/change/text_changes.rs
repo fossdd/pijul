@@ -1093,7 +1093,7 @@ pub fn get_change_contents<C: ChangeStore>(
                 if Some(e.to) == current {
                     continue;
                 }
-                tmp.clear();
+                tmp.resize(e.to.end - e.to.start, 0);
                 changes
                     .get_contents_ext(e.to, &mut tmp)
                     .map_err(TextSerError::C)?;

@@ -94,7 +94,7 @@ impl<'a, W: std::io::Write, T: ChannelTxnT> Creditor<'a, W, T> {
 }
 
 impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
-    fn output_line<E, C: FnOnce(&mut Vec<u8>) -> Result<(), E>>(
+    fn output_line<E, C: FnOnce(&mut [u8]) -> Result<(), E>>(
         &mut self,
         v: Vertex<ChangeId>,
         c: C,
@@ -103,7 +103,7 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
         E: From<std::io::Error>,
     {
         debug!("outputting vertex {:?}", v);
-        self.buf.clear();
+        assert_eq!(self.buf.len(), v.end - v.start);
         c(&mut self.buf)?;
 
         if !v.change.is_root() {
