@@ -1002,13 +1002,15 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
                         continue;
                     }
                 }
-                if !seen.insert(next.dest()) {
+                if seen.get(&next.dest()).is_some() {
+                    debug!("seen");
                     continue;
                 }
                 next_v = Some((name_dest, age, next.dest()));
             }
         }
         let (name, _, next) = next_v.unwrap();
+        seen.insert(next);
         if name.start == name.end {
             // Non-zero root vertex
             assert!(next.change.is_root());
