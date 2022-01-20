@@ -878,6 +878,7 @@ pub(crate) fn follow_oldest_path<T: ChannelTxnT, C: ChangeStore>(
             )? {
                 let name = name?;
                 let name_dest = txn.find_block(txn.graph(channel), name.dest()).unwrap();
+                debug!("name_dest = {:?}", name_dest);
                 if name_dest.start == name_dest.end {
                     // non-null root, just continue.
                     current = iter_adjacent(txn, txn.graph(channel), *name_dest, flag0, flag1)?
@@ -956,6 +957,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
             }
             Err(BlockError::Txn(t)) => return Err(crate::output::FileError::Txn(TxnErr(t))),
         };
+        debug!("inode_vertex = {:?}", inode_vertex);
         if *inode_vertex != v.inode_vertex() {
             info!(
                 "find_path: {:?} != {:?}, this may be due to a corrupt change",
@@ -988,6 +990,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
                     break;
                 }
             }
+            debug!("next = {:?}", next);
             if let Some(next) = next {
                 debug!("oldest_path, next = {:?}", next);
                 if !next.flag().contains(EdgeFlags::DELETED) {
@@ -999,6 +1002,7 @@ pub fn find_path<T: ChannelTxnT, C: ChangeStore>(
                 }
                 if let Some((_, p_age, _)) = next_v {
                     if (age > p_age) ^ youngest {
+                        debug!("youngest");
                         continue;
                     }
                 }

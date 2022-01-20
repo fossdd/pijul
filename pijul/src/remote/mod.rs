@@ -721,6 +721,23 @@ impl RemoteRepo {
             })
         } else {
             let mut to_download: Vec<CS> = Vec::new();
+            for x in txn.iter_rev_remote(&remote_ref.lock().remote, None)? {
+                let (_, p) = x?;
+                let h: Hash = p.a.into();
+                if txn
+                    .channel_has_state(txn.states(&current_channel.read()), &p.b)
+                    .unwrap()
+                    .is_some()
+                {
+                    break;
+                }
+                if txn.get_revchanges(&current_channel, &h).unwrap().is_none() {
+                    to_download.push(CS::Change(h));
+                }
+            }
+
+            // The patches in theirs_ge_dichotomy are unknown to us,
+            // download them.
             for (n, h, m, is_tag) in theirs_ge_dichotomy.iter() {
                 // In all cases, add this new change/state/tag to `to_download`.
                 let ch = CS::Change(*h);

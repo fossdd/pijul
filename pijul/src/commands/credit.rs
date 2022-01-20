@@ -103,7 +103,7 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
         E: From<std::io::Error>,
     {
         debug!("outputting vertex {:?}", v);
-        assert_eq!(self.buf.len(), v.end - v.start);
+        self.buf.resize(v.end - v.start, 0);
         c(&mut self.buf)?;
 
         if !v.change.is_root() {

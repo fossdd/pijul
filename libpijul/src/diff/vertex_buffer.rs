@@ -279,8 +279,8 @@ impl Diff {
             },
             Err(i) => {
                 assert!(i > 0);
-                let len = self.pos_a[i-1].vertex.end - self.pos_a[i-1].vertex.start;
-                if pos < self.pos_a[i-1].pos + len || len == 0 {
+                let len = self.pos_a[i - 1].vertex.end - self.pos_a[i - 1].vertex.start;
+                if pos < self.pos_a[i - 1].pos + len || len == 0 {
                     i - 1
                 } else {
                     i

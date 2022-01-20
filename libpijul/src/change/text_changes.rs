@@ -1118,7 +1118,7 @@ pub fn get_deleted_names<C: ChangeStore>(
             if !h.insert(d.to) {
                 continue;
             }
-            tmp.clear();
+            tmp.resize(d.to.end - d.to.start, 0);
             changes
                 .get_contents_ext(d.to, &mut tmp)
                 .map_err(TextSerError::C)?;

@@ -209,7 +209,7 @@ impl PublicKey {
                 let signed =
                     bincode::serialize(&(Algorithm::Ed25519, self.expires.clone(), &self.key))
                         .unwrap();
-                let mut hash = ed25519_dalek::Sha512::new();
+                let mut hash = ed25519_dalek::Sha512::default();
                 hash.update(&signed);
                 bs58::encode(&hash.finalize()).into_string()
             }

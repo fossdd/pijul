@@ -335,7 +335,7 @@ impl LogIterator {
             let mut is_in_filters = inodes.is_empty();
             for (_, position) in inodes.iter() {
                 if let Some(position) = position {
-                    is_in_filters = self.txn.get_touched_files(position, Some(cid))?.is_some();
+                    is_in_filters = self.txn.get_touched_files(position, Some(cid))? == Some(cid);
                     if is_in_filters {
                         break;
                     }

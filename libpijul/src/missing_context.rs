@@ -3,9 +3,7 @@ use crate::change::*;
 use crate::find_alive::*;
 use crate::pristine::*;
 use crate::{HashMap, HashSet};
-use std::cell::RefCell;
 use std::collections::hash_map::Entry;
-use std::rc::Rc;
 
 #[derive(Debug, Error)]
 pub enum MissingError<TxnError: std::error::Error + 'static> {
@@ -82,23 +80,27 @@ pub(crate) fn repair_missing_up_context<
         change_id,
         &mut ws.alive_up_cache,
     )?;
-    let mut alive = alive.borrow().clone();
-    debug!("files = {:?}", ws.files);
-    crate::TIMERS.lock().unwrap().find_alive += now.elapsed();
-    ws.load_graph(txn, channel, inode)?;
+    if let Some(alive) = alive {
+        let mut alive = alive.clone();
+        debug!("files = {:?}", ws.files);
+        crate::TIMERS.lock().unwrap().find_alive += now.elapsed();
+        ws.load_graph(txn, channel, inode)?;
 
-    debug!("repair_missing_up_context, alive = {:?}", alive);
-    for &d in d {
-        if let Some((graph, vids)) = ws.graphs.0.get(&inode) {
-            crate::alive::remove_redundant_parents(
-                graph,
-                vids,
-                &mut alive,
-                &mut ws.covered_parents,
-                d,
-            );
+        debug!("repair_missing_up_context, alive = {:?}", alive);
+        for &d in d {
+            if let Some((graph, vids)) = ws.graphs.0.get(&inode) {
+                crate::alive::remove_redundant_parents(
+                    graph,
+                    vids,
+                    &mut alive,
+                    &mut ws.covered_parents,
+                    d,
+                );
+            }
+            repair_regular_up(txn, channel, &alive, d, EdgeFlags::PSEUDO)?;
         }
-        repair_regular_up(txn, channel, &alive, d, EdgeFlags::PSEUDO)?;
+    } else {
+        debug!("repair_missing_up_context: {:?} is alive", c);
     }
     Ok(())
 }
@@ -139,27 +141,31 @@ pub(crate) fn repair_missing_down_context<
     debug!("repair_missing_down_context {:?}", c);
     let now = std::time::Instant::now();
     let alive = find_alive_down(txn, channel, c, &mut ws.alive_down_cache)?;
-    let mut alive = alive.borrow().clone();
-    debug!("alive = {:?}", alive);
-    crate::TIMERS.lock().unwrap().find_alive += now.elapsed();
-    ws.load_graph(txn, channel, inode)?;
-    if let Some((graph, vids)) = ws.graphs.0.get(&inode) {
-        crate::alive::remove_redundant_children(graph, vids, &mut alive, c);
-    }
-
-    if !alive.is_empty() {
-        debug!("repair_missing_down_context alive = {:#?}", alive);
-    }
-
-    for &d in d {
-        for &desc in alive.iter() {
-            if d == desc {
-                info!("repair_missing_down_context, alive: {:?} == {:?}", d, desc);
-                continue;
-            }
-            debug!("repair_missing_down {:?} {:?}", d, desc);
-            put_graph_with_rev(txn, channel, EdgeFlags::PSEUDO, d, desc, ChangeId::ROOT)?;
+    if let Some(alive) = alive {
+        let mut alive = alive.clone();
+        debug!("alive = {:?}", alive);
+        crate::TIMERS.lock().unwrap().find_alive += now.elapsed();
+        ws.load_graph(txn, channel, inode)?;
+        if let Some((graph, vids)) = ws.graphs.0.get(&inode) {
+            crate::alive::remove_redundant_children(graph, vids, &mut alive, c);
         }
+
+        if !alive.is_empty() {
+            debug!("repair_missing_down_context alive = {:#?}", alive);
+        }
+
+        for &d in d {
+            for &desc in alive.iter() {
+                if d == desc {
+                    info!("repair_missing_down_context, alive: {:?} == {:?}", d, desc);
+                    continue;
+                }
+                debug!("repair_missing_down {:?} {:?}", d, desc);
+                put_graph_with_rev(txn, channel, EdgeFlags::PSEUDO, d, desc, ChangeId::ROOT)?;
+            }
+        }
+    } else {
+        debug!("repair_missing_down: {:?} is alive", c);
     }
     Ok(())
 }
@@ -368,14 +374,9 @@ pub struct Workspace {
     pub(crate) graphs: Graphs,
     pub(crate) covered_parents: HashSet<(Vertex<ChangeId>, Vertex<ChangeId>)>,
     pub(crate) files: HashSet<Vertex<ChangeId>>,
-    alive_down_cache: HashMap<Vertex<ChangeId>, Rc<RefCell<HashSet<Vertex<ChangeId>>>>>,
-    alive_up_cache: HashMap<
-        Vertex<ChangeId>,
-        (
-            Rc<RefCell<HashSet<Vertex<ChangeId>>>>,
-            Rc<RefCell<HashSet<Vertex<ChangeId>>>>,
-        ),
-    >,
+    alive_down_cache: HashMap<Vertex<ChangeId>, Option<HashSet<Vertex<ChangeId>>>>,
+    alive_up_cache:
+        HashMap<Vertex<ChangeId>, (Option<HashSet<Vertex<ChangeId>>>, HashSet<Vertex<ChangeId>>)>,
 }
 
 #[derive(Debug, Default)]
@@ -519,7 +520,7 @@ where
         if is_alive(txn, channel, &p)? {
             repair_missing_up_context(txn, channel, ws, change_id, inode, dest_vertex, &[p])?;
         } else {
-            let alive = find_alive_down(txn, channel, p, &mut ws.alive_down_cache)?;
+            let alive = find_alive_down(txn, channel, p, &mut ws.alive_down_cache)?.clone();
             repair_missing_up_context(
                 txn,
                 channel,
@@ -527,7 +528,7 @@ where
                 change_id,
                 inode,
                 dest_vertex,
-                &*alive.borrow(),
+                alive.iter().flat_map(|t| t.iter()),
             )?;
         }
     }

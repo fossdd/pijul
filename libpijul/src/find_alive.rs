@@ -1,29 +1,49 @@
 use crate::pristine::*;
 use crate::{HashMap, HashSet};
-use std::cell::RefCell;
-use std::rc::Rc;
 
-type Alive = Rc<RefCell<HashSet<Vertex<ChangeId>>>>;
-
-pub(crate) fn find_alive_down<T: GraphTxnT>(
+/// The following is an unrolled DFS, where each alive vertex is
+/// inserted into each "alive set" along the current path (which is
+/// recognised by looking at the visited vertices on the stack).
+pub(crate) fn find_alive_down<'a, T: GraphTxnT>(
     txn: &T,
     channel: &T::Graph,
     vertex0: Vertex<ChangeId>,
-    cache: &mut HashMap<Vertex<ChangeId>, Alive>,
-) -> Result<Alive, BlockError<T::GraphError>> {
-    let mut stack = vec![SerializedEdge::empty(vertex0.start_pos(), ChangeId::ROOT)];
+    cache: &'a mut HashMap<Vertex<ChangeId>, Option<HashSet<Vertex<ChangeId>>>>,
+) -> Result<&'a Option<HashSet<Vertex<ChangeId>>>, BlockError<T::GraphError>> {
+    let mut stack: Vec<(_, Option<HashSet<Vertex<ChangeId>>>)> = vec![(
+        SerializedEdge::empty(vertex0.start_pos(), ChangeId::ROOT),
+        None,
+    )];
     let mut visited = HashSet::default();
-    let alive = Rc::new(RefCell::new(HashSet::new()));
-    while let Some(elt) = stack.pop() {
-        if !visited.insert(elt.dest()) {
+    while let Some((elt, alive)) = stack.pop() {
+        if let Some(alive) = alive {
+            // We've gone through all the descendants, put this in the
+            // cache.
+            let vertex = txn.find_block(&channel, elt.dest())?;
+            cache.insert(*vertex, Some(alive.clone()));
+            if stack.is_empty() {
+                // Done!
+                return Ok(cache.get(&vertex0).unwrap());
+            }
             continue;
+        } else {
+            if !visited.insert(elt.dest()) {
+                continue;
+            }
+            stack.push((elt, Some(HashSet::new())));
         }
         let vertex = txn.find_block(&channel, elt.dest())?;
         if let Some(c) = cache.get(vertex) {
-            alive.borrow_mut().extend(c.borrow().iter().cloned());
+            for st in stack.iter_mut() {
+                if let Some(ref mut st) = st.1 {
+                    if let Some(c) = c {
+                        st.extend(c.iter().cloned());
+                    } else {
+                        st.insert(*vertex);
+                    }
+                }
+            }
             continue;
-        } else {
-            cache.insert(*vertex, alive.clone());
         }
         debug!("elt = {:?}, vertex = {:?}", elt, vertex);
         let elt_index = stack.len();
@@ -39,60 +59,94 @@ pub(crate) fn find_alive_down<T: GraphTxnT>(
                     && !v.flag().contains(EdgeFlags::PSEUDO)
                 {
                     if *vertex == vertex0 {
-                        assert!(alive.borrow().is_empty());
-                        return Ok(alive);
+                        // vertex0 is alive.
+                        stack.truncate(elt_index);
+                        let (_, alive) = stack.pop().unwrap();
+                        let alive = alive.unwrap();
+                        assert!(alive.is_empty());
+                        cache.insert(vertex0, None);
+                        return Ok(cache.get(&vertex0).unwrap());
                     } else {
-                        alive.borrow_mut().insert(*vertex);
+                        // vertex is alive, insert it into all the
+                        // alive sets on the current DFS path
+                        // (including `vertex`).
+                        for st in stack.iter_mut() {
+                            if let Some(ref mut st) = st.1 {
+                                st.insert(*vertex);
+                            }
+                        }
                         stack.truncate(elt_index);
                         break;
                     }
                 }
             } else {
-                stack.push(*v)
+                stack.push((*v, None))
             }
         }
     }
-    Ok(alive)
+    unreachable!()
 }
 
-pub fn find_alive_up<T: GraphTxnT>(
+pub fn find_alive_up<'a, T: GraphTxnT>(
     txn: &T,
     channel: &T::Graph,
     files: &mut HashSet<Vertex<ChangeId>>,
     vertex0: Vertex<ChangeId>,
     change: ChangeId,
-    cache: &mut HashMap<Vertex<ChangeId>, (Alive, Alive)>,
-) -> Result<Alive, BlockError<T::GraphError>> {
+    cache: &'a mut HashMap<
+        Vertex<ChangeId>,
+        (Option<HashSet<Vertex<ChangeId>>>, HashSet<Vertex<ChangeId>>),
+    >,
+) -> Result<&'a Option<HashSet<Vertex<ChangeId>>>, BlockError<T::GraphError>> {
     debug!("find alive up: {:?}", vertex0);
-    let alive = Rc::new(RefCell::new(HashSet::default()));
-    let files_ = Rc::new(RefCell::new(HashSet::default()));
-    let mut stack = vec![SerializedEdge::empty(vertex0.end_pos(), ChangeId::ROOT)];
+    let mut stack: Vec<(
+        _,
+        Option<(HashSet<Vertex<ChangeId>>, HashSet<Vertex<ChangeId>>)>,
+    )> = vec![(
+        SerializedEdge::empty(vertex0.end_pos(), ChangeId::ROOT),
+        None,
+    )];
     let mut visited = HashSet::default();
 
-    while let Some(elt) = stack.pop() {
+    while let Some((elt, alive)) = stack.pop() {
         if elt.dest().is_root() {
             continue;
         }
-        if !visited.insert(elt.dest()) {
+        if let Some((alive, files_)) = alive {
+            let vertex = *txn.find_block_end(&channel, elt.dest())?;
+            cache.insert(vertex, (Some(alive), files_));
+            if stack.is_empty() {
+                // Done!
+                return Ok(&cache.get(&vertex0).unwrap().0);
+            }
             continue;
-        }
+        } else {
+            if !visited.insert(elt.dest()) {
+                continue;
+            }
+            stack.push((elt, Some((HashSet::new(), HashSet::new()))));
+        };
         let vertex = *txn.find_block_end(&channel, elt.dest())?;
         debug!("vertex = {:?}", vertex);
-        let is_cached = if let Some((c, f)) = cache.get(&vertex) {
-            alive.borrow_mut().extend(c.borrow().iter().cloned());
-            files_.borrow_mut().extend(f.borrow().iter().cloned());
-            files.extend(f.borrow().iter().cloned());
-            // We're not continuing here, since the while loop below
-            // needs to insert stuff into `files` and `files_`.
-            true
-        } else {
-            cache.insert(vertex, (alive.clone(), files_.clone()));
-            false
-        };
+        if let Some((c, d)) = cache.get(&vertex) {
+            debug!("Cached: {:?} {:?}", c, d);
+            for st in stack.iter_mut() {
+                if let Some((ref mut al, ref mut f)) = st.1 {
+                    if let Some(c) = c {
+                        al.extend(c.iter().cloned());
+                    } else {
+                        al.insert(vertex);
+                    }
+                    f.extend(d.iter().cloned());
+                    files.extend(d.iter().cloned());
+                }
+            }
+            continue;
+        }
         debug!("find_alive_up: elt = {:?}, vertex = {:?}", elt, vertex);
         debug!("stack = {:?}", stack);
         let elt_index = stack.len();
-        let mut is_file = false;
+        let mut is_file = false; // Is this the "inode" vertex of a file?
         let mut it = iter_adj_all(txn, &channel, vertex)?;
         while let Some(v) = it.next() {
             let v = v?;
@@ -105,40 +159,59 @@ pub fn find_alive_up<T: GraphTxnT>(
                 continue;
             }
             if !v.flag().is_deleted() {
+                if vertex == vertex0 {
+                    // vertex0 is alive.
+                    stack.truncate(elt_index);
+                    let (_, alive) = stack.pop().unwrap();
+                    let (alive, _) = alive.unwrap();
+                    assert!(alive.is_empty());
+                    cache.insert(vertex0, (None, HashSet::new()));
+                    return Ok(&cache.get(&vertex0).unwrap().0);
+                }
                 if v.flag().is_folder() {
                     for e in it {
                         let e = e?;
                         is_file |= !e.flag().intersects(EdgeFlags::parent_folder())
                     }
-                    if is_file && vertex != vertex0 {
+                    if is_file {
                         debug!("is alive + is file {:?}", vertex);
-                        alive.borrow_mut().insert(vertex);
-                        files_.borrow_mut().insert(vertex);
+                        for st in stack.iter_mut() {
+                            if let Some((ref mut al, ref mut fi)) = st.1 {
+                                al.insert(vertex);
+                                fi.insert(vertex);
+                            }
+                        }
                         files.insert(vertex);
                     }
                     break;
                 } else if v.flag().is_block() || vertex.is_empty() {
-                    if vertex != vertex0 {
-                        debug!("is alive {:?}", vertex);
-                        alive.borrow_mut().insert(vertex);
+                    debug!("is alive {:?}", vertex);
+                    for st in stack.iter_mut() {
+                        if let Some((ref mut st, _)) = st.1 {
+                            st.insert(vertex);
+                        }
                     }
                     stack.truncate(elt_index);
                     break;
                 }
             }
             if v.flag().is_folder() {
-                if is_file && vertex != vertex0 {
-                    debug!("is alive {:?}", vertex);
-                    alive.borrow_mut().insert(vertex);
-                    files_.borrow_mut().insert(vertex);
+                if is_file {
+                    debug!("is pseudo-alive folder {:?}", vertex);
+                    for st in stack.iter_mut() {
+                        if let Some((ref mut al, ref mut fi)) = st.1 {
+                            al.insert(vertex);
+                            fi.insert(vertex);
+                        }
+                    }
                     files.insert(vertex);
                 }
                 break;
-            } else if !is_cached {
-                stack.push(*v)
+            } else {
+                stack.push((*v, None))
             }
         }
         debug!("is_file = {:?}", is_file);
     }
-    Ok(alive)
+    unreachable!()
 }

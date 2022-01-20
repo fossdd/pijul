@@ -1986,7 +1986,7 @@ pub(crate) fn put_graph_with_rev<T: GraphMutTxnT>(
         &k1,
         &SerializedEdge::new(flag | EdgeFlags::PARENT, k0.change, k0.end, introduced_by),
     )?;
-    assert!(!(a^b));
+    assert!(!(a ^ b));
 
     Ok(a && b)
 }
