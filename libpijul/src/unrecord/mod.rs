@@ -69,9 +69,6 @@ pub fn unrecord<T: MutTxnT, P: ChangeStore>(
     hash: &Hash,
     salt: u64,
 ) -> Result<bool, UnrecordError<P::Error, T>> {
-    let change = changes
-        .get_change(hash)
-        .map_err(UnrecordError::Changestore)?;
     let change_id = if let Some(&h) = txn.get_internal(&hash.into())? {
         h
     } else {
@@ -81,6 +78,10 @@ pub fn unrecord<T: MutTxnT, P: ChangeStore>(
     let mut channel = channel.write();
 
     del_channel_changes::<T, P>(txn, &mut channel, change_id)?;
+
+    let change = changes
+        .get_change(hash)
+        .map_err(UnrecordError::Changestore)?;
 
     unapply(txn, &mut channel, changes, change_id, &change, salt)?;
 
