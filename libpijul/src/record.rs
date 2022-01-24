@@ -1091,6 +1091,7 @@ impl Recorded {
         };
 
         let mut contents = self.contents.lock();
+        contents.push(0);
         let meta_start = ChangePosition(contents.len().into());
         FileMetadata {
             metadata: item.metadata,
@@ -1099,6 +1100,7 @@ impl Recorded {
         }
         .write(&mut contents);
         let meta_end = ChangePosition(contents.len().into());
+        contents.push(0);
         if !moved.edges.is_empty() {
             // If there was exactly one alive name, this is a regular
             // move, i.e. not a conflict.
