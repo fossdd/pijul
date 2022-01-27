@@ -282,15 +282,13 @@ impl FileSystem {
                             }
                         }
                         debug!("entry path = {:?} {:?}", entry.path(), repo_path);
-                        if let Ok(entry_path) = CanonicalPathBuf::canonicalize(entry.path()) {
-                            if let Ok(path) = entry_path.as_path().strip_prefix(&repo_path) {
-                                let is_dir = entry.file_type().unwrap().is_dir();
-                                if sender.send((path.to_path_buf(), is_dir)).is_err() {
-                                    return ignore::WalkState::Quit;
-                                }
-                            } else {
-                                debug!("entry = {:?}", entry.path());
+                        if let Ok(path) = entry.path().strip_prefix(&repo_path) {
+                            let is_dir = entry.file_type().unwrap().is_dir();
+                            if sender.send((path.to_path_buf(), is_dir)).is_err() {
+                                return ignore::WalkState::Quit;
                             }
+                        } else {
+                            debug!("entry = {:?}", entry.path());
                         }
                         ignore::WalkState::Continue
                     })
