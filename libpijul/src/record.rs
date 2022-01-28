@@ -1104,7 +1104,7 @@ impl Recorded {
         if !moved.edges.is_empty() {
             // If there was exactly one alive name, this is a regular
             // move, i.e. not a conflict.
-            if moved.n_alive_names == 1 {
+            if moved.n_alive_names == 1 || (moved.need_new_name && !is_resurrected) {
                 debug!("need_new_name {:?}", item.v_papa);
                 let add = if moved.need_new_name && !is_resurrected {
                     moved.edges.extend(moved.alive.drain(..));

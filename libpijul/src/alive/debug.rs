@@ -32,6 +32,7 @@ impl Graph {
         }
         let mut others = HashSet::default();
         for (line, i) in self.lines.iter().zip(0..) {
+            buf.resize(line.vertex.end - line.vertex.start, 0);
             changes
                 .get_contents(
                     |h| txn.get_external(&h).unwrap().map(|x| x.into()),

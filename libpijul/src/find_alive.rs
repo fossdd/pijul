@@ -23,7 +23,8 @@ pub(crate) fn find_alive_down<'a, T: GraphTxnT>(
             cache.insert(*vertex, Some(alive.clone()));
             if stack.is_empty() {
                 // Done!
-                return Ok(cache.get(&vertex0).unwrap());
+                assert_eq!(vertex0.start_pos(), vertex.start_pos());
+                return Ok(cache.get(&vertex).unwrap());
             }
             continue;
         } else {
@@ -117,7 +118,8 @@ pub fn find_alive_up<'a, T: GraphTxnT>(
             cache.insert(vertex, (Some(alive), files_));
             if stack.is_empty() {
                 // Done!
-                return Ok(&cache.get(&vertex0).unwrap().0);
+                assert_eq!(vertex.end_pos(), vertex0.end_pos());
+                return Ok(&cache.get(&vertex).unwrap().0);
             }
             continue;
         } else {
