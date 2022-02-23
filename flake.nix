@@ -20,7 +20,7 @@
 
       rustOverlay = final: prev:
         let
-          rustChannel = prev.rust-bin.stable."1.56.0";
+          rustChannel = prev.rust-bin.stable."1.58.1";
         in {
           inherit rustChannel;
           rustc = rustChannel.minimal;
