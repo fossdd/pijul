@@ -56,7 +56,7 @@ pub enum SubCommand {
         #[clap(long = "to-channel")]
         to_channel: Option<String>,
     },
-    /// Restore a tag into a new channel.
+    /// Reset the working copy to a tag.
     #[clap(name = "reset")]
     Reset {
         /// Set the repository where this command should run. Defaults to
