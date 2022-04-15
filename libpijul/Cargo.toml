@@ -1,7 +1,7 @@
 [package]
 name = "libpijul"
 description = "Core library of Pijul, a distributed version control system based on a sound theory of collaborative work."
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 
 repository = "https://nest.pijul.com/pijul/libpijul"
 documentation = "https://docs.rs/libpijul"

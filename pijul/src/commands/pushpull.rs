@@ -430,7 +430,7 @@ impl Pull {
             return Ok(());
         }
 
-        if !self.all {
+        if !self.all && self.changes.is_empty() {
             let mut o = make_changelist(&repo.changes, &to_download, "pull")?;
             to_download = loop {
                 let d = parse_changelist(&edit::edit_bytes(&o[..])?, &to_download);

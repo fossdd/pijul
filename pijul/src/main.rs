@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::bail;
-use clap::{AppSettings, ColorChoice, Parser};
+use clap::{ColorChoice, Parser};
 use env_logger::fmt::Color;
 use human_panic::setup_panic;
 
@@ -19,12 +19,7 @@ const DEFAULT_CHANNEL: &str = "main";
 const PROTOCOL_VERSION: usize = 3;
 
 #[derive(Parser, Debug)]
-#[clap(
-    version,
-    author,
-    color(ColorChoice::Auto),
-    setting(AppSettings::InferSubcommands)
-)]
+#[clap(version, author, color(ColorChoice::Auto), infer_subcommands = true)]
 pub struct Opts {
     #[clap(subcommand)]
     pub subcmd: SubCommand,
@@ -59,7 +54,7 @@ pub enum SubCommand {
     /// Manages different channels
     Channel(Channel),
 
-    #[clap(setting = AppSettings::Hidden)]
+    #[clap(hide = true)]
     Protocol(Protocol),
 
     #[cfg(feature = "git")]
@@ -129,7 +124,10 @@ pub enum SubCommand {
     /// Manage tags (create tags, check out a tag)
     Tag(Tag),
 
-    /// Key management
+    /// Key generation and management
+    ///
+    /// Pijul keys are separate from a user's SSH keys. More information
+    /// can be found in the `Keys` section of the manual.
     Key(Key),
 
     #[clap(external_subcommand)]

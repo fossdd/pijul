@@ -637,15 +637,21 @@ fn output_item<T: ChannelTxnT + TreeTxnT, P: ChangeStore, W: WorkingCopy>(
     path: &str,
     forward: &mut Vec<Redundant>,
 ) -> Result<(), OutputError<P::Error, T, W::Error>> {
-    let txn = txn.read();
-    let channel = channel.read();
-    let mut l = retrieve(&*txn, txn.graph(&*channel), output_item.pos)?;
+    let mut l = {
+        let txn = txn.read();
+        let channel = channel.read();
+        retrieve(&*txn, txn.graph(&*channel), output_item.pos)?
+    };
     let w = repo
         .write_file(&path, inode)
         .map_err(OutputError::WorkingCopy)?;
     let mut f = vertex_buffer::ConflictsWriter::new(w, &path, conflicts);
-    alive::output_graph(changes, &*txn, &*channel, &mut f, &mut l, forward)
-        .map_err(PristineOutputError::from)?;
+    {
+        let txn = txn.read();
+        let channel = channel.read();
+        alive::output_graph(changes, &*txn, &*channel, &mut f, &mut l, forward)
+            .map_err(PristineOutputError::from)?;
+    }
     use std::io::Write;
     f.w.flush().unwrap_or(());
     Ok(())

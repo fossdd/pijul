@@ -169,6 +169,7 @@ fn unapply<
     let mut clean_inodes = HashSet::new();
     let mut ws = Workspace::default();
     for change_ in change.changes.iter().rev().flat_map(|r| r.rev_iter()) {
+        info!("unrecording {:?}", change_);
         match *change_ {
             Atom::EdgeMap(ref newedges) => unapply_edges(
                 changes,
@@ -558,6 +559,10 @@ fn collect_zombies<T: GraphTxnT>(
         for e in iter_adj_all(txn, channel, v)? {
             let e = e?;
             debug!("e = {:?}", e);
+
+            // Do not follow edges that are introduced by this patch
+            // and are trivial parents (i.e. non-blocks), since they
+            // aren't part of the zombie conflict.
             if !(e.introduced_by() == change_id || e.flag() & EdgeFlags::bp() == EdgeFlags::PARENT)
             {
                 continue;
@@ -588,6 +593,7 @@ fn repair_edges_context<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
     debug!("repair_edges_context");
     let change_hash: Hash = txn.get_external(&change_id)?.unwrap().into();
     for e in n.edges.iter() {
+        debug!("repair_edges_context: {:?}", e);
         assert!(!e.flag.contains(EdgeFlags::PARENT));
         let intro = internal(txn, &e.introduced_by, change_id)?.unwrap();
         if e.previous.contains(EdgeFlags::DELETED) {

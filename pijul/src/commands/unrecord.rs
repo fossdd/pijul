@@ -57,6 +57,8 @@ impl Unrecord {
             // The number can be set in the global config or passed as a command-line option
             let number_of_changes = if let Some(n) = self.show_changes {
                 n
+            } else if let Some(n) = repo.config.unrecord_changes {
+                n
             } else {
                 let (cfg, _) = crate::config::Global::load()?;
                 cfg.unrecord_changes.ok_or_else(|| {

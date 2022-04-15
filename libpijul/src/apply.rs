@@ -476,6 +476,8 @@ pub struct Workspace {
     pub(crate) missing_context: crate::missing_context::Workspace,
     rooted: HashMap<Vertex<ChangeId>, bool>,
     adjbuf: Vec<SerializedEdge>,
+    alive_folder: HashMap<Vertex<ChangeId>, bool>,
+    folder_stack: Vec<(Vertex<ChangeId>, bool)>,
 }
 
 impl Workspace {
@@ -492,6 +494,8 @@ impl Workspace {
         self.missing_context.clear();
         self.rooted.clear();
         self.adjbuf.clear();
+        self.alive_folder.clear();
+        self.folder_stack.clear();
     }
     fn assert_empty(&self) {
         assert!(self.children.is_empty());
@@ -503,6 +507,8 @@ impl Workspace {
         self.missing_context.assert_empty();
         assert!(self.rooted.is_empty());
         assert!(self.adjbuf.is_empty());
+        assert!(self.alive_folder.is_empty());
+        assert!(self.folder_stack.is_empty());
     }
 }
 
@@ -512,6 +518,8 @@ pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
     ws: &mut Workspace,
     change_id: ChangeId,
 ) -> Result<(), LocalApplyError<T>> {
+    let mut alive_folder = std::mem::replace(&mut ws.alive_folder, HashMap::new());
+    let mut folder_stack = std::mem::replace(&mut ws.folder_stack, Vec::new());
     for (next_vertex, p, inode) in ws.pseudo.drain(..) {
         let (a, b) = if p.flag().is_parent() {
             if let Ok(&dest) = txn.find_block_end(channel, p.dest()) {
@@ -529,12 +537,50 @@ pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
         if a_is_alive && b_is_alive {
             continue;
         }
+
+        // If we're deleting a FOLDER edge, repair_context_deleted
+        // will not repair its potential descendants. Hence, we must
+        // also count as "alive" a FOLDER node with alive descendants.
+        if p.flag().is_folder() {
+            if folder_has_alive_descendants(txn, channel, &mut alive_folder, &mut folder_stack, b)?
+            {
+                continue;
+            }
+        }
+
+        if a.is_empty() && b_is_alive {
+            // In this case, `a` can be an inode, in which case we
+            // can't simply delete the edge, since b would become
+            // unreachable.
+            //
+            // We test this here:
+            let mut is_inode = false;
+            for e in iter_adjacent(
+                txn,
+                channel,
+                a,
+                EdgeFlags::FOLDER | EdgeFlags::PARENT,
+                EdgeFlags::all(),
+            )? {
+                let e = e?;
+                if e.flag().contains(EdgeFlags::FOLDER | EdgeFlags::PARENT) {
+                    is_inode = true;
+                    break;
+                }
+            }
+            if is_inode {
+                continue;
+            }
+        }
+
         debug!(
-            "Deleting {:?} {:?} {:?} {:?}",
+            "Deleting {:?} {:?} {:?} {:?} {:?} {:?}",
             a,
             b,
             p.introduced_by(),
-            p.flag()
+            p.flag(),
+            a_is_alive,
+            b_is_alive,
         );
         del_graph_with_rev(
             txn,
@@ -558,6 +604,10 @@ pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
             .map_err(LocalApplyError::from_missing)?
         } else if b_is_alive && !p.flag().is_folder() {
             debug!("repair up");
+
+            // Note: if this is a folder edge,
+            // repair_missing_up_context will stop immediately, so we
+            // don't even need to call it.
             crate::missing_context::repair_missing_up_context(
                 txn,
                 channel,
@@ -570,7 +620,59 @@ pub(crate) fn clean_obsolete_pseudo_edges<T: GraphMutTxnT + TreeTxnT>(
             .map_err(LocalApplyError::from_missing)?
         }
     }
+    ws.alive_folder = alive_folder;
+    ws.folder_stack = folder_stack;
     Ok(())
+}
+
+fn folder_has_alive_descendants<T: GraphMutTxnT + TreeTxnT>(
+    txn: &mut T,
+    channel: &mut T::Graph,
+    alive: &mut HashMap<Vertex<ChangeId>, bool>,
+    stack: &mut Vec<(Vertex<ChangeId>, bool)>,
+    b: Vertex<ChangeId>,
+) -> Result<bool, LocalApplyError<T>> {
+    if let Some(r) = alive.get(&b) {
+        return Ok(*r);
+    }
+    debug!("alive descendants");
+    stack.clear();
+    stack.push((b, false));
+    while let Some((b, visited)) = stack.pop() {
+        debug!("visiting {:?} {:?}", b, visited);
+        if visited {
+            if !alive.contains_key(&b) {
+                alive.insert(b, false);
+            }
+            continue;
+        }
+        stack.push((b, true));
+        for e in iter_adjacent(
+            txn,
+            channel,
+            b,
+            EdgeFlags::empty(),
+            EdgeFlags::all() - EdgeFlags::DELETED - EdgeFlags::PARENT,
+        )? {
+            let e = e?;
+            if e.flag().contains(EdgeFlags::FOLDER) {
+                let c = txn.find_block(channel, e.dest())?;
+                stack.push((*c, false));
+            } else {
+                // This is a non-deleted non-folder edge.
+                let c = txn.find_block(channel, e.dest())?;
+                if is_alive(txn, channel, &c)? {
+                    // The entire path is alive.
+                    for (x, on_path) in stack.iter() {
+                        if *on_path {
+                            alive.insert(*x, true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(*alive.get(&b).unwrap_or(&false))
 }
 
 fn repair_missing_contexts<T: GraphMutTxnT + TreeTxnT>(

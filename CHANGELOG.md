@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+## 1.0.0-beta.2
+
+### Fixed
+
+- Fixing a bug with name conflicts, where files could end up with 0 alive name.
+- Fixing a few panics/unwraps
+- Fixing a bug where a zombie file could be deleted by `pijul unrecord`, but its contents would stay zombie.
+- CVE-2022-24713
+
+### New features
+
+- Better documentation for `pijul key`.
+- `pijul pull` does not open $EDITOR anymore when given a list of changes.
+
 ## 1.0.0-beta.1
 
 ### Fixed

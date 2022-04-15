@@ -1,7 +1,7 @@
 use crate::config::*;
 use crate::repository::Repository;
 use anyhow::bail;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use log::debug;
 
 use std::io::Write;
@@ -15,11 +15,17 @@ pub struct Key {
 
 #[derive(Parser, Debug)]
 pub enum SubCommand {
+    /// Generate a new key. The name used for a key is not required to
+    /// match a user's remote or SSH credentials. By default, new keys
+    /// are stored in your global configuration directory.
     Generate {
         #[clap(long = "email")]
         email: Option<String>,
         login: String,
     },
+    /// Associate a generated key with a remote identity. Patches authored
+    /// by unproven keys will only display the key as the author. Example
+    /// of proving a key (after generating one): `pijul key prove <nestlogin>@ssh.pijul.com`
     Prove {
         #[clap(short = 'k')]
         no_cert_check: bool,
@@ -118,7 +124,10 @@ impl Key {
                 let (_, key) = super::load_key()?;
                 remote.prove(key).await?;
             }
-            None => {}
+
+            None => {
+                Self::command().write_long_help(&mut std::io::stdout())?;
+            }
         }
         Ok(())
     }

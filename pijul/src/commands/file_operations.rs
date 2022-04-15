@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use canonical_path::CanonicalPathBuf;
-use clap::{ArgSettings, Parser};
+use clap::Parser;
 use libpijul::{MutTxnT, MutTxnTExt, TxnTExt};
 use log::{debug, info};
 
@@ -10,7 +10,7 @@ use crate::repository::Repository;
 
 #[derive(Parser, Debug)]
 pub struct Move {
-    #[clap(setting = ArgSettings::Hidden, long = "salt")]
+    #[clap(hide = true, long = "salt")]
     salt: Option<u64>,
     /// Paths which need to be moved
     ///
@@ -109,7 +109,7 @@ pub struct Add {
     recursive: bool,
     #[clap(short = 'f', long = "force")]
     force: bool,
-    #[clap(setting = ArgSettings::Hidden, long = "salt")]
+    #[clap(hide = true, long = "salt")]
     salt: Option<u64>,
     /// Paths to add to the internal tree.
     paths: Vec<PathBuf>,

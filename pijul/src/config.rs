@@ -104,6 +104,7 @@ pub struct Config {
     pub remotes: HashMap<String, RemoteName>,
     #[serde(default)]
     pub hooks: Hooks,
+    pub unrecord_changes: Option<usize>,
     pub colors: Option<Choice>,
     pub pager: Option<Choice>,
 }
