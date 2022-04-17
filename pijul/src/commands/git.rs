@@ -1,6 +1,6 @@
 use anyhow::bail;
 use canonical_path::CanonicalPathBuf;
-use clap::{ArgSettings, Parser};
+use clap::Parser;
 use libpijul::pristine::*;
 use libpijul::*;
 use log::{debug, error, info, trace};
@@ -17,10 +17,10 @@ pub struct Git {
     /// Process this path instead of the current directory, creating a Pijul repository if necessary.
     pub repo_path: Option<PathBuf>,
     /// Time the import, and output values to this file.
-    #[clap(long = "stats", setting = ArgSettings::Hidden)]
+    #[clap(long = "stats", hide = true)]
     stats: Option<PathBuf>,
     /// Check only the first n commits processed.
-    #[clap(default_value = "0", setting = ArgSettings::Hidden)]
+    #[clap(default_value = "0", hide = true)]
     check: usize,
 }
 
