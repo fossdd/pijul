@@ -168,6 +168,7 @@ pub fn inode_filename<T: TreeTxnT>(
     txn: &T,
     inode: Inode,
 ) -> Result<Option<String>, TreeErr<T::TreeError>> {
+    debug!("inode_filename {:?}", inode);
     let mut components = Vec::new();
     let mut current = inode;
     loop {
@@ -193,12 +194,13 @@ pub fn inode_filename<T: TreeTxnT>(
         }
         path.push_str(c.as_str());
     }
+    debug!("inode_filename = {:?}", path);
     Ok(Some(path))
 }
 
 /// Record the information that `parent_inode` is now a parent of
 /// file `filename`, and `filename` has inode `child_inode`.
-fn make_new_child<T: TreeMutTxnT>(
+pub fn make_new_child<T: TreeMutTxnT>(
     txn: &mut T,
     parent_inode: Inode,
     filename: &str,
@@ -439,7 +441,7 @@ pub struct WorkingCopyIterator<'txn, T: TreeTxnT> {
 }
 
 impl<'txn, T: TreeTxnT> Iterator for WorkingCopyIterator<'txn, T> {
-    type Item = Result<(Inode, String), T::TreeError>;
+    type Item = Result<(Inode, String, bool), T::TreeError>;
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some((inode, name)) = self.stack.pop() {
@@ -452,6 +454,7 @@ impl<'txn, T: TreeTxnT> Iterator for WorkingCopyIterator<'txn, T> {
                     Ok(iter) => iter,
                     Err(e) => return Some(Err(e.0)),
                 };
+                let mut is_folder = false;
                 for x in iter {
                     let (k, v) = match x {
                         Ok(x) => x,
@@ -462,6 +465,7 @@ impl<'txn, T: TreeTxnT> Iterator for WorkingCopyIterator<'txn, T> {
                     } else if k.parent_inode > inode {
                         break;
                     }
+                    is_folder = true;
                     if !k.basename.is_empty() {
                         let mut name = name.clone();
                         crate::path::push(&mut name, k.basename.as_str());
@@ -470,7 +474,7 @@ impl<'txn, T: TreeTxnT> Iterator for WorkingCopyIterator<'txn, T> {
                 }
                 (&mut self.stack[len..]).reverse();
                 if !name.is_empty() {
-                    return Some(Ok((inode, name)));
+                    return Some(Ok((inode, name, is_folder)));
                 }
             } else {
                 return None;

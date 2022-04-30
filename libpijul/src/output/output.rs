@@ -646,12 +646,8 @@ fn output_item<T: ChannelTxnT + TreeTxnT, P: ChangeStore, W: WorkingCopy>(
         .write_file(&path, inode)
         .map_err(OutputError::WorkingCopy)?;
     let mut f = vertex_buffer::ConflictsWriter::new(w, &path, conflicts);
-    {
-        let txn = txn.read();
-        let channel = channel.read();
-        alive::output_graph(changes, &*txn, &*channel, &mut f, &mut l, forward)
-            .map_err(PristineOutputError::from)?;
-    }
+    alive::output_graph(changes, &txn, &channel, &mut f, &mut l, forward)
+        .map_err(PristineOutputError::from)?;
     use std::io::Write;
     f.w.flush().unwrap_or(());
     Ok(())

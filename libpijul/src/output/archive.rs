@@ -147,28 +147,30 @@ pub(crate) fn archive<
     A: Archive,
 >(
     changes: &P,
-    txn: &T,
+    txn: &ArcTxn<T>,
     channel: &ChannelRef<T>,
     prefix: &mut I,
     arch: &mut A,
 ) -> Result<Vec<Conflict>, ArchiveError<P::Error, T, A::Error>> {
-    let channel = channel.read();
     let mut conflicts = Vec::new();
     let mut files = HashMap::default();
     let mut next_files = HashMap::default();
     let mut next_prefix_basename = prefix.next();
-    collect_children(
-        txn,
-        changes,
-        txn.graph(&channel),
-        Position::ROOT,
-        Inode::ROOT,
-        "",
-        None,
-        next_prefix_basename,
-        &mut files,
-    )?;
-
+    {
+        let txn_ = txn.read();
+        let channel_ = channel.read();
+        collect_children(
+            &*txn_,
+            changes,
+            txn_.graph(&channel_),
+            Position::ROOT,
+            Inode::ROOT,
+            "",
+            None,
+            next_prefix_basename,
+            &mut files,
+        )?;
+    }
     let mut done: HashMap<_, (Vertex<ChangeId>, String)> = HashMap::default();
     let mut done_inodes = HashSet::default();
     while !files.is_empty() {
@@ -178,16 +180,23 @@ pub(crate) fn archive<
 
         for (a, mut b) in files.drain() {
             debug!("files: {:?} {:?}", a, b);
-            b.sort_by(|u, v| {
-                txn.get_changeset(txn.changes(&channel), &u.0.change)
-                    .unwrap()
-                    .cmp(
-                        &txn.get_changeset(txn.changes(&channel), &v.0.change)
-                            .unwrap(),
-                    )
-            });
+            {
+                let txn_ = txn.read();
+                let channel_ = channel.read();
+                b.sort_by(|u, v| {
+                    txn_.get_changeset(txn_.changes(&channel_), &u.0.change)
+                        .unwrap()
+                        .cmp(
+                            &txn_
+                                .get_changeset(txn_.changes(&channel_), &v.0.change)
+                                .unwrap(),
+                        )
+                });
+            }
             let mut is_first_name = true;
             for (name_key, mut output_item) in b {
+                let txn_ = txn.read();
+                let channel_ = channel.read();
                 let name_entry = match done.entry(output_item.pos) {
                     Entry::Occupied(e) => {
                         debug!("pos already visited: {:?} {:?}", a, output_item.pos);
@@ -221,18 +230,18 @@ pub(crate) fn archive<
 
                 let path = std::mem::replace(&mut output_item.path, String::new());
                 let (_, latest_touch) =
-                    crate::fs::get_latest_touch(txn, &channel, &output_item.pos)?;
+                    crate::fs::get_latest_touch(&*txn_, &channel_, &output_item.pos)?;
                 let latest_touch = {
-                    let ext = txn.get_external(&latest_touch)?.unwrap();
+                    let ext = txn_.get_external(&latest_touch)?.unwrap();
                     let c = changes.get_header(&ext.into()).map_err(ArchiveError::P)?;
                     c.timestamp.timestamp() as u64
                 };
                 if output_item.meta.is_dir() {
                     let len = next_files.len();
                     collect_children(
-                        txn,
+                        &*txn_,
                         changes,
-                        txn.graph(&channel),
+                        txn_.graph(&channel_),
                         output_item.pos,
                         Inode::ROOT, // unused
                         &path,
@@ -246,7 +255,8 @@ pub(crate) fn archive<
                     }
                 } else {
                     debug!("latest_touch: {:?}", latest_touch);
-                    let mut l = crate::alive::retrieve(txn, txn.graph(&channel), output_item.pos)?;
+                    let mut l =
+                        crate::alive::retrieve(&*txn_, txn_.graph(&channel_), output_item.pos)?;
                     let perms = if output_item.meta.permissions() & 0o100 != 0 {
                         0o777
                     } else {
@@ -259,10 +269,12 @@ pub(crate) fn archive<
                             &output_item.path,
                             &mut conflicts,
                         );
+                        std::mem::drop(channel_);
+                        std::mem::drop(txn_);
                         crate::alive::output_graph(
                             changes,
                             txn,
-                            &channel,
+                            channel,
                             &mut f,
                             &mut l,
                             &mut Vec::new(),

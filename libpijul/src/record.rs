@@ -904,21 +904,22 @@ impl Recorded {
             item.full_path, item.inode, vertex, new_papa,
         );
         // Former parent(s) of vertex
-        let txn_ = txn.read();
-        let channel_ = channel.read();
-        let (former_parents, is_deleted, encoding) =
-            collect_former_parents::<C, W, T>(changes, &*txn_, &*channel_, vertex)?;
+        let (former_parents, is_deleted, encoding) = {
+            let txn_ = txn.read();
+            let channel_ = channel.read();
+            collect_former_parents::<C, W, T>(changes, &*txn_, &*channel_, vertex)?
+        };
         debug!(
             "record_existing_file: {:?} {:?} {:?}",
             item, former_parents, is_deleted,
         );
         if let Ok(new_meta) = working_copy.file_metadata(&item.full_path) {
             self.record_nondeleted(
-                &*txn_,
+                txn,
                 diff_algorithm,
                 stop_early,
                 diff_sep,
-                &*channel_,
+                channel,
                 working_copy,
                 changes,
                 item,
@@ -931,6 +932,8 @@ impl Recorded {
             )?
         } else {
             debug!("calling record_deleted_file on {:?}", item.full_path);
+            let txn_ = txn.read();
+            let channel_ = channel.read();
             self.record_deleted_file(
                 &*txn_,
                 txn_.graph(&*channel_),
@@ -945,11 +948,11 @@ impl Recorded {
 
     fn record_nondeleted<T: ChannelTxnT + TreeTxnT, W: WorkingCopyRead + Clone, C: ChangeStore>(
         &mut self,
-        txn: &T,
+        txn: &ArcTxn<T>,
         diff_algorithm: diff::Algorithm,
         stop_early: bool,
         diff_sep: &regex::bytes::Regex,
-        channel: &T::Channel,
+        channel: &ChannelRef<T>,
         working_copy: W,
         changes: &C,
         item: &RecordItem,
@@ -973,10 +976,12 @@ impl Recorded {
             // when recording after applying, but before outputting,
             // but this is a misuse of the library.
             debug!("new_papa = {:?}", new_papa);
+            let txn = txn.read();
+            let channel = channel.read();
             self.record_moved_file::<_, _, W>(
                 changes,
-                txn,
-                channel,
+                &*txn,
+                &*channel,
                 &item,
                 vertex,
                 new_papa.unwrap(),
@@ -989,10 +994,12 @@ impl Recorded {
             || is_deleted
         {
             debug!("new_papa = {:?}", new_papa);
+            let txn = txn.read();
+            let channel = channel.read();
             self.record_moved_file::<_, _, W>(
                 changes,
-                txn,
-                channel,
+                &*txn,
+                &*channel,
                 &item,
                 vertex,
                 new_papa.unwrap(),
@@ -1001,9 +1008,18 @@ impl Recorded {
         }
         if new_meta.is_file()
             && (self.force_rediff
-                || modified_since_last_commit(txn, channel, &working_copy, &item.full_path)?)
+                || modified_since_last_commit(
+                    &*txn.read(),
+                    &*channel.read(),
+                    &working_copy,
+                    &item.full_path,
+                )?)
         {
-            let mut ret = retrieve(txn, txn.graph(channel), vertex)?;
+            let mut ret = {
+                let txn = txn.read();
+                let channel = channel.read();
+                retrieve(&*txn, txn.graph(&*channel), vertex)?
+            };
             let mut b = Vec::new();
             let encoding = working_copy
                 .decode_file(&item.full_path, &mut b)

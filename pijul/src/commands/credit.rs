@@ -26,7 +26,8 @@ impl Credit {
     pub fn run(self) -> Result<(), anyhow::Error> {
         let has_repo_path = self.repo_path.is_some();
         let repo = Repository::find_root(self.repo_path)?;
-        let txn = repo.pristine.txn_begin()?;
+        let txn_ = repo.pristine.arc_txn_begin()?;
+        let txn = txn_.read();
         let channel_name = if let Some(ref c) = self.channel {
             c
         } else {
@@ -50,13 +51,13 @@ impl Credit {
             txn.follow_oldest_path(&repo.changes, &channel, &path)?
         };
         super::pager();
-        let channel = channel.read();
+        std::mem::drop(txn);
         match libpijul::output::output_file(
             &repo.changes,
-            &txn,
+            &txn_,
             &channel,
             pos,
-            &mut Creditor::new(std::io::stdout(), &txn, &channel),
+            &mut Creditor::new(std::io::stdout(), txn_.clone(), channel.clone()),
         ) {
             Ok(_) => {}
             Err(libpijul::output::FileError::Io(io)) => {
@@ -71,17 +72,17 @@ impl Credit {
     }
 }
 
-pub struct Creditor<'a, W: std::io::Write, T: ChannelTxnT> {
+pub struct Creditor<W: std::io::Write, T: ChannelTxnT> {
     w: W,
     buf: Vec<u8>,
     new_line: bool,
     changes: HashSet<Hash>,
-    txn: &'a T,
-    channel: &'a T::Channel,
+    txn: ArcTxn<T>,
+    channel: ChannelRef<T>,
 }
 
-impl<'a, W: std::io::Write, T: ChannelTxnT> Creditor<'a, W, T> {
-    pub fn new(w: W, txn: &'a T, channel: &'a T::Channel) -> Self {
+impl<W: std::io::Write, T: ChannelTxnT> Creditor<W, T> {
+    pub fn new(w: W, txn: ArcTxn<T>, channel: ChannelRef<T>) -> Self {
         Creditor {
             w,
             new_line: true,
@@ -93,7 +94,7 @@ impl<'a, W: std::io::Write, T: ChannelTxnT> Creditor<'a, W, T> {
     }
 }
 
-impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
+impl<W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<W, T> {
     fn output_line<E, C: FnOnce(&mut [u8]) -> Result<(), E>>(
         &mut self,
         v: Vertex<ChangeId>,
@@ -108,16 +109,17 @@ impl<'a, W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<'a, W, T> {
 
         if !v.change.is_root() {
             self.changes.clear();
-            for e in self
-                .txn
-                .iter_adjacent(self.channel, v, EdgeFlags::PARENT, EdgeFlags::all())
+            let txn = self.txn.read();
+            let channel = self.channel.read();
+            for e in txn
+                .iter_adjacent(&channel, v, EdgeFlags::PARENT, EdgeFlags::all())
                 .unwrap()
             {
                 let e = e.unwrap();
                 if e.introduced_by().is_root() {
                     continue;
                 }
-                if let Ok(Some(intro)) = self.txn.get_external(&e.introduced_by()) {
+                if let Ok(Some(intro)) = txn.get_external(&e.introduced_by()) {
                     self.changes.insert(intro.into());
                 }
             }

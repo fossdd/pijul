@@ -933,12 +933,18 @@ impl RemoteRepo {
                 );
                 let mut tarball = libpijul::output::Tarball::new(w, prefix, umask);
                 let conflicts = if let Some((state, extra)) = state {
-                    let mut txn = l.pristine.mut_txn_begin()?;
-                    let mut channel = txn.load_channel(&l.channel)?.unwrap();
-                    txn.archive_with_state(&changes, &mut channel, &state, extra, &mut tarball, 0)?
+                    let txn = l.pristine.arc_txn_begin()?;
+                    let channel = {
+                        let txn = txn.read();
+                        txn.load_channel(&l.channel)?.unwrap()
+                    };
+                    txn.archive_with_state(&changes, &channel, &state, extra, &mut tarball, 0)?
                 } else {
-                    let txn = l.pristine.txn_begin()?;
-                    let channel = txn.load_channel(&l.channel)?.unwrap();
+                    let txn = l.pristine.arc_txn_begin()?;
+                    let channel = {
+                        let txn = txn.read();
+                        txn.load_channel(&l.channel)?.unwrap()
+                    };
                     txn.archive(&changes, &channel, &mut tarball)?
                 };
                 Ok(conflicts.len() as u64)

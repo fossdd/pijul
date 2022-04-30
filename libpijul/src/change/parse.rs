@@ -70,7 +70,11 @@ fn parse_file_del_hunk(i: &str) -> IResult<&str, PrintableHunk> {
     } else {
         (i, Vec::new())
     };
-    let (i, contents) = parse_contents('-', encoding.clone(), i)?;
+    let (i, contents) = if encoding.is_none() {
+        (i, Vec::new())
+    } else {
+        parse_contents('-', encoding.clone(), i)?
+    };
     Ok((
         i,
         FileDel {

@@ -129,8 +129,8 @@ impl Recorded {
     pub(crate) fn diff<T: ChannelTxnT, P: ChangeStore>(
         &mut self,
         changes: &P,
-        txn: &T,
-        channel: &T::Channel,
+        txn: &ArcTxn<T>,
+        channel: &ChannelRef<T>,
         algorithm: Algorithm,
         stop_early: bool,
         path: String,
@@ -144,6 +144,8 @@ impl Recorded {
         self.largest_file = self.largest_file.max(b.len() as u64);
         let mut d = vertex_buffer::Diff::new(inode, path.clone(), a);
         output_graph(changes, txn, channel, &mut d, a, &mut self.redundant)?;
+        let txn = txn.read();
+        let channel = channel.read();
         // TODO pass through both encodings and use that to decide
         debug!("encoding = {:?}", encoding);
         let (lines_a, lines_b) = if encoding.is_none() {
@@ -171,8 +173,8 @@ impl Recorded {
         for r in 0..dd.len() {
             if dd[r].old_len > 0 {
                 self.delete(
-                    txn,
-                    txn.graph(channel),
+                    &*txn,
+                    txn.graph(&*channel),
                     &d,
                     &dd,
                     &mut conflict_contexts,

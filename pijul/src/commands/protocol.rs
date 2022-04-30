@@ -294,7 +294,7 @@ impl Protocol {
                     let extra: Vec<libpijul::Hash> = hashes.map(|x| x.parse().unwrap()).collect();
                     debug!("state = {:?}, extra = {:?}", state, extra);
                     if txn.read().current_state(&*channel.read())? == state && extra.is_empty() {
-                        txn.read().archive(&repo.changes, &channel, &mut tarball)?
+                        txn.archive(&repo.changes, &channel, &mut tarball)?
                     } else {
                         use rand::Rng;
                         let fork_name: String = rand::thread_rng()
@@ -302,8 +302,10 @@ impl Protocol {
                             .take(30)
                             .map(|x| x as char)
                             .collect();
-                        let mut txn = txn.write();
-                        let mut fork = txn.fork(&channel, &fork_name)?;
+                        let mut fork = {
+                            let mut txn = txn.write();
+                            txn.fork(&channel, &fork_name)?
+                        };
                         let conflicts = txn.archive_with_state(
                             &repo.changes,
                             &mut fork,
@@ -312,11 +314,11 @@ impl Protocol {
                             &mut tarball,
                             0,
                         )?;
-                        txn.drop_channel(&fork_name)?;
+                        txn.write().drop_channel(&fork_name)?;
                         conflicts
                     }
                 } else {
-                    txn.write().archive(&repo.changes, &channel, &mut tarball)?
+                    txn.archive(&repo.changes, &channel, &mut tarball)?
                 };
                 std::mem::drop(tarball);
                 let mut o = std::io::stdout();

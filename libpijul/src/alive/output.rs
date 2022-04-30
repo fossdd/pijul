@@ -16,8 +16,8 @@ struct ConflictStackElt {
 
 fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
     changes: &P,
-    txn: &T,
-    channel: &T::Channel,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     line_buf: &mut B,
     graph: &Graph,
     sccs: &Vector2<VertexId>,
@@ -34,17 +34,25 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
     while let Some(mut elt) = stack.pop() {
         let n_sides = elt.conflict.len();
         if n_sides > 1 && elt.side == 0 && elt.idx == 0 {
+            let txn = txn.read();
+            let channel = channel.read();
             elt.conflict.sort_by(|a, b| {
                 let a_ = a
                     .path
                     .iter()
-                    .map(|a| a.oldest_vertex(changes, txn, channel, graph, sccs).unwrap())
+                    .map(|a| {
+                        a.oldest_vertex(changes, &*txn, &*channel, graph, sccs)
+                            .unwrap()
+                    })
                     .min()
                     .unwrap();
                 let b_ = b
                     .path
                     .iter()
-                    .map(|b| b.oldest_vertex(changes, txn, channel, graph, sccs).unwrap())
+                    .map(|b| {
+                        b.oldest_vertex(changes, &*txn, &*channel, graph, sccs)
+                            .unwrap()
+                    })
                     .min()
                     .unwrap();
                 a_.cmp(&b_)
@@ -70,6 +78,7 @@ fn output_conflict<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
                 match elt.conflict[elt.side].path[elt.idx] {
                     PathElement::Scc { scc } => {
                         let vid = sccs[scc][0];
+                        let txn = txn.read();
                         let ext = txn.get_external(&graph[vid].vertex.change)?.unwrap();
                         line_buf.conflict_next(elt.id, &[&ext.into()])?;
                     }
@@ -184,7 +193,7 @@ impl PathElement {
 
 fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
     changes: &P,
-    txn: &T,
+    txn: &ArcTxn<T>,
     graph: &Graph,
     scc: &[VertexId],
     is_zombie: &mut Option<usize>,
@@ -201,6 +210,7 @@ fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
         if graph[v].flags.contains(Flags::ZOMBIE) {
             if is_zombie.is_none() {
                 *is_zombie = Some(*id);
+                let txn = txn.read();
                 let hash = txn.get_external(&graph[v].vertex.change)?.unwrap();
                 vbuf.begin_zombie_conflict(*id, &[&hash.into()])?;
                 *id += 1
@@ -216,7 +226,7 @@ fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
             let now = std::time::Instant::now();
             let result = changes
                 .get_contents(
-                    |p| txn.get_external(&p).unwrap().map(|x| x.into()),
+                    |p| txn.read().get_external(&p).unwrap().map(|x| x.into()),
                     vertex,
                     buf,
                 )
@@ -241,8 +251,8 @@ fn output_scc<T: GraphTxnT, B: VertexBuffer, P: ChangeStore>(
 
 pub fn output_graph<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
     changes: &P,
-    txn: &T,
-    channel: &T::Channel,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     line_buf: &mut B,
     graph: &mut Graph,
     forward: &mut Vec<super::Redundant>,
@@ -253,8 +263,11 @@ pub fn output_graph<T: ChannelTxnT, B: VertexBuffer, P: ChangeStore>(
     let now0 = std::time::Instant::now();
     let scc = graph.tarjan(); // SCCs are given here in reverse order.
     let (conflict_tree, forward_scc) = graph.dfs(&scc);
-    graph.collect_forward_edges(txn, txn.graph(channel), &scc, &forward_scc, forward)?;
-
+    {
+        let txn = txn.read();
+        let channel = channel.read();
+        graph.collect_forward_edges(&*txn, txn.graph(&*channel), &scc, &forward_scc, forward)?;
+    }
     crate::TIMERS.lock().unwrap().alive_graph += now0.elapsed();
     let now1 = std::time::Instant::now();
     debug!("conflict_tree = {:?}", conflict_tree);

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 use clap::Parser;
-use libpijul::{Hash, Merkle, MutTxnTExt, TxnT, TxnTExt};
+use libpijul::{Hash, Merkle, TxnT};
 use log::debug;
 
 use crate::repository::Repository;
@@ -111,33 +111,40 @@ impl Archive {
             let mut f = std::fs::File::create(&p)?;
             let mut tarball = libpijul::output::Tarball::new(&mut f, self.prefix, umask);
             let conflicts = if let Some(state) = state {
-                let mut txn = repo.pristine.mut_txn_begin()?;
-                let channel_name = if let Some(ref c) = self.channel {
-                    c
-                } else {
-                    txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+                let txn = repo.pristine.arc_txn_begin()?;
+                let channel = {
+                    let txn = txn.read();
+                    let channel_name = if let Some(ref c) = self.channel {
+                        c
+                    } else {
+                        txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+                    };
+                    txn.load_channel(&channel_name)?.unwrap()
                 };
-                let mut channel = txn.load_channel(&channel_name)?.unwrap();
                 txn.archive_with_state(
                     &repo.changes,
-                    &mut channel,
+                    &channel,
                     &state,
                     &extra[..],
                     &mut tarball,
                     0,
                 )?
             } else {
-                let txn = repo.pristine.txn_begin()?;
-                let channel_name = if let Some(ref c) = self.channel {
-                    c
-                } else {
-                    txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+                let txn = repo.pristine.arc_txn_begin()?;
+                let channel = {
+                    let txn = txn.read();
+                    let channel_name = if let Some(ref c) = self.channel {
+                        c
+                    } else {
+                        txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL)
+                    };
+                    if let Some(channel) = txn.load_channel(&channel_name)? {
+                        channel
+                    } else {
+                        bail!("No such channel: {:?}", channel_name);
+                    }
                 };
-                if let Some(channel) = txn.load_channel(&channel_name)? {
-                    txn.archive(&repo.changes, &channel, &mut tarball)?
-                } else {
-                    bail!("No such channel: {:?}", channel_name);
-                }
+                txn.archive(&repo.changes, &channel, &mut tarball)?
             };
             super::print_conflicts(&conflicts)?;
         }

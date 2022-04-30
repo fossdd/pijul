@@ -182,7 +182,7 @@ impl<T: MutTxnT> ArcTxn<T> {
         if let Ok(txn) = Arc::try_unwrap(self.0) {
             txn.into_inner().commit()
         } else {
-            unreachable!()
+            panic!("Tried to commit an ArcTxn without dropping its references")
         }
     }
 }

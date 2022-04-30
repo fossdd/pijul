@@ -313,13 +313,17 @@ pub fn output_file<
     V: crate::vertex_buffer::VertexBuffer,
 >(
     changes: &C,
-    txn: &T,
-    channel: &T::Channel,
+    txn: &ArcTxn<T>,
+    channel: &ChannelRef<T>,
     v0: Position<ChangeId>,
     out: &mut V,
 ) -> Result<(), FileError<C::Error, T>> {
     let mut forward = Vec::new();
-    let mut graph = crate::alive::retrieve(&*txn, txn.graph(&*channel), v0)?;
-    crate::alive::output_graph(changes, &*txn, &*channel, out, &mut graph, &mut forward)?;
+    let mut graph = {
+        let txn = txn.read();
+        let channel = channel.read();
+        crate::alive::retrieve(&*txn, txn.graph(&*channel), v0)?
+    };
+    crate::alive::output_graph(changes, txn, channel, out, &mut graph, &mut forward)?;
     Ok(())
 }

@@ -259,74 +259,6 @@ pub trait MutTxnTExt: pristine::MutTxnT {
     fn remove_file(&mut self, a: &str) -> Result<(), fs::FsError<Self>> {
         fs::remove_file(self, a)
     }
-
-    fn archive_with_state<P: changestore::ChangeStore, A: Archive>(
-        &mut self,
-        changes: &P,
-        channel: &mut pristine::ChannelRef<Self>,
-        state: &pristine::Merkle,
-        extra: &[pristine::Hash],
-        arch: &mut A,
-        salt: u64,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, Self, A::Error>> {
-        self.archive_prefix_with_state(
-            changes,
-            channel,
-            state,
-            extra,
-            &mut std::iter::empty(),
-            arch,
-            salt,
-        )
-    }
-
-    /// Warning: this method unrecords changes until finding the
-    /// state. If this is not wanted, please fork the channel before
-    /// calling.
-    fn archive_prefix_with_state<
-        'a,
-        P: changestore::ChangeStore,
-        A: Archive,
-        I: Iterator<Item = &'a str>,
-    >(
-        &mut self,
-        changes: &P,
-        channel: &mut pristine::ChannelRef<Self>,
-        state: &pristine::Merkle,
-        extra: &[pristine::Hash],
-        prefix: &mut I,
-        arch: &mut A,
-        salt: u64,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, Self, A::Error>> {
-        let mut unrecord = Vec::new();
-        let mut found = false;
-        for x in pristine::changeid_rev_log(self, &channel.read(), None)? {
-            let (_, p) = x?;
-            let m: Merkle = (&p.b).into();
-            if &m == state {
-                found = true;
-                break;
-            } else {
-                unrecord.push(p.a.into())
-            }
-        }
-        debug!("unrecord = {:?}", unrecord);
-        if found {
-            for h in unrecord.iter() {
-                let h = self.get_external(h)?.unwrap().into();
-                self.unrecord(changes, channel, &h, salt)?;
-            }
-            {
-                let mut channel_ = channel.write();
-                for app in extra.iter() {
-                    self.apply_change_rec(changes, &mut channel_, app)?
-                }
-            }
-            output::archive(changes, self, channel, prefix, arch)
-        } else {
-            Err(output::ArchiveError::StateNotFound { state: *state })
-        }
-    }
 }
 
 pub trait TxnTExt: pristine::TxnT {
@@ -521,25 +453,6 @@ pub trait TxnTExt: pristine::TxnT {
         fs::follow_oldest_path(changes, self, &channel.read(), path)
     }
 
-    fn archive<C: changestore::ChangeStore, A: Archive>(
-        &self,
-        changes: &C,
-        channel: &pristine::ChannelRef<Self>,
-        arch: &mut A,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, Self, A::Error>> {
-        output::archive(changes, self, channel, &mut std::iter::empty(), arch)
-    }
-
-    fn archive_prefix<'a, C: changestore::ChangeStore, I: Iterator<Item = &'a str>, A: Archive>(
-        &self,
-        changes: &C,
-        channel: &pristine::ChannelRef<Self>,
-        prefix: &mut I,
-        arch: &mut A,
-    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, Self, A::Error>> {
-        output::archive(changes, self, channel, prefix, arch)
-    }
-
     fn iter_adjacent<'txn>(
         &'txn self,
         graph: &'txn Self::Channel,
@@ -548,6 +461,104 @@ pub trait TxnTExt: pristine::TxnT {
         max_flag: pristine::EdgeFlags,
     ) -> Result<pristine::AdjacentIterator<'txn, Self>, pristine::TxnErr<Self::GraphError>> {
         pristine::iter_adjacent(self, self.graph(graph), key, min_flag, max_flag)
+    }
+}
+
+impl<T: ChannelTxnT + TreeTxnT + DepsTxnT<DepsError = <T as GraphTxnT>::GraphError>> ArcTxn<T> {
+    pub fn archive<C: changestore::ChangeStore, A: Archive>(
+        &self,
+        changes: &C,
+        channel: &pristine::ChannelRef<T>,
+        arch: &mut A,
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, T, A::Error>> {
+        output::archive(changes, self, channel, &mut std::iter::empty(), arch)
+    }
+
+    pub fn archive_prefix<
+        'a,
+        C: changestore::ChangeStore,
+        I: Iterator<Item = &'a str>,
+        A: Archive,
+    >(
+        &self,
+        changes: &C,
+        channel: &pristine::ChannelRef<T>,
+        prefix: &mut I,
+        arch: &mut A,
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<C::Error, T, A::Error>> {
+        output::archive(changes, self, channel, prefix, arch)
+    }
+}
+
+impl<T: MutTxnT> ArcTxn<T> {
+    pub fn archive_with_state<P: changestore::ChangeStore, A: Archive>(
+        &self,
+        changes: &P,
+        channel: &pristine::ChannelRef<T>,
+        state: &pristine::Merkle,
+        extra: &[pristine::Hash],
+        arch: &mut A,
+        salt: u64,
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, T, A::Error>> {
+        self.archive_prefix_with_state(
+            changes,
+            channel,
+            state,
+            extra,
+            &mut std::iter::empty(),
+            arch,
+            salt,
+        )
+    }
+
+    /// Warning: this method unrecords changes until finding the
+    /// state. If this is not wanted, please fork the channel before
+    /// calling.
+    pub fn archive_prefix_with_state<
+        'a,
+        P: changestore::ChangeStore,
+        A: Archive,
+        I: Iterator<Item = &'a str>,
+    >(
+        &self,
+        changes: &P,
+        channel: &pristine::ChannelRef<T>,
+        state: &pristine::Merkle,
+        extra: &[pristine::Hash],
+        prefix: &mut I,
+        arch: &mut A,
+        salt: u64,
+    ) -> Result<Vec<output::Conflict>, output::ArchiveError<P::Error, T, A::Error>> {
+        let mut unrecord = Vec::new();
+        let mut found = false;
+        let mut txn = self.write();
+        for x in pristine::changeid_rev_log(&*txn, &channel.read(), None)? {
+            let (_, p) = x?;
+            let m: Merkle = (&p.b).into();
+            if &m == state {
+                found = true;
+                break;
+            } else {
+                unrecord.push(p.a.into())
+            }
+        }
+        debug!("unrecord = {:?}", unrecord);
+        if found {
+            for h in unrecord.iter() {
+                let h = txn.get_external(h)?.unwrap().into();
+                unrecord::unrecord(&mut *txn, channel, changes, &h, salt)?;
+            }
+            {
+                let mut channel_ = channel.write();
+                for app in extra.iter() {
+                    crate::apply::apply_change_rec(changes, &mut *txn, &mut channel_, app, false)?
+                }
+            }
+            std::mem::drop(txn);
+            output::archive(changes, self, channel, prefix, arch)
+        } else {
+            Err(output::ArchiveError::StateNotFound { state: *state })
+        }
     }
 }
 

@@ -54,7 +54,7 @@ impl Base32 for Inode {
     }
     fn from_base32(s: &[u8]) -> Option<Self> {
         let mut b = [0; 8];
-        if data_encoding::BASE32_NOPAD.decode_mut(s, &mut b).is_ok() {
+        if s.len() == 13 && data_encoding::BASE32_NOPAD.decode_mut(s, &mut b).is_ok() {
             Some(Inode(BigEndian::read_u64(&b).into()))
         } else {
             None
@@ -80,9 +80,10 @@ pub mod inode_base32_serde {
             E: de::Error,
         {
             let mut b = [0; 8];
-            if data_encoding::BASE32_NOPAD
-                .decode_mut(s.as_bytes(), &mut b)
-                .is_ok()
+            if s.len() == 13
+                && data_encoding::BASE32_NOPAD
+                    .decode_mut(s.as_bytes(), &mut b)
+                    .is_ok()
             {
                 let b: u64 = BigEndian::read_u64(&b);
                 Ok(Inode(b.into()))

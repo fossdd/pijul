@@ -83,8 +83,8 @@ impl Reset {
             };
             libpijul::output::output_file(
                 &repo.changes,
-                &*txn.read(),
-                &channel.read(),
+                &txn,
+                &channel,
                 pos,
                 &mut libpijul::vertex_buffer::Writer::new(std::io::stdout()),
             )?;
