@@ -173,10 +173,16 @@ pub fn apply_change_ws<T: MutTxnT, P: ChangeStore>(
         internal
     };
     debug!("internal = {:?}", internal);
-    Ok(
-        apply_change_to_channel(txn, channel, internal, &hash, &change, workspace)
-            .map_err(ApplyError::LocalChange)?,
+    Ok(apply_change_to_channel(
+        txn,
+        channel,
+        &mut |h| changes.knows(h, hash).unwrap(),
+        internal,
+        &hash,
+        &change,
+        workspace,
     )
+    .map_err(ApplyError::LocalChange)?)
 }
 
 pub fn apply_change_rec_ws<T: TxnT + MutTxnT, P: ChangeStore>(
@@ -230,8 +236,16 @@ pub fn apply_change_rec_ws<T: TxnT + MutTxnT, P: ChangeStore>(
                 };
                 debug!("internal = {:?}", internal);
                 workspace.clear();
-                apply_change_to_channel(txn, channel, internal, &hash, &change, workspace)
-                    .map_err(ApplyError::LocalChange)?;
+                apply_change_to_channel(
+                    txn,
+                    channel,
+                    &mut |h| changes.knows(h, &hash).unwrap(),
+                    internal,
+                    &hash,
+                    &change,
+                    workspace,
+                )
+                .map_err(ApplyError::LocalChange)?;
             }
         }
     }
@@ -282,9 +296,10 @@ pub fn apply_change_rec<T: MutTxnT, P: ChangeStore>(
     )
 }
 
-fn apply_change_to_channel<T: ChannelMutTxnT + TreeTxnT>(
+fn apply_change_to_channel<T: ChannelMutTxnT + TreeTxnT, F: FnMut(&Hash) -> bool>(
     txn: &mut T,
     channel: &mut T::Channel,
+    changes: &mut F,
     change_id: ChangeId,
     hash: &Hash,
     change: &Change,
@@ -305,9 +320,15 @@ fn apply_change_to_channel<T: ChannelMutTxnT + TreeTxnT>(
         debug!("Applying {:?} (1)", change_);
         for change_ in change_.iter() {
             match *change_ {
-                Atom::NewVertex(ref n) => {
-                    put_newvertex(txn, T::graph_mut(channel), change, ws, change_id, n)?
-                }
+                Atom::NewVertex(ref n) => put_newvertex(
+                    txn,
+                    T::graph_mut(channel),
+                    changes,
+                    change,
+                    ws,
+                    change_id,
+                    n,
+                )?,
                 Atom::EdgeMap(ref n) => {
                     for edge in n.edges.iter() {
                         if !edge.flag.contains(EdgeFlags::DELETED) {
@@ -400,7 +421,15 @@ pub fn apply_local_change_ws<
     }
 
     register_change(txn, &internal, hash, &change)?;
-    let n = apply_change_to_channel(txn, &mut channel, internal, &hash, &change, workspace)?;
+    let n = apply_change_to_channel(
+        txn,
+        &mut channel,
+        &mut |_| true,
+        internal,
+        &hash,
+        &change,
+        workspace,
+    )?;
     for (_, update) in inode_updates.iter() {
         info!("updating {:?}", update);
         update_inode(txn, &channel, internal, update)?;

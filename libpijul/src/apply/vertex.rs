@@ -3,9 +3,10 @@ use crate::change::{Change, NewVertex};
 use crate::pristine::*;
 use crate::{ChangeId, EdgeFlags, Hash, Vertex};
 
-pub fn put_newvertex<T: GraphMutTxnT + TreeTxnT>(
+pub fn put_newvertex<T: GraphMutTxnT + TreeTxnT, F: FnMut(&Hash) -> bool>(
     txn: &mut T,
     graph: &mut T::Graph,
+    changes: &mut F,
     ch: &Change,
     ws: &mut Workspace,
     change: ChangeId,
@@ -29,7 +30,7 @@ pub fn put_newvertex<T: GraphMutTxnT + TreeTxnT>(
     assert!(ws.deleted_by.is_empty());
     for up in n.up_context.iter() {
         let up = internal_pos(txn, up, change)?;
-        if put_up_context(txn, graph, ch, ws, up)? && n.flag.contains(EdgeFlags::FOLDER) {
+        if put_up_context(txn, graph, changes, ws, up)? && n.flag.contains(EdgeFlags::FOLDER) {
             return Err(LocalApplyError::InvalidChange);
         }
     }
@@ -70,10 +71,10 @@ pub fn put_newvertex<T: GraphMutTxnT + TreeTxnT>(
     Ok(())
 }
 
-fn put_up_context<T: GraphMutTxnT + TreeTxnT>(
+fn put_up_context<T: GraphMutTxnT + TreeTxnT, F: FnMut(&Hash) -> bool>(
     txn: &mut T,
     graph: &mut T::Graph,
-    ch: &Change,
+    knows: &mut F,
     ws: &mut Workspace,
     up: Position<ChangeId>,
 ) -> Result<bool, LocalApplyError<T>> {
@@ -110,7 +111,7 @@ fn put_up_context<T: GraphMutTxnT + TreeTxnT>(
             .contains(EdgeFlags::PARENT | EdgeFlags::DELETED | EdgeFlags::BLOCK)
         {
             let introduced_by = txn.get_external(&parent.introduced_by())?.unwrap().into();
-            if !ch.knows(&introduced_by) {
+            if !knows(&introduced_by) {
                 ws.deleted_by.insert(parent.introduced_by());
             }
         }

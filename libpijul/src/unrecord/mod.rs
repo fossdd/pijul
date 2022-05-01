@@ -177,7 +177,6 @@ fn unapply<
                 T::graph_mut(channel),
                 change_id,
                 newedges,
-                change,
                 &mut ws,
             )?,
             Atom::NewVertex(ref newvertex) => {
@@ -389,7 +388,6 @@ fn unapply_edges<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
     channel: &mut T::Graph,
     change_id: ChangeId,
     newedges: &EdgeMap<Option<Hash>>,
-    change: &Change,
     ws: &mut Workspace,
 ) -> Result<(), UnrecordError<P::Error, T>> {
     debug!("newedges = {:#?}", newedges);
@@ -433,6 +431,7 @@ fn unapply_edges<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
         }
     }
     let reintro = std::mem::take(&mut ws.must_reintroduce);
+    let hash: Hash = (*txn.get_external(&change_id).unwrap().unwrap()).into();
     for edge in newedges.edges.iter() {
         let intro = internal(txn, &edge.introduced_by, change_id)?.unwrap();
         apply::put_newedge(
@@ -443,7 +442,23 @@ fn unapply_edges<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
             newedges.inode,
             &edge.reverse(Some(ext)),
             |a, b| reintro.contains(&(a, b)),
-            |h| change.knows(h),
+            |h| {
+                if edge.previous.contains(EdgeFlags::DELETED) {
+                    // When reintroducing a deleted flag, check whether
+                    // the re-introduction patch knows about the alive
+                    // edges around the target.
+                    changes
+                        .knows(edge.introduced_by.as_ref().unwrap_or(&hash), h)
+                        .unwrap()
+                } else {
+                    // When the edge we are re-introducing is not a
+                    // deletion edge, this check isn't actually used: the
+                    // only zombies in that case are from a deleted
+                    // context, and these aren't detected with known
+                    // patches.
+                    true
+                }
+            },
         )?;
     }
     ws.must_reintroduce = reintro;

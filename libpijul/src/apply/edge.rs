@@ -83,6 +83,7 @@ where
         if apply_check(source, target) {
             put_graph_with_rev(txn, graph, n.flag, source, target, change)?;
             for intro in zombies.drain(..) {
+                debug!("putting zombie {:?} {:?} {:?}", source, target, intro);
                 assert!(!n.flag.contains(EdgeFlags::FOLDER));
                 put_graph_with_rev(txn, graph, EdgeFlags::DELETED, source, target, intro)?;
             }
@@ -142,6 +143,7 @@ where
         for v in iter_deleted_parents(txn, graph, target)? {
             let v = v?;
             let intro = v.introduced_by();
+            debug!("known {:?} ?", intro);
             if !known(&txn.get_external(&intro)?.unwrap().into()) {
                 zombies.push(intro)
             }
