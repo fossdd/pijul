@@ -136,12 +136,9 @@ pub(super) fn get_up_context(
     } else {
         diff.contents_a.len()
     };
-    debug!("old_bytes {:?}", old_bytes);
     let mut up_context_idx = diff.last_vertex_containing(old_bytes - 1);
     let mut seen_conflict_markers = false;
     loop {
-        debug!("up_context_idx = {:?}", up_context_idx);
-        debug!("{:?}", diff.marker.get(&diff.pos_a[up_context_idx].pos));
         match diff.marker.get(&diff.pos_a[up_context_idx].pos) {
             None if seen_conflict_markers => {
                 return vec![diff.pos_a[up_context_idx].vertex.end_pos().to_option()]
@@ -149,8 +146,23 @@ pub(super) fn get_up_context(
             None => {
                 let change = diff.pos_a[up_context_idx].vertex.change;
                 let pos = diff.pos_a[up_context_idx].vertex.start;
-                let offset = old_bytes - diff.pos_a[up_context_idx].pos;
-                debug!("offset {:?} {:?}", pos.0, offset);
+                let mut offset = old_bytes - diff.pos_a[up_context_idx].pos;
+                // Here, in the case where one side of the conflict
+                // ended with a "last line without a `\n`", the offset
+                // might be off by one.
+                //
+                // We detect that case by testing whether the vertex
+                // length is the same as the length of the "line".
+
+                let v_end = diff.pos_a[up_context_idx].vertex.end.0.into();
+                if pos.0 + offset <= v_end {
+                    //
+                } else if pos.0 + offset == v_end + 1 {
+                    assert_eq!(diff.contents_a[old_bytes - 1], b'\n');
+                    offset -= 1
+                } else {
+                    panic!("{:?} {:?} {:?}", pos.0, offset, v_end);
+                }
                 return vec![Position {
                     change: Some(change),
                     pos: ChangePosition(pos.0 + offset),

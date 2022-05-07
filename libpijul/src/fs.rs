@@ -70,7 +70,7 @@ impl<C: std::error::Error + 'static, T: GraphTxnT> std::fmt::Debug for FsErrorC<
 #[error("Path not found: {0}")]
 pub struct FsNotFound(String);
 
-pub(crate) fn create_new_inode<T: TreeMutTxnT>(
+pub fn create_new_inode<T: TreeMutTxnT>(
     txn: &mut T,
     parent_id: &PathId,
     salt: u64,

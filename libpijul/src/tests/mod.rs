@@ -96,9 +96,11 @@ fn record_all<T: MutTxnT, R: WorkingCopy, P: ChangeStore>(
     prefix: &str,
 ) -> Result<Hash, anyhow::Error>
 where
+>>>>>>> 0 [SHSJ3Y53]
     T: MutTxnT + Send + Sync + 'static,
     R: WorkingCopy + Clone + Send + Sync + 'static,
     P: ChangeStore + Clone + Send + 'static,
+<<<<<<< 0
     R::Error: Send + Sync + 'static,
 {
     let (hash, _) = record_all_change(repo, store, txn, channel, prefix)?;

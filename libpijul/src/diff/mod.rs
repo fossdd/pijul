@@ -96,7 +96,13 @@ fn make_old_lines<'a>(d: &'a vertex_buffer::Diff, r: &'a regex::bytes::Regex) ->
             } else {
                 false
             };
-            debug!("old = {:?}", l);
+            if log_enabled!(log::Level::Debug) {
+                if let Ok(l) = std::str::from_utf8(l) {
+                    debug!("old = {:?}", l);
+                } else {
+                    debug!("old = {:?}", l);
+                }
+            }
             Line {
                 l,
                 cyclic,
@@ -112,7 +118,13 @@ fn make_old_lines<'a>(d: &'a vertex_buffer::Diff, r: &'a regex::bytes::Regex) ->
 fn make_new_lines<'a>(b: &'a [u8], sep: &'a regex::bytes::Regex) -> Vec<Line<'a>> {
     split::LineSplit::from_bytes_with_sep(b, sep)
         .map(|l| {
-            debug!("new: {:?}", l);
+            if log_enabled!(log::Level::Debug) {
+                if let Ok(l) = std::str::from_utf8(l) {
+                    debug!("new = {:?}", l);
+                } else {
+                    debug!("new = {:?}", l);
+                }
+            }
             let next_index = l.as_ptr() as usize + l.len() - b.as_ptr() as usize;
             Line {
                 l,

@@ -23,7 +23,11 @@ impl Change {
         let changes = repo.changes;
 
         let hash = if let Some(hash) = self.hash {
-            txn.hash_from_prefix(&hash)?.0
+            if let Some(h) = Hash::from_base32(hash.as_bytes()) {
+                h
+            } else {
+                txn.hash_from_prefix(&hash)?.0
+            }
         } else {
             let channel_name = txn.current_channel().unwrap_or(crate::DEFAULT_CHANNEL);
             let channel = if let Some(channel) = txn.load_channel(&channel_name)? {

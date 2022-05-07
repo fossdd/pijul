@@ -1890,7 +1890,7 @@ pub trait MutTxnT:
     fn set_current_channel(&mut self, cur: &str) -> Result<(), Self::GraphError>;
 }
 
-pub(crate) fn put_inodes_with_rev<T: TreeMutTxnT>(
+pub fn put_inodes_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     inode: &Inode,
     position: &Position<ChangeId>,
@@ -1900,7 +1900,7 @@ pub(crate) fn put_inodes_with_rev<T: TreeMutTxnT>(
     Ok(())
 }
 
-pub(crate) fn del_inodes_with_rev<T: TreeMutTxnT>(
+pub fn del_inodes_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     inode: &Inode,
     position: &Position<ChangeId>,
@@ -1913,7 +1913,7 @@ pub(crate) fn del_inodes_with_rev<T: TreeMutTxnT>(
     }
 }
 
-pub(crate) fn put_tree_with_rev<T: TreeMutTxnT>(
+pub fn put_tree_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     file_id: &PathId,
     inode: &Inode,
@@ -1924,7 +1924,7 @@ pub(crate) fn put_tree_with_rev<T: TreeMutTxnT>(
     Ok(())
 }
 
-pub(crate) fn del_tree_with_rev<T: TreeMutTxnT>(
+pub fn del_tree_with_rev<T: TreeMutTxnT>(
     txn: &mut T,
     file_id: &PathId,
     inode: &Inode,

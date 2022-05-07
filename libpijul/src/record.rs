@@ -808,6 +808,8 @@ impl Recorded {
             self.largest_file = self.largest_file.max(end.0.as_u64() - start.0.as_u64());
             contents.push(0);
             if end > start {
+>>>>>>> 0 [PDTUHOMV]
+<<<<<<< 0
                 (
                     Some(Atom::NewVertex(NewVertex {
                         up_context: vec![Position {
@@ -1583,8 +1585,10 @@ impl Recorded {
                     self.recorded_inodes
                         .lock()
                         .insert(*inode, vertex.start_pos().to_option());
-                    self.updatables
-                        .insert(self.actions.len(), InodeUpdate::Deleted { inode: *inode });
+                    self.updatables.insert(
+                        self.actions.len() + 1,
+                        InodeUpdate::Deleted { inode: *inode },
+                    );
                 }
                 self.delete_inode_vertex::<_, _, W>(
                     changes,
