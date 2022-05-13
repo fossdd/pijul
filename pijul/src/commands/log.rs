@@ -55,7 +55,6 @@ impl TryFrom<Log> for LogIterator {
     type Error = anyhow::Error;
     fn try_from(cmd: Log) -> Result<LogIterator, Self::Error> {
         let repo = Repository::find_root(cmd.repo_path.clone())?;
-        let repo_path = repo.path.clone();
         let txn = repo.pristine.txn_begin()?;
         let channel_name = if let Some(ref c) = cmd.channel {
             c
@@ -76,7 +75,6 @@ impl TryFrom<Log> for LogIterator {
         } else {
             bail!("No such channel: {:?}", channel_name)
         };
-        let changes = repo.changes;
         let limit = cmd.limit.unwrap_or(std::usize::MAX);
         let offset = cmd.offset.unwrap_or(0);
 
@@ -91,9 +89,8 @@ impl TryFrom<Log> for LogIterator {
 
         Ok(Self {
             txn,
+            repo,
             cmd,
-            changes,
-            repo_path,
             id_path,
             global_id_path,
             channel_ref,
@@ -269,10 +266,10 @@ impl std::fmt::Display for LogEntry {
 /// a full implementation of Iterator because serde's serialize method requires
 /// self to be an immutable reference.
 struct LogIterator {
-    txn: Txn,
-    changes: libpijul::changestore::filesystem::FileSystem,
+    /// The parsed CLI command
     cmd: Log,
-    repo_path: PathBuf,
+    txn: Txn,
+    repo: Repository,
     id_path: PathBuf,
     global_id_path: Option<PathBuf>,
     channel_ref: ChannelRef<Txn>,
@@ -326,7 +323,7 @@ impl LogIterator {
         let mut id_path = self.id_path.clone();
         let mut global_id_path = self.global_id_path.clone();
 
-        let inodes = get_inodes(&self.txn, &self.repo_path, &self.cmd.filters)?;
+        let inodes = get_inodes(&self.txn, &self.repo.path, &self.cmd.filters)?;
         let mut offset = self.offset;
         let mut limit = self.limit;
         for pr in self.txn.reverse_log(&*self.channel_ref.read(), None)? {
@@ -380,7 +377,7 @@ impl LogIterator {
         if self.cmd.hash_only {
             return Ok(LogEntry::Hash(h));
         }
-        let header = self.changes.get_header(&h.into())?;
+        let header = self.repo.changes.get_header(&h.into())?;
         let authors = header
             .authors
             .into_iter()
@@ -451,21 +448,20 @@ impl Log {
     // serialization to a serde target format, this now delegates
     // mostly to [`LogIterator`].
     pub fn run(self) -> Result<(), anyhow::Error> {
+        let log_iter = LogIterator::try_from(self)?;
         let mut stdout = std::io::stdout();
-        match self.output_format.as_ref().map(|s| s.as_str()) {
+
+        super::pager(log_iter.repo.config.pager.as_ref());
+
+        match log_iter.cmd.output_format.as_ref().map(|s| s.as_str()) {
             Some(s) if s.eq_ignore_ascii_case("json") => {
-                serde_json::to_writer_pretty(&mut stdout, &LogIterator::try_from(self)?)?
+                serde_json::to_writer_pretty(&mut stdout, &log_iter)?
             }
-            _ => {
-                super::pager();
-                LogIterator::try_from(self)?.for_each(|entry| {
-                    match write!(&mut stdout, "{}", entry) {
-                        Ok(_) => Ok(()),
-                        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-                        Err(e) => Err(e),
-                    }
-                })?
-            }
+            _ => log_iter.for_each(|entry| match write!(&mut stdout, "{}", entry) {
+                Ok(_) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                Err(e) => Err(e),
+            })?,
         }
         Ok(())
     }

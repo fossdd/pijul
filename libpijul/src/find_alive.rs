@@ -48,6 +48,7 @@ pub(crate) fn find_alive_down<'a, T: GraphTxnT>(
         }
         debug!("elt = {:?}, vertex = {:?}", elt, vertex);
         let elt_index = stack.len();
+        let mut has_alive_blocks = false;
         for v in iter_adj_all(txn, &channel, *vertex)? {
             let v = v?;
             if v.flag().contains(EdgeFlags::FOLDER) {
@@ -80,8 +81,15 @@ pub(crate) fn find_alive_down<'a, T: GraphTxnT>(
                         break;
                     }
                 }
+            } else if v.flag().contains(EdgeFlags::DELETED) {
+                if !has_alive_blocks {
+                    stack.push((*v, None))
+                }
+            } else if v.flag().contains(EdgeFlags::BLOCK) {
+                has_alive_blocks = true;
+                stack.push((*v, None));
             } else {
-                stack.push((*v, None))
+                stack.push((*v, None));
             }
         }
     }

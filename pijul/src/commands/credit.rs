@@ -50,8 +50,13 @@ impl Credit {
             let path = root.strip_prefix(&repo_path.as_path())?.to_str().unwrap();
             txn.follow_oldest_path(&repo.changes, &channel, &path)?
         };
-        super::pager();
+>>>>>>> 1 [YXAVFTPP]
+>>>>>>> 1 [YXAVFTPP]
         std::mem::drop(txn);
+
+        super::pager(repo.config.pager.as_ref());
+
+<<<<<<< 1
         match libpijul::output::output_file(
             &repo.changes,
             &txn_,
@@ -174,3 +179,8 @@ impl<W: std::io::Write, T: TxnTExt> VertexBuffer for Creditor<W, T> {
         Ok(())
     }
 }
+======= 1 [U6TQX5Z2]
+>>>>>>> 2 [U6TQX5Z2]
+        super::pager(repo.config.pager.as_ref());
+<<<<<<< 2
+<<<<<<< 1

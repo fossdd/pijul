@@ -43,7 +43,7 @@ impl Change {
             }
         };
         let change = changes.get_change(&hash).unwrap();
-        let colors = super::diff::is_colored();
+        let colors = super::diff::is_colored(repo.config.pager.as_ref());
         change.write(
             &changes,
             Some(hash),

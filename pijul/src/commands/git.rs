@@ -601,13 +601,18 @@ fn git_reset<'a, T: TxnTExt + MutTxnTExt>(
             }
         }
         if !has_parents {
-            for t in new_tree.iter() {
-                debug!("t = {:?}", t.name());
-                if let Some(n) = t.name() {
-                    let n = Path::new(n).to_path_buf();
-                    prefixes.insert(n);
-                }
-            }
+            use git2::{TreeWalkMode, TreeWalkResult};
+            new_tree
+                .walk(TreeWalkMode::PreOrder, |x, t| {
+                    debug!("t = {:?} {:?}", x, t.name());
+                    if let Some(n) = t.name() {
+                        let mut m = Path::new(x).to_path_buf();
+                        m.push(n);
+                        prefixes.insert(m);
+                    }
+                    TreeWalkResult::Ok
+                })
+                .unwrap();
         }
         stats.git_diff_time = git_diff_time.elapsed();
         debug!("record prefixes {:?}", prefixes);

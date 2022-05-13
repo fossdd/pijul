@@ -247,7 +247,7 @@ impl Tag {
                     bail!("Channel {:?} not found", channel_name)
                 };
                 let mut tag_path = repo.changes_dir.clone();
-                super::pager();
+                super::pager(repo.config.pager.as_ref());
                 for t in txn.rev_iter_tags(txn.tags(&*channel.read()), None)? {
                     let (t, _) = t?;
                     let (_, m) = txn.get_changes(&channel, (*t).into())?.unwrap();

@@ -120,24 +120,46 @@ fn pending<T: libpijul::MutTxnTExt + libpijul::TxnT + Send + Sync + 'static>(
     Ok(Some(hash))
 }
 
+/// Respect the `pager` key/value pair in both the user's repository config, and their global config.
+/// The global configuration requires no additional arguments, but the other two are optional to cover
+/// cases in which that information is not available. Users can also disable the pager by not setting
+/// the `PAGER` environment variable.
 #[cfg(unix)]
-fn pager() -> bool {
-    if let Ok(less) = std::process::Command::new("less")
-        .args(&["--version"])
-        .output()
+fn pager(repo_config_pager: Option<&crate::config::Choice>) -> bool {
+    if let Some(crate::config::Choice::Never) = repo_config_pager {
+        return false;
+    } else if let Some(crate::config::Choice::Never) = crate::config::Global::load()
+        .ok()
+        .and_then(|(global, _)| global.pager)
     {
-        let regex = regex::bytes::Regex::new("less ([0-9]+)").unwrap();
-        if let Some(caps) = regex.captures(&less.stdout) {
-            if std::str::from_utf8(&caps[1])
-                .unwrap()
-                .parse::<usize>()
-                .unwrap()
-                >= 530
-            {
-                pager::Pager::with_pager("less -RF").setup();
-                return true;
-            } else {
-                pager::Pager::new().setup();
+        return false;
+    } else if let Ok(pager_env_var) = std::env::var("PAGER") {
+        if !pager_env_var.is_empty() {
+            match pager_env_var.as_str() {
+                "less" => {
+                    if let Ok(pager_output) = std::process::Command::new(pager_env_var)
+                        .args(&["--version"])
+                        .output()
+                    {
+                        let regex = regex::bytes::Regex::new("less ([0-9]+)").unwrap();
+                        if let Some(caps) = regex.captures(&pager_output.stdout) {
+                            if std::str::from_utf8(&caps[1])
+                                .unwrap()
+                                .parse::<usize>()
+                                .unwrap()
+                                >= 530
+                            {
+                                pager::Pager::with_pager("less -RF").setup();
+                                return true;
+                            } else {
+                                pager::Pager::new().setup();
+                            }
+                        }
+                    }
+                }
+                owise => {
+                    pager::Pager::with_pager(owise).setup();
+                }
             }
         }
     }

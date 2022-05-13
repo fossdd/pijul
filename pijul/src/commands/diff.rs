@@ -132,7 +132,7 @@ impl Diff {
         change.dependencies = dependencies;
         change.extra_known = extra_known;
 
-        let colors = is_colored();
+        let colors = is_colored(repo.config.pager.as_ref());
         if self.json {
             let mut changes = BTreeMap::new();
             for ch in change.changes.iter() {
@@ -336,7 +336,7 @@ impl<W: termcolor::WriteColor> libpijul::change::WriteChangeLine for Colored<W> 
     }
 }
 
-pub fn is_colored() -> bool {
+pub fn is_colored(repo_config_pager: Option<&crate::config::Choice>) -> bool {
     let mut colors = atty::is(atty::Stream::Stdout);
     if let Ok((global, _)) = crate::config::Global::load() {
         match global.colors {
@@ -347,11 +347,11 @@ pub fn is_colored() -> bool {
         match global.pager {
             Some(crate::config::Choice::Never) => colors = false,
             _ => {
-                super::pager();
+                super::pager(repo_config_pager);
             }
         }
     } else {
-        colors &= super::pager();
+        colors &= super::pager(repo_config_pager);
     }
     colors
 }

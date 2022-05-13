@@ -407,12 +407,12 @@ impl Builder {
                 Position::ROOT.to_option()
             } else if let Some(vertex) = get_inodes_::<_, C, W>(&txn, &channel, &item.inode)? {
                 {
-                    let mut txn = txn.write();
-                    let mut channel = channel.r.write();
-                    let mut graph = txn.graph(&mut *channel);
+                    let txn = txn.read();
+                    let channel = channel.r.read();
+                    let graph = txn.graph(&*channel);
                     self.delete_obsolete_children(
-                        &mut *txn,
-                        &mut graph,
+                        &*txn,
+                        &graph,
                         working_copy,
                         changes,
                         &item.full_path,

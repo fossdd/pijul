@@ -249,6 +249,7 @@ impl Local {
                 if ml.modified()? < m.modified()? {
                     std::fs::remove_file(&path)?;
                 } else {
+                    path.pop();
                     continue;
                 }
             }
