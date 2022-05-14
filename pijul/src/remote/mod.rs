@@ -721,6 +721,7 @@ impl RemoteRepo {
             })
         } else {
             let mut to_download: Vec<CS> = Vec::new();
+            let mut to_download_ = HashSet::new();
             for x in txn.iter_rev_remote(&remote_ref.lock().remote, None)? {
                 let (_, p) = x?;
                 let h: Hash = p.a.into();
@@ -732,7 +733,10 @@ impl RemoteRepo {
                     break;
                 }
                 if txn.get_revchanges(&current_channel, &h).unwrap().is_none() {
-                    to_download.push(CS::Change(h));
+                    let h = CS::Change(h);
+                    if to_download_.insert(h.clone()) {
+                        to_download.push(h);
+                    }
                 }
             }
 
@@ -742,7 +746,9 @@ impl RemoteRepo {
                 // In all cases, add this new change/state/tag to `to_download`.
                 let ch = CS::Change(*h);
                 if txn.get_revchanges(&current_channel, h).unwrap().is_none() {
-                    to_download.push(ch.clone());
+                    if to_download_.insert(ch.clone()) {
+                        to_download.push(ch.clone());
+                    }
                     if *is_tag {
                         to_download.push(CS::State(*m));
                     }

@@ -55,6 +55,7 @@ pub trait ChangeStore {
         Ok(self.get_change(hash)?.hashed.changes)
     }
     fn knows(&self, hash0: &Hash, hash1: &Hash) -> Result<bool, Self::Error> {
+        debug!("knows: {:?} {:?}", hash0, hash1);
         Ok(self.get_change(hash0)?.knows(hash1))
     }
     fn has_edge(

@@ -443,10 +443,13 @@ fn unapply_edges<T: GraphMutTxnT + TreeTxnT, P: ChangeStore>(
             &edge.reverse(Some(ext)),
             |a, b| reintro.contains(&(a, b)),
             |h| {
+                if h == &hash {
+                    return true
+                }
                 if edge.previous.contains(EdgeFlags::DELETED) {
-                    // When reintroducing a deleted flag, check whether
-                    // the re-introduction patch knows about the alive
-                    // edges around the target.
+                    // When reintroducing an edge that was deleted,
+                    // check whether the re-introduction patch knows
+                    // about the alive edges around the target.
                     changes
                         .knows(edge.introduced_by.as_ref().unwrap_or(&hash), h)
                         .unwrap()

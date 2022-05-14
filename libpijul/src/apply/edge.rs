@@ -106,6 +106,9 @@ where
         }
     }
     if n.flag.contains(EdgeFlags::DELETED) {
+        // We're deleting a vertex n.to. If n has children or parents
+        // that are unknown to the patch we're applying, zombify these
+        // children and parents.
         collect_zombie_context(txn, graph, &mut ws.missing_context, inode, n, change, known)
             .map_err(LocalApplyError::from_missing)?;
     }
@@ -128,7 +131,7 @@ where
     // edge points towards a zombie.
     for v in iter_deleted_parents(txn, graph, source)? {
         let v = v?;
-        let intro = v.introduced_by();
+        let intro = v.dest().change;
         if !known(&txn.get_external(&intro)?.unwrap().into()) {
             zombies.push(intro)
         }
@@ -142,7 +145,7 @@ where
         }
         for v in iter_deleted_parents(txn, graph, target)? {
             let v = v?;
-            let intro = v.introduced_by();
+            let intro = v.dest().change;
             debug!("known {:?} ?", intro);
             if !known(&txn.get_external(&intro)?.unwrap().into()) {
                 zombies.push(intro)
@@ -335,7 +338,7 @@ where
             }
             if v.flag().contains(EdgeFlags::PARENT) {
                 // Unwrap ok, since `v` is in the channel.
-                let intro = txn.get_external(&v.introduced_by())?.unwrap().into();
+                let intro = txn.get_external(&v.dest().change)?.unwrap().into();
                 if !known(&intro) {
                     debug!("unknown: {:?}", v);
                     unknown_parents.push((dest_vertex, *v))

@@ -40,6 +40,8 @@ pub(crate) fn find_alive_down<'a, T: GraphTxnT>(
                     if let Some(c) = c {
                         st.extend(c.iter().cloned());
                     } else {
+                        // A `None` in the cache means that the vertex
+                        // itself (the cache key) is alive.
                         st.insert(*vertex);
                     }
                 }
